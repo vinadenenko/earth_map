@@ -1,13 +1,20 @@
-#include <earth_map/earth_map.h>
+// Include system headers first
 #include <iostream>
 #include <exception>
-// #include <GLFW/glfw3.h>
-#include <GL/glew.h>
 #include <chrono>
 #include <thread>
 
+// Include GLEW before GLFW to avoid conflicts
+#include <GL/glew.h>
+#include <GLFW/glfw3.h>
+
+// Then include earth_map headers
+#include <earth_map/earth_map.h>
+#include <earth_map/core/camera_controller.h>
+#include <earth_map/platform/library_info.h>
+
 // Callback function for window resize
-void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+void framebuffer_size_callback(GLFWwindow* /*window*/, int width, int height) {
     glViewport(0, 0, width, height);
 }
 
@@ -67,8 +74,8 @@ int main() {
         config.screen_height = window_height;
         config.enable_performance_monitoring = true;
         
-        auto earth_map = earth_map::EarthMap::Create(config);
-        if (!earth_map) {
+        auto earth_map_instance = earth_map::EarthMap::Create(config);
+        if (!earth_map_instance) {
             std::cerr << "Failed to create Earth Map instance\n";
             glfwDestroyWindow(window);
             glfwTerminate();
@@ -78,7 +85,7 @@ int main() {
         std::cout << "Earth Map instance created successfully\n";
         
         // Initialize Earth Map with OpenGL context
-        if (!earth_map->Initialize()) {
+        if (!earth_map_instance->Initialize()) {
             std::cerr << "Failed to initialize Earth Map\n";
             glfwDestroyWindow(window);
             glfwTerminate();
@@ -106,13 +113,13 @@ int main() {
             }
             
             // Update camera
-            auto* camera = earth_map->GetCameraController();
+            auto camera = earth_map_instance->GetCameraController();
             if (camera) {
                 camera->Update(delta_time);
             }
             
             // Render
-            earth_map->Render();
+            earth_map_instance->Render();
             
             // Swap buffers and poll events
             glfwSwapBuffers(window);
@@ -123,7 +130,7 @@ int main() {
             
             // Update performance stats every second
             if (frame_count % 60 == 0) {
-                std::string stats = earth_map->GetPerformanceStats();
+                std::string stats = earth_map_instance->GetPerformanceStats();
                 std::cout << "Performance: " << stats << "\n";
             }
         }
@@ -132,7 +139,7 @@ int main() {
         std::cout << "Total frames rendered: " << frame_count << "\n";
         
         // Cleanup
-        earth_map.reset();
+        earth_map_instance.reset();
         glfwDestroyWindow(window);
         glfwTerminate();
         
