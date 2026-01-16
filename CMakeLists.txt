@@ -113,7 +113,7 @@ target_link_libraries(earth_map
         glm::glm
         nlohmann_json::nlohmann_json
         pugixml::pugixml
-        libzip::libzip
+        libzip::zip
         stb::stb
         spdlog::spdlog
 )
@@ -190,13 +190,15 @@ if(EARTH_MAP_BUILD_TESTS)
     # Benchmark test
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/performance")
         file(GLOB_RECURSE PERF_SOURCES "tests/performance/*.cpp")
-        add_executable(earth_map_benchmarks ${PERF_SOURCES})
-        target_link_libraries(earth_map_benchmarks
-            PRIVATE
-                earth_map
-                benchmark::benchmark
-        )
-        target_include_directories(earth_map_benchmarks PRIVATE tests)
+        if(PERF_SOURCES)
+            add_executable(earth_map_benchmarks ${PERF_SOURCES})
+            target_link_libraries(earth_map_benchmarks
+                PRIVATE
+                    earth_map
+                    benchmark::benchmark
+            )
+            target_include_directories(earth_map_benchmarks PRIVATE tests)
+        endif()
     endif()
 endif()
 

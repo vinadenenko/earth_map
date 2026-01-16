@@ -2,8 +2,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(basic_example)
 
-# Find Earth Map library
-find_package(EarthMap REQUIRED)
+# Find Earth Map library (if not built in same tree)
+if(NOT TARGET earth_map)
+    find_package(EarthMap REQUIRED)
+endif()
 
 # Create example executable
 add_executable(basic_example
@@ -12,7 +14,7 @@ add_executable(basic_example
 
 target_link_libraries(basic_example
     PRIVATE
-        earth_map::earth_map
+        earth_map
 )
 
 # Add to examples group
