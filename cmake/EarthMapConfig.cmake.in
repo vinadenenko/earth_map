@@ -1,0 +1,25 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Find dependencies
+find_dependency(OpenGL REQUIRED)
+find_dependency(glfw3 REQUIRED)
+find_dependency(GLEW REQUIRED)
+find_dependency(glm REQUIRED)
+find_dependency(nlohmann_json REQUIRED)
+find_dependency(pugixml REQUIRED)
+find_dependency(libzip REQUIRED)
+find_dependency(stb REQUIRED)
+find_dependency(spdlog REQUIRED)
+
+# Include targets
+include("${CMAKE_CURRENT_LIST_DIR}/EarthMapTargets.cmake")
+
+# Set variables for backwards compatibility
+set(EarthMap_VERSION @PROJECT_VERSION@)
+set(EarthMap_VERSION_MAJOR @PROJECT_VERSION_MAJOR@)
+set(EarthMap_VERSION_MINOR @PROJECT_VERSION_MINOR@)
+set(EarthMap_VERSION_PATCH @PROJECT_VERSION_PATCH@)
+
+check_required_components(EarthMap)
