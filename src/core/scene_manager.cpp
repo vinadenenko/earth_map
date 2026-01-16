@@ -1,10 +1,10 @@
 #include <earth_map/core/scene_manager.h>
-#include <earth_map/core/earth_map.h>
 #include <earth_map/renderer/renderer.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <fstream>
 #include <string>
+#include <earth_map/earth_map.h>
 
 namespace earth_map {
 

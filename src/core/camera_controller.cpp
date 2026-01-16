@@ -1,5 +1,5 @@
-#include <earth_map/core/camera_controller.h>
-#include <earth_map/core/earth_map.h>
+#include "earth_map/core/camera_controller.h"
+#include <earth_map/earth_map.h>
 #include <earth_map/math/frustum.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>

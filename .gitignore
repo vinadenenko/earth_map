@@ -45,7 +45,7 @@ build*
 
 # QtCreator CMake
 CMakeLists.txt.user*
-
+CMakeUser*
 # QtCreator 4.8< compilation database
 compile_commands.json
 

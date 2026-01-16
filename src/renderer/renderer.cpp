@@ -1,5 +1,5 @@
 #include <earth_map/renderer/renderer.h>
-#include <earth_map/core/earth_map.h>
+#include <earth_map/earth_map.h>
 #include <earth_map/platform/opengl_context.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>

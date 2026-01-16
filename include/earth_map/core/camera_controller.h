@@ -8,6 +8,7 @@
  * position, orientation, and projection management.
  */
 
+#include "earth_map/math/frustum.h"
 #include <earth_map/math/bounding_box.h>
 #include <glm/glm.hpp>
 #include <memory>
