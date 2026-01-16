@@ -17,6 +17,29 @@ option(EARTH_MAP_ENABLE_OPENGL_DEBUG "Enable OpenGL debug output" OFF)
 option(EARTH_MAP_BUILD_DOCS "Generate documentation" OFF)
 option(EARTH_MAP_INSTALL "Generate install target" ON)
 
+
+# list(APPEND CMAKE_MODULE_PATH ${CMAKE_BINARY_DIR})
+# list(APPEND CMAKE_PREFIX_PATH ${CMAKE_BINARY_DIR})
+
+# if (CONAN_EXPORTED)
+# else ()
+#     if (NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake")
+#         message(STATUS "Downloading conan.cmake from https://github.com/conan-io/cmake-conan")
+#         file(DOWNLOAD "https://raw.githubusercontent.com/conan-io/cmake-conan/0.18.1/conan.cmake"
+#                 "${CMAKE_BINARY_DIR}/conan.cmake"
+#                 TLS_VERIFY ON)
+#     endif ()
+
+#     include(${CMAKE_BINARY_DIR}/conan.cmake)
+
+#     conan_cmake_autodetect(settings)
+#     conan_cmake_install(PATH_OR_REFERENCE ${PROJECT_SOURCE_DIR}/conanfile.py
+#             OUTPUT_FOLDER ${CMAKE_BINARY_DIR} BUILD missing SETTINGS ${settings})
+# endif ()
+# include(${CMAKE_BINARY_DIR}/conan_toolchain.cmake)
+
+# include_directories(${CMAKE_CURRENT_LIST_DIR}/include ${CMAKE_CURRENT_LIST_DIR}/src)
+
 # Compiler-specific options
 if(MSVC)
     add_compile_options(/W4 /WX)
