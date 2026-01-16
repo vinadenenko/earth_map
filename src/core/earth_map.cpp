@@ -14,19 +14,4 @@ std::unique_ptr<EarthMap> EarthMap::Create(const Configuration& config) {
     }
 }
 
-std::string LibraryInfo::GetVersion() {
-    return std::string(EARTH_MAP_VERSION);
-}
-
-std::string LibraryInfo::GetBuildInfo() {
-    return "Earth Map " + GetVersion() + " - Built on " __DATE__ " " __TIME__;
-}
-
-bool LibraryInfo::CheckSystemRequirements() {
-    // Check OpenGL version
-    // Check required extensions
-    // Check system capabilities
-    return true; // Placeholder
-}
-
 } // namespace earth_map
