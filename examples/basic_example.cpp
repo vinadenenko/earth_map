@@ -1,7 +1,7 @@
 #include <earth_map/earth_map.h>
 #include <iostream>
 #include <exception>
-#include <GLFW/glfw3.h>
+// #include <GLFW/glfw3.h>
 #include <GL/glew.h>
 #include <chrono>
 #include <thread>

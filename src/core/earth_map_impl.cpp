@@ -127,7 +127,7 @@ bool EarthMapImpl::InitializeSubsystems() {
         
         // Initialize camera controller
         camera_controller_.reset(CreateCameraController(config_));
-        if (!camera_controller_ || !static_cast<CameraControllerImpl*>(camera_controller_.get())->Initialize()) {
+        if (!camera_controller_ || !camera_controller_->Initialize()) {
             spdlog::error("Failed to initialize camera controller");
             return false;
         }

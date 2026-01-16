@@ -5,6 +5,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
 #include <GL/glew.h>
+#include <GLFW/glfw3.h>
 #include <stdexcept>
 #include <vector>
 #include <array>
@@ -121,6 +122,53 @@ public:
         }
     }
     
+    void RenderScene(const glm::mat4& view_matrix,
+                    const glm::mat4& projection_matrix,
+                    const Frustum& frustum) override {
+        if (!initialized_) {
+            return;
+        }
+        
+        (void)frustum; // Suppress unused parameter warning
+        
+        // Use basic shader
+        glUseProgram(shader_program_);
+        
+        // Set uniforms
+        glm::mat4 model = glm::rotate(glm::mat4(1.0f), 
+                                     static_cast<float>(glfwGetTime()) * 0.5f, 
+                                     glm::vec3(0.0f, 1.0f, 0.0f));
+        
+        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uModel"), 
+                         1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uView"), 
+                         1, GL_FALSE, glm::value_ptr(view_matrix));
+        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uProjection"), 
+                         1, GL_FALSE, glm::value_ptr(projection_matrix));
+        
+        glUniform3f(glGetUniformLocation(shader_program_, "uLightPos"), 2.0f, 2.0f, 2.0f);
+        glUniform3f(glGetUniformLocation(shader_program_, "uLightColor"), 1.0f, 1.0f, 1.0f);
+        glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"), 0.0f, 0.0f, 3.0f);
+        glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 0.2f, 0.6f, 0.2f);
+        
+        // Render globe
+        glBindVertexArray(vao_);
+        glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+    }
+    
+    void BeginFrame() override {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
+    }
+    
+    void EndFrame() override {
+        // Update stats (simplified)
+        stats_.draw_calls = 1;
+        stats_.triangles_rendered = globe_indices_.size() / 3;
+        stats_.vertices_processed = globe_vertices_.size();
+    }
+    
     void Render() override {
         if (!initialized_) {
             return;
@@ -140,7 +188,7 @@ public:
         EndFrame();
     }
     
-    void Resize(uint32_t width, uint32_t height) override {
+    void Resize(std::uint32_t width, std::uint32_t height) override {
         config_.screen_width = width;
         config_.screen_height = height;
         glViewport(0, 0, width, height);
@@ -169,51 +217,6 @@ public:
     
     GPUResourceManager* GetGPUResourceManager() override {
         return nullptr; // TODO: Implement
-    }
-    
-    void BeginFrame() override {
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
-    }
-    
-    void EndFrame() override {
-        // Update stats (simplified)
-        stats_.draw_calls = 1;
-        stats_.triangles_rendered = globe_indices_.size() / 3;
-        stats_.vertices_processed = globe_vertices_.size();
-    }
-    
-    void RenderScene(const glm::mat4& view_matrix,
-                    const glm::mat4& projection_matrix,
-                    const Frustum& frustum) override {
-        if (!initialized_) {
-            return;
-        }
-        
-        // Use basic shader
-        glUseProgram(shader_program_);
-        
-        // Set uniforms
-        glm::mat4 model = glm::rotate(glm::mat4(1.0f), 
-                                     static_cast<float>(glfwGetTime()) * 0.5f, 
-                                     glm::vec3(0.0f, 1.0f, 0.0f));
-        
-        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uModel"), 
-                         1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uView"), 
-                         1, GL_FALSE, glm::value_ptr(view_matrix));
-        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uProjection"), 
-                         1, GL_FALSE, glm::value_ptr(projection_matrix));
-        
-        glUniform3f(glGetUniformLocation(shader_program_, "uLightPos"), 2.0f, 2.0f, 2.0f);
-        glUniform3f(glGetUniformLocation(shader_program_, "uLightColor"), 1.0f, 1.0f, 1.0f);
-        glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"), 0.0f, 0.0f, 3.0f);
-        glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 0.2f, 0.6f, 0.2f);
-        
-        // Render globe
-        glBindVertexArray(vao_);
-        glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
-        glBindVertexArray(0);
     }
 
 private:
@@ -335,9 +338,17 @@ private:
                 int next = current + segments + 1;
                 
                 // First triangle
-                globe_indices_.insert(globe_indices_.end(), {current, next, current + 1});
+                globe_indices_.insert(globe_indices_.end(), {
+                    static_cast<unsigned int>(current), 
+                    static_cast<unsigned int>(next), 
+                    static_cast<unsigned int>(current + 1)
+                });
                 // Second triangle
-                globe_indices_.insert(globe_indices_.end(), {next, next + 1, current + 1});
+                globe_indices_.insert(globe_indices_.end(), {
+                    static_cast<unsigned int>(next), 
+                    static_cast<unsigned int>(next + 1), 
+                    static_cast<unsigned int>(current + 1)
+                });
             }
         }
     }

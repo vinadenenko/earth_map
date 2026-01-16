@@ -1,4 +1,4 @@
-#include "earth_map/core/camera_controller.h"
+#include <earth_map/core/camera_controller.h>
 #include <earth_map/earth_map.h>
 #include <earth_map/math/frustum.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -22,7 +22,7 @@ public:
         spdlog::info("Destroying camera controller");
     }
     
-    bool Initialize() {
+    bool Initialize() override {
         if (initialized_) {
             return true;
         }
@@ -122,6 +122,7 @@ public:
     }
     
     Frustum GetFrustum(float aspect_ratio) const override {
+        (void)aspect_ratio; // Suppress unused parameter warning
         // Create a simple frustum (placeholder implementation)
         Frustum frustum;
         // TODO: Implement actual frustum calculation

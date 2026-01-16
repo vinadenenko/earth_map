@@ -16,6 +16,9 @@
 
 namespace earth_map {
 
+// Forward declarations
+struct Configuration;
+
 /**
  * @brief Camera controller for 3D globe navigation
  * 
@@ -46,6 +49,15 @@ public:
      * @brief Virtual destructor
      */
     virtual ~CameraController() = default;
+    
+    /**
+     * @brief Initialize the camera controller
+     * 
+     * Sets up initial camera state and internal data structures
+     * 
+     * @return true if initialization succeeded, false otherwise
+     */
+    virtual bool Initialize() = 0;
     
     /**
      * @brief Set camera position in geographic coordinates
@@ -201,5 +213,13 @@ protected:
      */
     CameraController() = default;
 };
+
+/**
+ * @brief Factory function to create camera controller instance
+ * 
+ * @param config Configuration parameters
+ * @return CameraController* New camera controller instance (caller owns)
+ */
+CameraController* CreateCameraController(const Configuration& config);
 
 } // namespace earth_map
