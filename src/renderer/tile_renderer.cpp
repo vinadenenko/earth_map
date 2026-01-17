@@ -234,12 +234,20 @@ public:
         spdlog::info("Tile renderer cache cleared");
     }
     
-    TileCoordinates GetTileAtScreenCoords(float screen_x, float screen_y,
-                                         std::uint32_t screen_width, std::uint32_t screen_height,
-                                         const glm::mat4& view_matrix,
-                                         const glm::mat4& projection_matrix) override {
+    TileCoordinates GetTileAtScreenCoords(float screen_x,
+                                          float screen_y,
+                                          std::uint32_t screen_width,
+                                          std::uint32_t screen_height,
+                                          const glm::mat4& view_matrix,
+                                          const glm::mat4& projection_matrix) override {
         // Ray casting implementation would go here
         // For now, return invalid tile coordinates
+        (void)screen_x;
+        (void)screen_y;
+        (void)screen_width;
+        (void)screen_height;
+        (void)view_matrix;
+        (void)projection_matrix;
         return TileCoordinates();
     }
 
@@ -461,8 +469,8 @@ private:
     }
     
     void RenderSingleTile(const TileRenderState& tile, 
-                      const glm::mat4& view_matrix,
-                      const glm::mat4& projection_matrix) {
+                          const glm::mat4& view_matrix,
+                          const glm::mat4& projection_matrix) {
         // Bind tile texture
         if (tile.texture_id > 0) {
             glActiveTexture(GL_TEXTURE0);
@@ -473,6 +481,8 @@ private:
         // Calculate transformation for this tile
         // For now, use globe mesh with texture coordinates
         // In a full implementation, this would handle tile-specific geometry
+        (void)view_matrix;
+        (void)projection_matrix;
         
         // Draw the globe mesh with this tile's texture
         const int index_count = 32 * 16 * 6; // segments * rings * 2 triangles per segment
@@ -511,6 +521,9 @@ private:
                                                const glm::mat4& projection_matrix) const {
         // For now, return full world bounds
         // In a full implementation, this would calculate actual frustum bounds
+        (void)view_matrix;
+        (void)projection_matrix;
+
         return BoundingBox2D(
             glm::dvec2(-180.0, -85.0511),
             glm::dvec2(180.0, 85.0511)
@@ -520,15 +533,20 @@ private:
     bool IsTileInFrustum(const TileCoordinates& tile, const Frustum& frustum) const {
         // For now, return true (all tiles visible)
         // In a full implementation, this would check tile bounds against frustum
+        (void)tile;
+        (void)frustum;
+
         return true;
     }
     
     float CalculateTileLOD(const TileCoordinates& tile, float camera_distance) const {
+        (void)camera_distance;
         // Simple LOD calculation based on zoom level
         return static_cast<float>(tile.zoom);
     }
     
     float CalculateLoadPriority(const TileCoordinates& tile, const glm::vec3& camera_position) const {
+        (void)camera_position;
         // For now, use zoom as priority (higher zoom = higher priority)
         return static_cast<float>(30 - tile.zoom); // Invert so higher zoom = lower number = higher priority
     }

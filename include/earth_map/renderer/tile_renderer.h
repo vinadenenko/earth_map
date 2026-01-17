@@ -166,10 +166,12 @@ public:
      * @param projection_matrix Current camera projection matrix
      * @return TileCoordinates Tile coordinates at screen position (invalid if none)
      */
-    virtual TileCoordinates GetTileAtScreenCoords(float screen_x, float screen_y,
-                                             std::uint32_t screen_width, std::uint32_t screen_height,
-                                             const glm::mat4& view_matrix,
-                                             const glm::mat4& projection_matrix) = 0;
+    virtual TileCoordinates GetTileAtScreenCoords(float screen_x,
+                                                  float screen_y,
+                                                  std::uint32_t screen_width,
+                                                  std::uint32_t screen_height,
+                                                  const glm::mat4& view_matrix,
+                                                  const glm::mat4& projection_matrix) = 0;
 
 protected:
     /**
