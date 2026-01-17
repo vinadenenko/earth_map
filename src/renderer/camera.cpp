@@ -4,8 +4,8 @@
 #include <earth_map/math/geodetic_calculations.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <glm/gtx/euler_angles.hpp>
-#include <glm/gtx/quaternion.hpp>
+// #include <glm/gtx/euler_angles.hpp>
+// #include <glm/gtx/quaternion.hpp>
 #include <spdlog/spdlog.h>
 #include <cmath>
 #include <algorithm>
@@ -96,10 +96,10 @@ public:
         initialized_ = true;
         
         // Initialize coordinate system
-        if (!coordinate_system_->Initialize()) {
-            spdlog::error("Failed to initialize coordinate system");
-            return false;
-        }
+        // if (!coordinate_system_->Initialize()) {
+        //     spdlog::error("Failed to initialize coordinate system");
+        //     return false;
+        // }
         
         spdlog::info("Camera initialized successfully");
         return true;
@@ -112,7 +112,7 @@ public:
     }
     
     void SetGeographicPosition(double longitude, double latitude, double altitude) override {
-        auto coords = coordinate_system_->GeographicToEcef(longitude, latitude, altitude);
+        auto coords = coordinate_system_->GeographicToECEF({latitude, longitude, altitude});
         position_ = coords;
         UpdateViewMatrix();
     }
@@ -127,7 +127,7 @@ public:
     }
     
     void SetGeographicTarget(double longitude, double latitude, double altitude) override {
-        auto coords = coordinate_system_->GeographicToEcef(longitude, latitude, altitude);
+        auto coords = coordinate_system_->GeographicToECEF({latitude, longitude, altitude});
         target_ = coords;
         UpdateViewMatrix();
     }
@@ -171,7 +171,7 @@ public:
     }
     
     glm::mat4 GetProjectionMatrix(float aspect_ratio) const override {
-        if (projection_type_ == ProjectionType::PERSPECTIVE) {
+        if (projection_type_ == CameraProjectionType::PERSPECTIVE) {
             return glm::perspective(glm::radians(fov_y_), aspect_ratio, near_plane_, far_plane_);
         } else {
             float half_height = far_plane_ * glm::tan(glm::radians(fov_y_) * 0.5f);
@@ -189,11 +189,11 @@ public:
         return Frustum(view_projection);
     }
     
-    void SetProjectionType(ProjectionType projection_type) override {
+    void SetProjectionType(CameraProjectionType projection_type) override {
         projection_type_ = projection_type;
     }
     
-    ProjectionType GetProjectionType() const override {
+    CameraProjectionType GetProjectionType() const override {
         return projection_type_;
     }
     
@@ -271,7 +271,7 @@ public:
         near_plane_ = 1000.0f;
         far_plane_ = 10000000.0f;
         
-        projection_type_ = ProjectionType::PERSPECTIVE;
+        projection_type_ = CameraProjectionType::PERSPECTIVE;
         movement_mode_ = MovementMode::FREE;
         
         // Reset movement state
@@ -283,7 +283,7 @@ public:
     }
     
     void AnimateToGeographic(double longitude, double latitude, double altitude, float duration) override {
-        auto coords = coordinate_system_->GeographicToEcef(longitude, latitude, altitude);
+        auto coords = coordinate_system_->GeographicToECEF({latitude, longitude, altitude});
         
         animation_.start_position = position_;
         animation_.target_position = coords;
@@ -369,7 +369,7 @@ protected:
     float far_plane_ = 10000000.0f;
     
     // Camera settings
-    ProjectionType projection_type_ = ProjectionType::PERSPECTIVE;
+    CameraProjectionType projection_type_ = CameraProjectionType::PERSPECTIVE;
     MovementMode movement_mode_ = MovementMode::FREE;
     CameraConstraints constraints_;
     
@@ -484,7 +484,7 @@ protected:
             
             // Rotate around target
             glm::vec3 offset = position_ - target_;
-            float distance = glm::length(offset);
+            // float distance = glm::length(offset);
             
             // Horizontal rotation (around Y axis)
             glm::quat horiz_rot = glm::angleAxis(-delta.x * sensitivity * 0.01f, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -605,6 +605,7 @@ protected:
     }
     
     bool HandleDoubleClick(const InputEvent& event) {
+        (void)event;
         // Animate to clicked position on globe
         // This would require ray casting to intersect with globe
         // For now, just zoom in
@@ -614,7 +615,7 @@ protected:
             offset = glm::normalize(offset) * new_distance;
             
             glm::vec3 new_position = target_ + offset;
-            glm::vec3 start_pos = position_;
+            // glm::vec3 start_pos = position_;
             
             AnimateToPosition(new_position, 0.5f);
         }
@@ -639,7 +640,7 @@ protected:
 class PerspectiveCamera : public CameraImpl {
 public:
     explicit PerspectiveCamera(const Configuration& config) : CameraImpl(config) {
-        SetProjectionType(ProjectionType::PERSPECTIVE);
+        SetProjectionType(CameraProjectionType::PERSPECTIVE);
     }
 };
 
@@ -649,7 +650,7 @@ public:
 class OrthographicCamera : public CameraImpl {
 public:
     explicit OrthographicCamera(const Configuration& config) : CameraImpl(config) {
-        SetProjectionType(ProjectionType::ORTHOGRAPHIC);
+        SetProjectionType(CameraProjectionType::ORTHOGRAPHIC);
     }
 };
 

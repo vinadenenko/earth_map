@@ -114,13 +114,13 @@ public:
         return camera_->GetFrustum(aspect_ratio);
     }
     
-    void SetProjectionType(ProjectionType projection_type) override {
+    void SetProjectionType(CameraProjectionType projection_type) override {
         // Recreate camera with new projection type
         switch (projection_type) {
-            case ProjectionType::PERSPECTIVE:
+            case CameraProjectionType::PERSPECTIVE:
                 camera_ = CreatePerspectiveCamera(config_);
                 break;
-            case ProjectionType::ORTHOGRAPHIC:
+            case CameraProjectionType::ORTHOGRAPHIC:
                 camera_ = CreateOrthographicCamera(config_);
                 break;
         }
@@ -131,8 +131,8 @@ public:
         }
     }
     
-    ProjectionType GetProjectionType() const override {
-        return static_cast<ProjectionType>(camera_->GetProjectionType());
+    CameraProjectionType GetProjectionType() const override {
+        return static_cast<CameraProjectionType>(camera_->GetProjectionType());
     }
     
     void SetMovementMode(MovementMode movement_mode) override {

@@ -24,7 +24,7 @@ struct Configuration;
 /**
  * @brief Camera projection types
  */
-enum class ProjectionType {
+enum class CameraProjectionType {
     PERSPECTIVE,    ///< Perspective projection (3D)
     ORTHOGRAPHIC    ///< Orthographic projection (2D)
 };
@@ -250,14 +250,14 @@ public:
      * 
      * @param projection_type Camera projection type
      */
-    virtual void SetProjectionType(ProjectionType projection_type) = 0;
+    virtual void SetProjectionType(CameraProjectionType projection_type) = 0;
     
     /**
      * @brief Get projection type
      * 
-     * @return ProjectionType Current projection type
+     * @return CameraProjectionType Current projection type
      */
-    virtual ProjectionType GetProjectionType() const = 0;
+    virtual CameraProjectionType GetProjectionType() const = 0;
     
     /**
      * @brief Set movement mode

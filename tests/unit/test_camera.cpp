@@ -29,7 +29,7 @@ protected:
 
 TEST_F(CameraTest, Initialization) {
     EXPECT_TRUE(camera_->Initialize());
-    EXPECT_EQ(camera_->GetProjectionType(), ProjectionType::PERSPECTIVE);
+    EXPECT_EQ(camera_->GetProjectionType(), CameraProjectionType::PERSPECTIVE);
     EXPECT_EQ(camera_->GetMovementMode(), MovementMode::FREE);
 }
 
@@ -258,13 +258,13 @@ TEST_F(CameraTest, InputHandling) {
 
 TEST_F(CameraTest, ProjectionTypeSwitching) {
     // Test projection type switching
-    EXPECT_EQ(camera_->GetProjectionType(), ProjectionType::PERSPECTIVE);
+    EXPECT_EQ(camera_->GetProjectionType(), CameraProjectionType::PERSPECTIVE);
     
-    camera_->SetProjectionType(ProjectionType::ORTHOGRAPHIC);
-    EXPECT_EQ(camera_->GetProjectionType(), ProjectionType::ORTHOGRAPHIC);
+    camera_->SetProjectionType(CameraProjectionType::ORTHOGRAPHIC);
+    EXPECT_EQ(camera_->GetProjectionType(), CameraProjectionType::ORTHOGRAPHIC);
     
-    camera_->SetProjectionType(ProjectionType::PERSPECTIVE);
-    EXPECT_EQ(camera_->GetProjectionType(), ProjectionType::PERSPECTIVE);
+    camera_->SetProjectionType(CameraProjectionType::PERSPECTIVE);
+    EXPECT_EQ(camera_->GetProjectionType(), CameraProjectionType::PERSPECTIVE);
 }
 
 TEST_F(CameraTest, ResetFunctionality) {
@@ -295,7 +295,7 @@ protected:
 };
 
 TEST_F(OrthographicCameraTest, OrthographicInitialization) {
-    EXPECT_EQ(camera_->GetProjectionType(), ProjectionType::ORTHOGRAPHIC);
+    EXPECT_EQ(camera_->GetProjectionType(), CameraProjectionType::ORTHOGRAPHIC);
 }
 
 TEST_F(OrthographicCameraTest, OrthographicMatrixGeneration) {

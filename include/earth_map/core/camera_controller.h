@@ -10,6 +10,7 @@
 
 #include "earth_map/math/frustum.h"
 #include <earth_map/math/bounding_box.h>
+#include "earth_map/renderer/camera.h"
 #include <glm/glm.hpp>
 #include <memory>
 #include <cstdint>
@@ -27,15 +28,7 @@ struct Configuration;
  * coordinates and Cartesian coordinates.
  */
 class CameraController {
-public:
-    /**
-     * @brief Camera projection types
-     */
-    enum class ProjectionType {
-        PERSPECTIVE,    ///< Perspective projection (3D)
-        ORTHOGRAPHIC    ///< Orthographic projection (2D)
-    };
-    
+public:   
     /**
      * @brief Camera movement modes
      */
@@ -170,14 +163,14 @@ public:
      * 
      * @param projection_type Camera projection type
      */
-    virtual void SetProjectionType(ProjectionType projection_type) = 0;
+    virtual void SetProjectionType(CameraProjectionType projection_type) = 0;
     
     /**
      * @brief Get projection type
      * 
-     * @return ProjectionType Current projection type
+     * @return CameraProjectionType Current projection type
      */
-    virtual ProjectionType GetProjectionType() const = 0;
+    virtual CameraProjectionType GetProjectionType() const = 0;
     
     /**
      * @brief Set movement mode
