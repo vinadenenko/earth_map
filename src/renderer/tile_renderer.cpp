@@ -7,6 +7,7 @@
 #include <earth_map/renderer/globe_mesh.h>
 #include <earth_map/math/coordinate_system.h>
 #include <earth_map/math/projection.h>
+#include <earth_map/math/tile_mathematics.h>
 #include <spdlog/spdlog.h>
 #include <GL/glew.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -264,7 +265,7 @@ private:
     std::uint32_t globe_vao_ = 0;
     std::uint32_t globe_vbo_ = 0;
     std::uint32_t globe_ebo_ = 0;
-    std::unordered_map<TileCoordinates, std::uint32_t> texture_cache_;
+    std::unordered_map<TileCoordinates, std::uint32_t, TileCoordinatesHash> texture_cache_;
     
     bool InitializeOpenGLState() {
         // Create simple textured shader

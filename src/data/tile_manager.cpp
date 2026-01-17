@@ -3,9 +3,12 @@
  * @brief Tile management system implementation
  */
 
+#include "earth_map/renderer/tile_texture_manager.h"
 #include <earth_map/data/tile_manager.h>
+#include <earth_map/math/tile_mathematics.h>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <spdlog/spdlog.h>
 
 namespace earth_map {
@@ -147,10 +150,14 @@ const Tile* BasicTileManager::GetTile(const TileCoordinates& coordinates) const 
 
 uint32_t BasicTileManager::GetTileTexture(const TileCoordinates &coordinates) const
 {
-    // TODO: return actual texture
-    // TODO: Implement texture management
-    // For now, return 0 (no texture)
-    spdlog::debug("GetTileTexture called for ({}, {}, {}), returning 0",
+    // Delegate to tile texture manager if available
+    // This assumes texture_manager_ is added as a member variable
+    if (texture_manager_) {
+        return texture_manager_->GetTexture(coordinates);
+    }
+    
+    // Fallback: return 0 (no texture) if no texture manager
+    spdlog::debug("GetTileTexture called for ({}, {}, {}), no texture manager available",
                   coordinates.x, coordinates.y, coordinates.zoom);
     return 0;
 }
@@ -207,6 +214,12 @@ std::vector<const Tile*> BasicTileManager::GetTilesInBounds(
     }
     
     return tiles_in_bounds;
+}
+
+std::vector<TileCoordinates> BasicTileManager::GetTilesInBounds(
+    const BoundingBox2D& bounds, int32_t zoom_level) const {
+    // Delegate to TileMathematics for coordinate calculation
+    return TileMathematics::GetTilesInBounds(bounds, zoom_level);
 }
 
 std::vector<const Tile*> BasicTileManager::GetTilesAtLOD(std::uint8_t lod_level) const {
@@ -281,6 +294,10 @@ bool BasicTileManager::SetConfiguration(const TileManagerConfig& config) {
     config_ = config;
     needs_update_ = true;
     return true;
+}
+
+void BasicTileManager::SetTextureManager(std::shared_ptr<TileTextureManager> texture_manager) {
+    texture_manager_ = texture_manager;
 }
 
 void BasicTileManager::EvictTiles() {
