@@ -343,24 +343,58 @@ TEST_F(TileManagementTest, TileIndexStatistics) {
     auto index = CreateTileIndex(config);
     ASSERT_TRUE(index->Initialize(config));
     
-    // Insert tiles at different zoom levels
-    for (int z = 0; z < 3; ++z) {
-        for (int x = 0; x < 4; ++x) {
-            for (int y = 0; y < 4; ++y) {
-                index->Insert(CreateTestTile(x, y, z));
+    // Debug: Count how many tiles we actually insert
+    int inserted_count = 0;
+    
+    // Insert tiles at different zoom levels with valid tile coordinates
+    // Zoom 0: 1 tile (0,0,0)
+    // Zoom 1: 4 tiles (0,0,1) to (1,1,1)  
+    // Zoom 2: 16 tiles (0,0,2) to (3,3,2)
+    
+    // Zoom level 0 - 1 tile
+    for (int x = 0; x < 1; ++x) {
+        for (int y = 0; y < 1; ++y) {
+            TileCoordinates tile = CreateTestTile(x, y, 0);
+            bool inserted = index->Insert(tile);
+            if (inserted) {
+                inserted_count++;
+            }
+        }
+    }
+    
+    // Zoom level 1 - 4 tiles  
+    for (int x = 0; x < 2; ++x) {
+        for (int y = 0; y < 2; ++y) {
+            TileCoordinates tile = CreateTestTile(x, y, 1);
+            bool inserted = index->Insert(tile);
+            if (inserted) {
+                inserted_count++;
+            }
+        }
+    }
+    
+    // Zoom level 2 - 16 tiles
+    for (int x = 0; x < 4; ++x) {
+        for (int y = 0; y < 4; ++y) {
+            TileCoordinates tile = CreateTestTile(x, y, 2);
+            bool inserted = index->Insert(tile);
+            if (inserted) {
+                inserted_count++;
             }
         }
     }
     
     auto stats = index->GetStatistics();
-    EXPECT_EQ(stats.total_tiles, 48);  // 3 levels * 4x4 tiles
+    
+    EXPECT_EQ(stats.total_tiles, inserted_count);
+    EXPECT_EQ(stats.total_tiles, 21);  // 1 + 4 + 16 = 21 tiles
     EXPECT_GT(stats.total_nodes, 0);
     EXPECT_GT(stats.max_depth, 0);
     
     // Check tiles per zoom level
-    EXPECT_EQ(stats.tiles_per_zoom[0], 16);
-    EXPECT_EQ(stats.tiles_per_zoom[1], 16);
-    EXPECT_EQ(stats.tiles_per_zoom[2], 16);
+    EXPECT_EQ(stats.tiles_per_zoom[0], 1);   // 1 tile at zoom 0
+    EXPECT_EQ(stats.tiles_per_zoom[1], 4);   // 4 tiles at zoom 1
+    EXPECT_EQ(stats.tiles_per_zoom[2], 16);  // 16 tiles at zoom 2
 }
 
 // Integration Tests
@@ -374,7 +408,11 @@ TEST_F(TileManagementTest, TileManagerIntegration) {
     TileLoaderConfig loader_config;
     auto loader = CreateTileLoader(loader_config);
     ASSERT_TRUE(loader->Initialize(loader_config));
-    loader->SetTileCache(std::move(cache));
+    auto cache_shared = std::shared_ptr<earth_map::TileCache>(cache.release());
+    loader->SetTileCache(cache_shared);
+    
+    // Test that cache is still valid
+    ASSERT_TRUE(cache_shared != nullptr);
     
     TileIndexConfig index_config;
     auto index = CreateTileIndex(index_config);
@@ -392,7 +430,7 @@ TEST_F(TileManagementTest, TileManagerIntegration) {
     ASSERT_TRUE(load_result.success);
     
     // Check it's in cache
-    EXPECT_TRUE(cache->Contains(coords));
+    EXPECT_TRUE(cache_shared->Contains(coords));
     
     // Add to index
     EXPECT_TRUE(index->Insert(coords));
