@@ -18,4 +18,7 @@ Like in real project management (development process - Any system should be desc
 The system should never fail, so make no mistakes. Think.
 ```
 
-You can do build and run ONLY in the 'build/llm-build' directory
+All you need to do for a build:
+1. conan install . --build=missing
+2. cmake --preset conan-debug
+3. cmake --build --preset conan-debug
