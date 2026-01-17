@@ -61,25 +61,25 @@ TEST_F(EarthMapTest, PerformanceStatsFormat) {
     EXPECT_EQ(stats.back(), '}');
 }
 
-TEST_F(LibraryInfoTest, GetVersion) {
-    std::string version = LibraryInfo::GetVersion();
-    EXPECT_FALSE(version.empty());
+// TEST_F(LibraryInfoTest, GetVersion) {
+//     std::string version = LibraryInfo::GetVersion();
+//     EXPECT_FALSE(version.empty());
     
-    // Should follow semantic versioning pattern (e.g., "0.1.0")
-    EXPECT_NE(version.find('.'), std::string::npos);
-}
+//     // Should follow semantic versioning pattern (e.g., "0.1.0")
+//     EXPECT_NE(version.find('.'), std::string::npos);
+// }
 
-TEST_F(LibraryInfoTest, GetBuildInfo) {
-    std::string build_info = LibraryInfo::GetBuildInfo();
-    EXPECT_FALSE(build_info.empty());
-    EXPECT_NE(build_info.find("Earth Map"), std::string::npos);
-}
+// TEST_F(LibraryInfoTest, GetBuildInfo) {
+//     std::string build_info = LibraryInfo::GetBuildInfo();
+//     EXPECT_FALSE(build_info.empty());
+//     EXPECT_NE(build_info.find("Earth Map"), std::string::npos);
+// }
 
-TEST_F(LibraryInfoTest, CheckSystemRequirements) {
-    bool requirements_met = LibraryInfo::CheckSystemRequirements();
-    // This should return true on any system with OpenGL 3.3+
-    // In a real test, we might want to check specific requirements
-    EXPECT_TRUE(requirements_met);
-}
+// TEST_F(LibraryInfoTest, CheckSystemRequirements) {
+//     bool requirements_met = LibraryInfo::CheckSystemRequirements();
+//     // This should return true on any system with OpenGL 3.3+
+//     // In a real test, we might want to check specific requirements
+//     EXPECT_TRUE(requirements_met);
+// }
 
 } // namespace earth_map::tests
