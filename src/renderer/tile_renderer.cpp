@@ -134,12 +134,18 @@ public:
         const std::vector<TileCoordinates> candidate_tiles =
             tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
         
-        // Filter tiles by frustum culling and limit
+        // Log tile count for debugging
+        spdlog::info("Candidate tiles for zoom {}: {}", zoom_level, candidate_tiles.size());
+        
+        // Filter tiles by frustum culling and limit with performance considerations
         std::size_t tiles_added = 0;
+        // std::size_t max_tiles_for_frame = std::min(config_.max_visible_tiles, static_cast<std::size_t>(100));
+        
         for (const TileCoordinates& tile_coords : candidate_tiles) {
-            if (tiles_added >= config_.max_visible_tiles) {
-                break;
-            }
+            // if (tiles_added >= max_tiles_for_frame) {
+                // spdlog::debug("Reached tile limit for frame: {}/{}", tiles_added, max_tiles_for_frame);
+                // break;
+            // }
             
             // Check if tile is in frustum
             if (IsTileInFrustum(tile_coords, frustum)) {
@@ -151,18 +157,20 @@ public:
                 tile_state.load_priority = CalculateLoadPriority(tile_coords, camera_position);
                 tile_state.is_visible = true;
                 
-                // Get texture from tile manager
+                // Get texture from tile manager (this will trigger async loading)
                 tile_state.texture_id = tile_manager_->GetTileTexture(tile_coords);
-                
-                // DEBUG: Force texture creation for testing
-                if (tile_state.texture_id == 0) {
-                    tile_state.texture_id = CreateTestTexture();
-                }
+
+                // // DEBUG: Force texture creation for testing. Do not remove this commented code
+                // if (tile_state.texture_id == 0) {
+                //     tile_state.texture_id = CreateTestTexture();
+                // }
                 
                 visible_tiles_.push_back(tile_state);
                 tiles_added++;
             }
         }
+        
+        spdlog::info("Selected {} tiles for rendering (zoom {})", tiles_added, zoom_level);
         
         // Sort tiles by priority (highest first)
         std::sort(visible_tiles_.begin(), visible_tiles_.end(),
@@ -563,25 +571,73 @@ private:
     }
     
     int CalculateOptimalZoom(float camera_distance) const {
-        // Simple distance-based zoom selection
-        if (camera_distance < 1000.0f) return 15;
-        if (camera_distance < 5000.0f) return 12;
-        if (camera_distance < 10000.0f) return 10;
-        if (camera_distance < 50000.0f) return 8;
-        return 6;
+        // Realistic zoom calculation based on camera distance from globe surface
+        // Distance from camera to sphere center minus earth radius
+        const float altitude = camera_distance - 1.0f; // Subtract globe radius (1.0f)
+        
+        // Map altitude to zoom levels (0-18 max for OSM)
+        // Very close (altitude < 2): zoom 15-18
+        // Close (2-10): zoom 10-15  
+        // Medium (10-50): zoom 5-10
+        // Far (50-500): zoom 2-5
+        // Very far (>500): zoom 0-2
+        return 1;
+        
+        if (altitude < 2.0f) return std::min(18, 15);
+        if (altitude < 5.0f) return 12;
+        if (altitude < 10.0f) return 10;
+        if (altitude < 50.0f) return 8;
+        if (altitude < 100.0f) return 6;
+        if (altitude < 500.0f) return 4;
+        if (altitude < 1000.0f) return 2;
+        return 0;
     }
     
     BoundingBox2D CalculateVisibleGeographicBounds(const glm::mat4& view_matrix,
                                                const glm::mat4& projection_matrix) const {
-        // For now, return full world bounds
-        // In a full implementation, this would calculate actual frustum bounds
-        (void)view_matrix;
         (void)projection_matrix;
-
+        // Calculate realistic visible bounds based on camera position
+        // Extract camera position from view matrix
+        glm::vec3 camera_pos = glm::vec3(view_matrix[3]);
+        float distance = glm::length(camera_pos);
+        
+        // Calculate visible angle based on field of view
+        const float fov_rad = glm::radians(45.0f); // From renderer projection
+        const float visible_radius = distance * std::tan(fov_rad / 2.0f);
+        
+        // Convert visible radius to angular degrees (approximate)
+        const float visible_angle_deg = glm::degrees(visible_radius / distance) * 2.0f;
+        // const float half_angle = visible_angle_deg / 2.0f;
+        
+        // Get camera forward direction
+        glm::vec3 camera_forward = -glm::normalize(glm::vec3(view_matrix[2]));
+        
+        // Convert camera position to geographic coordinates (simplified)
+        const float lat = glm::degrees(std::asin(-camera_pos.y / distance));
+        const float lon = glm::degrees(std::atan2(camera_forward.x, -camera_forward.z));
+        
+        // Calculate bounds based on visible area around camera
+        const float lat_range = std::min(180.0f, visible_angle_deg * 1.5f);
+        const float lon_range = std::min(360.0f, visible_angle_deg * 1.5f);
+        
+        const double min_lat = std::max(-90.0, static_cast<double>(lat - lat_range / 2.0f));
+        const double max_lat = std::min(90.0, static_cast<double>(lat + lat_range / 2.0f));
+        const double min_lon = static_cast<double>(lon - lon_range / 2.0f);
+        const double max_lon = static_cast<double>(lon + lon_range / 2.0f);
+        
+        spdlog::debug("Camera distance: {:.1f}, visible bounds: lat[ {:.2f}, {:.2f} ] lon[ {:.2f}, {:.2f} ]", 
+                    distance, min_lat, max_lat, min_lon, max_lon);
+        
         return BoundingBox2D(
-            glm::dvec2(-180.0, -85.0511),
-            glm::dvec2(180.0, 85.0511)
+            glm::dvec2(min_lon, min_lat),
+            glm::dvec2(max_lon, max_lat)
         );
+
+        // Hardcoded full world bounds [ do not remove this ]
+        // return BoundingBox2D(
+        //     glm::dvec2(-180.0, -85.0511),
+        //     glm::dvec2(180.0, 85.0511)
+        //     );
     }
     
     bool IsTileInFrustum(const TileCoordinates& tile, const Frustum& frustum) const {
