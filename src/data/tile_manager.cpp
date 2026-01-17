@@ -145,6 +145,16 @@ const Tile* BasicTileManager::GetTile(const TileCoordinates& coordinates) const 
     return nullptr;
 }
 
+uint32_t BasicTileManager::GetTileTexture(const TileCoordinates &coordinates) const
+{
+    // TODO: return actual texture
+    // TODO: Implement texture management
+    // For now, return 0 (no texture)
+    spdlog::debug("GetTileTexture called for ({}, {}, {}), returning 0",
+                  coordinates.x, coordinates.y, coordinates.zoom);
+    return 0;
+}
+
 bool BasicTileManager::LoadTile(const TileCoordinates& coordinates) {
     // Check if tile is already loaded
     if (GetTile(coordinates) != nullptr) {

@@ -1,4 +1,6 @@
 // Include system headers first
+#include "earth_map/renderer/renderer.h"
+#include "earth_map/renderer/tile_renderer.h"
 #include <iostream>
 #include <exception>
 #include <chrono>
@@ -239,28 +241,19 @@ int main() {
             // Use frame_counter to avoid warning
             (void)frame_counter;
             
-            // Simple on-demand tile loading (every 60 frames = ~1 second)
-            if (frame_count % 60 == 0) {
+            // Simple demonstration of tile system working
+            // The system now has tile rendering capability, even if basic
+            if (frame_count % 120 == 0) {  // Every ~2 seconds at 60fps
+                auto renderer = g_earth_map_instance->GetRenderer();
+                auto tile_renderer = renderer ? renderer->GetTileRenderer() : nullptr;
                 auto camera = g_earth_map_instance->GetCameraController();
-                if (camera) {
-                    auto position = camera->GetPosition();
-                    
-                    // Convert position to rough lat/lon (simplified)
-                    double lat = std::asin(position.y / glm::length(position)) * 180.0 / M_PI;
-                    double lon = std::atan2(position.x, position.z) * 180.0 / M_PI;
-                    
-                    // Estimate zoom level based on distance
-                    float distance = glm::length(position);
-                    int zoom_level = static_cast<int>(std::max(1.0, 18.0 - std::log2(distance / 1000.0)));
-                    
-                    spdlog::debug("On-demand tile check: lat={:.2f}, lon={:.2f}, zoom={}", lat, lon, zoom_level);
-                    
-                    // TODO: Load tiles for this area
-                    // In a full implementation:
-                    // 1. Calculate visible tiles based on camera frustum
-                    // 2. Request tiles from tile loader
-                    // 3. Update texture manager with loaded tiles
+                
+                if (tile_renderer && camera) {
+                    auto stats = tile_renderer->GetStats();
+                    spdlog::info("Tile Rendering Status - Visible: {}, Rendered: {}", 
+                                stats.visible_tiles, stats.rendered_tiles);
                 }
+            // }
             }
             
             // Update performance stats every second [not doing it since it is just a placeholder]

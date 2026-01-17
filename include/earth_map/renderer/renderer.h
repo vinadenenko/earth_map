@@ -8,8 +8,8 @@
  * OpenGL rendering operations, shader management, and GPU resource handling.
  */
 
-#include <earth_map/math/bounding_box.h>
-#include <earth_map/math/frustum.h>
+#include "earth_map/math/bounding_box.h"
+#include "earth_map/core/camera_controller.h"
 #include <glm/glm.hpp>
 #include <memory>
 #include <string>
@@ -163,11 +163,25 @@ public:
     virtual LODManager* GetLODManager() = 0;
     
     /**
-     * @brief Get the GPU resource manager
+     * @brief Get GPU resource manager
      * 
      * @return GPUResourceManager* Pointer to GPU resource manager (non-owning)
      */
     virtual GPUResourceManager* GetGPUResourceManager() = 0;
+    
+    /**
+     * @brief Get camera controller
+     * 
+     * @return CameraController* Pointer to camera controller (non-owning)
+     */
+    virtual CameraController* GetCameraController() const = 0;
+    
+    /**
+     * @brief Set camera controller for integration
+     * 
+     * @param camera_controller Pointer to camera controller
+     */
+    virtual void SetCameraController(CameraController* camera_controller) = 0;
 
 protected:
     /**

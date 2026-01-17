@@ -152,6 +152,14 @@ public:
     virtual const Tile* GetTile(const TileCoordinates& coordinates) const = 0;
     
     /**
+     * @brief Get OpenGL texture ID for tile
+     * 
+     * @param coordinates Tile coordinates
+     * @return std::uint32_t OpenGL texture ID or 0 if not found
+     */
+    virtual std::uint32_t GetTileTexture(const TileCoordinates& coordinates) const = 0;
+    
+    /**
      * @brief Load tile by coordinates
      * 
      * @param coordinates Tile coordinates to load
@@ -258,11 +266,11 @@ public:
     
     std::vector<const Tile*> GetVisibleTiles() const override;
     const Tile* GetTile(const TileCoordinates& coordinates) const override;
+    std::uint32_t GetTileTexture(const TileCoordinates& coordinates) const override;
     bool LoadTile(const TileCoordinates& coordinates) override;
     bool UnloadTile(const TileCoordinates& coordinates) override;
     
-    std::vector<const Tile*> GetTilesInBounds(
-        const BoundingBox2D& bounds) const override;
+    std::vector<const Tile*> GetTilesInBounds(const BoundingBox2D& bounds) const override;
     std::vector<const Tile*> GetTilesAtLOD(std::uint8_t lod_level) const override;
     
     std::uint8_t CalculateOptimalLOD(
