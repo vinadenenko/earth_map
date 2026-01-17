@@ -250,6 +250,14 @@ public:
      * @param texture_manager Texture manager instance
      */
     virtual void SetTextureManager(std::shared_ptr<TileTextureManager> texture_manager) = 0;
+    
+    /**
+     * @brief Initialize tile manager with texture manager
+     * 
+     * @param texture_manager Texture manager instance
+     * @return true if initialization succeeded, false otherwise
+     */
+    virtual bool InitializeWithTextureManager(std::shared_ptr<TileTextureManager> texture_manager) = 0;
 
 protected:
     /**
@@ -304,6 +312,7 @@ public:
     TileManagerConfig GetConfiguration() const override;
     bool SetConfiguration(const TileManagerConfig& config) override;
     void SetTextureManager(std::shared_ptr<TileTextureManager> texture_manager) override;
+    bool InitializeWithTextureManager(std::shared_ptr<TileTextureManager> texture_manager) override;
 
 private:
     TileManagerConfig config_;

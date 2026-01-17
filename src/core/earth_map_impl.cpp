@@ -149,12 +149,19 @@ bool EarthMapImpl::InitializeSubsystems() {
             return false;
         }
         
-        // Connect tile system components
+        // Connect tile system components with proper ownership
         auto tile_renderer = renderer_->GetTileRenderer();
         if (tile_renderer) {
-            tile_renderer->SetTileManager(tile_manager_.get());
-            if (auto* basic_tile_manager = dynamic_cast<BasicTileManager*>(tile_manager_.get())) {
-                basic_tile_manager->SetTextureManager(texture_manager_);
+            // Convert unique_ptr to shared_ptr for proper ownership sharing
+            // EarthMapImpl retains ownership, but shares with tile manager
+            auto texture_manager_shared = std::shared_ptr<TileTextureManager>(texture_manager_.get());
+            
+            // Initialize tile manager with shared texture manager
+            if (tile_manager_->InitializeWithTextureManager(texture_manager_shared)) {
+                tile_renderer->SetTileManager(tile_manager_.get());
+                spdlog::info("Tile system initialized and connected successfully");
+            } else {
+                spdlog::error("Failed to initialize tile manager with texture manager");
             }
         }
         

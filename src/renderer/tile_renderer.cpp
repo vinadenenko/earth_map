@@ -131,7 +131,7 @@ public:
             view_matrix, projection_matrix);
         
         // Get tiles in visible bounds at appropriate zoom
-        const std::vector<TileCoordinates> candidate_tiles = 
+        const std::vector<TileCoordinates> candidate_tiles =
             tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
         
         // Filter tiles by frustum culling and limit
