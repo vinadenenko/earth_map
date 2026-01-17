@@ -12,10 +12,112 @@
 #include <earth_map/earth_map.h>
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/platform/library_info.h>
+#include <spdlog/spdlog.h>
+#include <glm/glm.hpp>
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
+// Global variables for mouse interaction
+static double last_mouse_x = 0.0;
+static double last_mouse_y = 0.0;
+static bool mouse_dragging = false;
+static earth_map::EarthMap* g_earth_map_instance = nullptr;
+static int frame_counter = 0;
 
 // Callback function for window resize
 void framebuffer_size_callback(GLFWwindow* /*window*/, int width, int height) {
     glViewport(0, 0, width, height);
+}
+
+// Mouse button callback
+void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mods*/) {
+    if (g_earth_map_instance) {
+        auto camera = g_earth_map_instance->GetCameraController();
+        if (camera) {
+            // Update dragging state for our own tracking
+            if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                if (action == GLFW_PRESS) {
+                    glfwGetCursorPos(window, &last_mouse_x, &last_mouse_y);
+                    mouse_dragging = true;
+                    spdlog::debug("Mouse button pressed at ({:.1f}, {:.1f})", last_mouse_x, last_mouse_y);
+                } else if (action == GLFW_RELEASE) {
+                    mouse_dragging = false;
+                    spdlog::debug("Mouse button released");
+                }
+            }
+        }
+    }
+    
+    // Suppress unused parameter warning for window
+    (void)window;
+}
+
+// Mouse motion callback
+void cursor_position_callback(GLFWwindow* /*window*/, double xpos, double ypos) {
+    if (mouse_dragging && g_earth_map_instance) {
+        double dx = xpos - last_mouse_x;
+        double dy = ypos - last_mouse_y;
+        
+        auto camera = g_earth_map_instance->GetCameraController();
+        if (camera) {
+            // Calculate rotation based on mouse movement
+            float rotation_speed = 0.5f; // degrees per pixel
+            float heading_delta = static_cast<float>(dx) * rotation_speed;
+            float pitch_delta = static_cast<float>(-dy) * rotation_speed; // Invert Y for natural feeling
+            
+            // Get current orientation
+            auto current_orientation = camera->GetOrientation();
+            
+            // Update orientation
+            float new_heading = current_orientation.x + heading_delta;
+            float new_pitch = std::clamp(current_orientation.y + pitch_delta, -89.0f, 89.0f);
+            
+            camera->SetOrientation(new_heading, new_pitch, current_orientation.z);
+            
+            if (std::abs(dx) > 0.1 || std::abs(dy) > 0.1) {
+                spdlog::debug("Mouse drag: dx={:.2f}, dy={:.2f}, heading_delta={:.2f}, pitch_delta={:.2f}", 
+                            dx, dy, heading_delta, pitch_delta);
+            }
+            
+            last_mouse_x = xpos;
+            last_mouse_y = ypos;
+        }
+    }
+}
+
+// Scroll callback for zoom
+void scroll_callback(GLFWwindow* /*window*/, double xoffset, double yoffset) {
+    if (g_earth_map_instance) {
+        auto camera = g_earth_map_instance->GetCameraController();
+        if (camera) {
+            // Simple zoom by adjusting altitude
+            auto current_pos = camera->GetPosition();
+            float distance = glm::length(current_pos);
+            float zoom_factor = 1.0f + static_cast<float>(yoffset) * 0.1f;
+            float new_distance = distance * zoom_factor;
+            
+            // Clamp to reasonable range
+            new_distance = std::clamp(new_distance, 1000.0f, 10000000.0f);
+            
+            // Move camera along its forward vector
+            glm::vec3 forward = glm::normalize(-current_pos);
+            glm::vec3 new_pos = forward * new_distance;
+            
+            camera->SetPosition(new_pos);
+            
+            spdlog::debug("Scroll: zoom_factor={:.3f}, new_distance={:.1f}", zoom_factor, new_distance);
+            
+            // TODO: Trigger tile loading at new zoom level
+            // This would involve:
+            // 1. Calculating new tile coordinates based on zoom level
+            // 2. Requesting tiles from the tile loader  
+            // 3. Updating texture manager with new tiles
+            
+            // Suppress unused parameter warning
+            (void)xoffset;
+        }
+    }
 }
 
 int main() {
@@ -51,8 +153,11 @@ int main() {
         // Make the window's context current
         glfwMakeContextCurrent(window);
         
-        // Set resize callback
+        // Set input callbacks
         glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+        glfwSetMouseButtonCallback(window, mouse_button_callback);
+        glfwSetCursorPosCallback(window, cursor_position_callback);
+        glfwSetScrollCallback(window, scroll_callback);
         
         // Initialize GLEW
         if (glewInit() != GLEW_OK) {
@@ -78,6 +183,9 @@ int main() {
         }
         
         std::cout << "Earth Map instance created successfully\n";
+        
+        // Set global instance for callbacks
+        g_earth_map_instance = earth_map_instance.get();
         
         // Initialize Earth Map with OpenGL context
         if (!earth_map_instance->Initialize()) {
@@ -127,6 +235,33 @@ int main() {
             
             // Update frame counter
             frame_count++;
+            
+            // Use frame_counter to avoid warning
+            (void)frame_counter;
+            
+            // Simple on-demand tile loading (every 60 frames = ~1 second)
+            if (frame_count % 60 == 0) {
+                auto camera = g_earth_map_instance->GetCameraController();
+                if (camera) {
+                    auto position = camera->GetPosition();
+                    
+                    // Convert position to rough lat/lon (simplified)
+                    double lat = std::asin(position.y / glm::length(position)) * 180.0 / M_PI;
+                    double lon = std::atan2(position.x, position.z) * 180.0 / M_PI;
+                    
+                    // Estimate zoom level based on distance
+                    float distance = glm::length(position);
+                    int zoom_level = static_cast<int>(std::max(1.0, 18.0 - std::log2(distance / 1000.0)));
+                    
+                    spdlog::debug("On-demand tile check: lat={:.2f}, lon={:.2f}, zoom={}", lat, lon, zoom_level);
+                    
+                    // TODO: Load tiles for this area
+                    // In a full implementation:
+                    // 1. Calculate visible tiles based on camera frustum
+                    // 2. Request tiles from tile loader
+                    // 3. Update texture manager with loaded tiles
+                }
+            }
             
             // Update performance stats every second [not doing it since it is just a placeholder]
             // if (frame_count % 60 == 0) {
