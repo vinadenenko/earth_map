@@ -290,6 +290,7 @@ public:
     bool UnloadTile(const TileCoordinates& coordinates) override;
     
     std::vector<const Tile*> GetTilesInBounds(const BoundingBox2D& bounds) const override;
+    std::vector<TileCoordinates> GetTilesInBounds(const BoundingBox2D& bounds, int32_t zoom_level) const override;
     std::vector<const Tile*> GetTilesAtLOD(std::uint8_t lod_level) const override;
     
     std::uint8_t CalculateOptimalLOD(
