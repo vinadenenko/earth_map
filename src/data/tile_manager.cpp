@@ -300,6 +300,14 @@ void BasicTileManager::SetTextureManager(std::shared_ptr<TileTextureManager> tex
     texture_manager_ = texture_manager;
 }
 
+bool BasicTileManager::InitializeWithTextureManager(std::shared_ptr<TileTextureManager> texture_manager) {
+    texture_manager_ = texture_manager;
+    
+    // Initialize tile manager with default config
+    TileManagerConfig config;
+    return Initialize(config);
+}
+
 void BasicTileManager::EvictTiles() {
     if (tiles_.size() <= config_.max_tiles_in_memory) {
         return;
