@@ -110,7 +110,51 @@ struct Frustum {
      * 
      * @param view_projection Combined view and projection matrix
      */
-    explicit Frustum(const glm::mat4& view_projection);
+    explicit Frustum(const glm::mat4& view_projection) {
+        // Extract frustum planes from view-projection matrix
+        // Each plane equation: normal · x + distance = 0
+        
+        // Left plane: column 4 + column 1
+        planes[LEFT].normal = glm::vec3(view_projection[0][3] + view_projection[0][0],
+                                           view_projection[1][3] + view_projection[1][0], 
+                                           view_projection[2][3] + view_projection[2][0]);
+        planes[LEFT].distance = view_projection[3][3] + view_projection[3][0];
+        
+        // Right plane: column 4 - column 1  
+        planes[RIGHT].normal = glm::vec3(view_projection[0][3] - view_projection[0][0],
+                                            view_projection[1][3] - view_projection[1][0],
+                                            view_projection[2][3] - view_projection[2][0]);
+        planes[RIGHT].distance = view_projection[3][3] - view_projection[3][0];
+        
+        // Bottom plane: column 4 + column 2
+        planes[BOTTOM].normal = glm::vec3(view_projection[0][3] + view_projection[0][1],
+                                              view_projection[1][3] + view_projection[1][1],
+                                              view_projection[2][3] + view_projection[2][1]);
+        planes[BOTTOM].distance = view_projection[3][3] + view_projection[3][1];
+        
+        // Top plane: column 4 - column 2
+        planes[TOP].normal = glm::vec3(view_projection[0][3] - view_projection[0][1],
+                                           view_projection[1][3] - view_projection[1][1],
+                                           view_projection[2][3] - view_projection[2][1]);
+        planes[TOP].distance = view_projection[3][3] - view_projection[3][1];
+        
+        // Near plane: column 4 + column 3
+        planes[NEAR].normal = glm::vec3(view_projection[0][3] + view_projection[0][2],
+                                             view_projection[1][3] + view_projection[1][2],
+                                             view_projection[2][3] + view_projection[2][2]);
+        planes[NEAR].distance = view_projection[3][3] + view_projection[3][2];
+        
+        // Far plane: column 4 - column 3
+        planes[FAR].normal = glm::vec3(view_projection[0][3] - view_projection[0][2],
+                                           view_projection[1][3] - view_projection[1][2],
+                                           view_projection[2][3] - view_projection[2][2]);
+        planes[FAR].distance = view_projection[3][3] - view_projection[3][2];
+        
+        // Normalize all plane normals
+        for (auto& plane : planes) {
+            plane.normal = glm::normalize(plane.normal);
+        }
+    }
     
     /**
      * @brief Update frustum from view-projection matrix
