@@ -18,4 +18,4 @@ Like in real project management (development process - Any system should be desc
 The system should never fail, so make no mistakes. Think.
 ```
 
-You can do build and run in the 'build/llm-build' directory
+You can do build and run ONLY in the 'build/llm-build' directory
