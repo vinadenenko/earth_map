@@ -77,6 +77,12 @@ public:
         stats_.render_time_ms = 0.0f;
         stats_.rendered_tiles = 0;
         stats_.texture_binds = 0;
+        
+        // Debug: Check if we have tiles loaded
+        if (frame_counter_ % 60 == 0) {
+            spdlog::info("Tile renderer debug - visible_tiles: {}, texture_cache_size: {}", 
+                        visible_tiles_.size(), texture_cache_.size());
+        }
     }
     
     void EndFrame() override {
@@ -147,6 +153,11 @@ public:
                 
                 // Get texture from tile manager
                 tile_state.texture_id = tile_manager_->GetTileTexture(tile_coords);
+                
+                // DEBUG: Force texture creation for testing
+                if (tile_state.texture_id == 0) {
+                    tile_state.texture_id = CreateTestTexture();
+                }
                 
                 visible_tiles_.push_back(tile_state);
                 tiles_added++;
@@ -472,22 +483,64 @@ private:
     void RenderSingleTile(const TileRenderState& tile, 
                           const glm::mat4& view_matrix,
                           const glm::mat4& projection_matrix) {
-        // Bind tile texture
-        if (tile.texture_id > 0) {
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, tile.texture_id);
-            stats_.texture_binds++;
+        // For now, skip tiles with no texture
+        if (tile.texture_id == 0) {
+            return;
         }
         
-        // Calculate transformation for this tile
-        // For now, use globe mesh with texture coordinates
-        // In a full implementation, this would handle tile-specific geometry
-        (void)view_matrix;
-        (void)projection_matrix;
+        // Calculate tile's geographic bounds
+        auto bounds = tile.geographic_bounds;
+        auto center = bounds.GetCenter();
         
-        // Draw the globe mesh with this tile's texture
-        const int index_count = 32 * 16 * 6; // segments * rings * 2 triangles per segment
-        glDrawElements(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, 0);
+        // Convert geographic coordinates to world position
+        // This is a simplified approach - in full implementation would use proper projection
+        double lon = center.x;
+        double lat = center.y;
+        
+        // Simple conversion to 3D position on sphere
+        float phi = static_cast<float>((90.0 - lat) * M_PI / 180.0);
+        float theta = static_cast<float>(lon * M_PI / 180.0);
+        
+        glm::vec3 tile_pos = glm::vec3(
+            std::cos(phi) * std::sin(theta),
+            std::sin(phi),
+            std::cos(phi) * std::cos(theta)
+        );
+        
+        // Scale by tile size (simplified - should use proper tile size calculation)
+        float tile_scale = 0.1f; // Small scale for testing
+        
+        // Create model matrix for this tile
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), tile_pos);
+        model = glm::scale(model, glm::vec3(tile_scale));
+        
+        // Bind tile texture
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tile.texture_id);
+        stats_.texture_binds++;
+        
+        // Set shader uniforms
+        glUseProgram(tile_shader_program_);
+        
+        const GLint view_loc = glGetUniformLocation(tile_shader_program_, "uView");
+        const GLint proj_loc = glGetUniformLocation(tile_shader_program_, "uProjection");
+        const GLint model_loc = glGetUniformLocation(tile_shader_program_, "uModel");
+        const GLint light_loc = glGetUniformLocation(tile_shader_program_, "uLightPos");
+        const GLint color_loc = glGetUniformLocation(tile_shader_program_, "uObjectColor");
+        
+        glUniformMatrix4fv(view_loc, 1, GL_FALSE, glm::value_ptr(view_matrix));
+        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, glm::value_ptr(projection_matrix));
+        glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model));
+        glUniform3f(light_loc, 2.0f, 2.0f, 2.0f);
+        glUniform3f(color_loc, 1.0f, 1.0f, 1.0f);
+        
+        // Draw a simple quad for this tile
+        glBegin(GL_QUADS);
+        glTexCoord2f(0.0f, 0.0f); glVertex3f(-1.0f, -1.0f, 0.0f);
+        glTexCoord2f(1.0f, 0.0f); glVertex3f(1.0f, -1.0f, 0.0f);
+        glTexCoord2f(1.0f, 1.0f); glVertex3f(1.0f, 1.0f, 0.0f);
+        glTexCoord2f(0.0f, 1.0f); glVertex3f(-1.0f, 1.0f, 0.0f);
+        glEnd();
     }
     
     void Cleanup() {
@@ -550,6 +603,43 @@ private:
         (void)camera_position;
         // For now, use zoom as priority (higher zoom = higher priority)
         return static_cast<float>(30 - tile.zoom); // Invert so higher zoom = lower number = higher priority
+    }
+    
+    std::uint32_t CreateTestTexture() {
+        // Create a simple test texture (checkerboard pattern)
+        const int texture_size = 256;
+        std::vector<std::uint8_t> texture_data;
+        texture_data.resize(texture_size * texture_size * 3); // RGB
+        
+        for (int y = 0; y < texture_size; ++y) {
+            for (int x = 0; x < texture_size; ++x) {
+                int idx = (y * texture_size + x) * 3;
+                
+                // Create checkerboard pattern
+                bool is_white = ((x / 32) + (y / 32)) % 2 == 0;
+                std::uint8_t color = is_white ? 255 : 0;
+                
+                texture_data[idx] = color;     // R
+                texture_data[idx + 1] = color; // G  
+                texture_data[idx + 2] = color; // B
+            }
+        }
+        
+        // Create OpenGL texture
+        std::uint32_t texture_id;
+        glGenTextures(1, &texture_id);
+        glBindTexture(GL_TEXTURE_2D, texture_id);
+        
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size, 0, 
+                     GL_RGB, GL_UNSIGNED_BYTE, texture_data.data());
+        
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        
+        spdlog::info("Created test texture with ID: {}", texture_id);
+        return texture_id;
     }
 };
 

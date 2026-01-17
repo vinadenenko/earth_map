@@ -1,7 +1,10 @@
+#include "earth_map/renderer/tile_renderer.h"
 #include <earth_map/core/earth_map_impl.h>
 #include <earth_map/renderer/renderer.h>
 #include <earth_map/core/scene_manager.h>
 #include <earth_map/core/camera_controller.h>
+#include <earth_map/data/tile_manager.h>
+#include <earth_map/renderer/tile_texture_manager.h>
 #include <earth_map/platform/library_info.h>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -131,6 +134,33 @@ bool EarthMapImpl::InitializeSubsystems() {
             spdlog::error("Failed to initialize camera controller");
             return false;
         }
+        
+        // Initialize tile management system
+        tile_manager_ = CreateTileManager();
+        if (!tile_manager_ || !tile_manager_->Initialize({})) {
+            spdlog::error("Failed to initialize tile manager");
+            return false;
+        }
+        
+        // Initialize tile texture manager
+        texture_manager_ = CreateTileTextureManager();
+        if (!texture_manager_ || !texture_manager_->Initialize({})) {
+            spdlog::error("Failed to initialize tile texture manager");
+            return false;
+        }
+        
+        // Connect tile system components
+        auto tile_renderer = renderer_->GetTileRenderer();
+        if (tile_renderer) {
+            tile_renderer->SetTileManager(tile_manager_.get());
+            if (auto* basic_tile_manager = dynamic_cast<BasicTileManager*>(tile_manager_.get())) {
+                basic_tile_manager->SetTextureManager(texture_manager_);
+            }
+        }
+        
+        // Set up tile cache and loader for texture manager
+        texture_manager_->SetTileCache(CreateTileCache());
+        texture_manager_->SetTileLoader(CreateTileLoader());
         
         spdlog::info("All subsystems initialized successfully");
         return true;
