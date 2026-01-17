@@ -416,7 +416,8 @@ std::vector<std::string> BasicTileLoader::GetProviderNames() const {
 
 TileLoadResult BasicTileLoader::LoadTile(const TileCoordinates& coordinates,
                                         const std::string& provider_name) {
-    stats_.total_requests++;
+    // Commented for now to prevent double increment in UpdateStats
+    // stats_.total_requests++;
     
     // Check cache first
     if (tile_cache_) {
