@@ -62,11 +62,6 @@ int main() {
             return -1;
         }
         
-        // Check system requirements
-        std::cout << "System Requirements: " 
-                  << (earth_map::LibraryInfo::CheckSystemRequirements() ? "Met" : "Not Met") 
-                  << "\n\n";
-        
         // Create Earth Map instance
         std::cout << "Creating Earth Map instance...\n";
         earth_map::Configuration config;
@@ -93,6 +88,11 @@ int main() {
         }
         
         std::cout << "Earth Map initialized successfully\n";
+        
+        // Check system requirements now that OpenGL context is fully initialized
+        std::cout << "System Requirements: " 
+                  << (earth_map::LibraryInfo::CheckSystemRequirements() ? "Met" : "Not Met") 
+                  << "\n\n";
         
         // Main render loop
         std::cout << "Starting render loop...\n";
@@ -128,11 +128,11 @@ int main() {
             // Update frame counter
             frame_count++;
             
-            // Update performance stats every second
-            if (frame_count % 60 == 0) {
-                std::string stats = earth_map_instance->GetPerformanceStats();
-                std::cout << "Performance: " << stats << "\n";
-            }
+            // Update performance stats every second [not doing it since it is just a placeholder]
+            // if (frame_count % 60 == 0) {
+                // std::string stats = earth_map_instance->GetPerformanceStats();
+                // std::cout << "Performance: " << stats << "\n";
+            // }
         }
         
         std::cout << "\nRender loop ended\n";

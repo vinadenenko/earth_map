@@ -113,8 +113,8 @@ bool EarthMapImpl::InitializeSubsystems() {
     try {
         // Initialize renderer first
         renderer_ = Renderer::Create(config_);
-        if (!renderer_) {
-            spdlog::error("Failed to create renderer");
+        if (!renderer_ || !renderer_->Initialize()) {
+            spdlog::error("Failed to create or initialize renderer");
             return false;
         }
         
