@@ -107,8 +107,9 @@ TileCoordinates TileMathematics::GeographicToTile(const GeographicCoordinates& g
                                WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT;
     
     const int32_t n = 1 << zoom;
-    const int32_t x = static_cast<int32_t>(std::floor(normalized_x * n));
-    const int32_t y = static_cast<int32_t>(std::floor(normalized_y * n));
+    // Use proper rounding instead of floor for better accuracy
+    const int32_t x = static_cast<int32_t>(std::round(normalized_x * n - 0.5));
+    const int32_t y = static_cast<int32_t>(std::round(normalized_y * n - 0.5));
     
     return TileCoordinates(std::max(0, std::min(x, n - 1)),
                           std::max(0, std::min(y, n - 1)),
@@ -125,9 +126,16 @@ GeographicCoordinates TileMathematics::TileToGeographic(const TileCoordinates& t
     );
     
     const glm::dvec2 normalized = TileToNormalized(tile);
+    // Use tile center for better round-trip precision
+    const double tile_size = 1.0 / (1 << tile.zoom);
+    const glm::dvec2 normalized_center(
+        normalized.x + tile_size * 0.5,
+        normalized.y + tile_size * 0.5
+    );
+    
     const glm::dvec2 proj_coords(
-        normalized.x * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD,
-        normalized.y * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD
+        normalized_center.x * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD,
+        normalized_center.y * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD
     );
     
     return web_mercator->Unproject(ProjectedCoordinates(proj_coords.x, proj_coords.y));
@@ -392,11 +400,15 @@ char TileMathematics::GetTileSubdomain(const TileCoordinates& tile, const std::s
     return subdomains[index];
 }
 
-double TileMathematics::GetGroundResolution(int32_t zoom)
-{
-    (void)zoom;
-    // TODO: implement
-    return 1.0;
+double TileMathematics::GetGroundResolution(int32_t zoom) {
+    if (!TileValidator::IsSupportedZoom(zoom)) {
+        return 0.0;
+    }
+    
+    // Return ground resolution at equator for simplicity
+    // This is the resolution when latitude = 0 (cos(lat) = 1)
+    return (2.0 * M_PI * WGS84Ellipsoid::SEMI_MAJOR_AXIS) / 
+           (256.0 * (1 << zoom));
 }
 
 // TilePyramid implementation (simplified versions)
