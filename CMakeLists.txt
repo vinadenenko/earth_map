@@ -69,6 +69,7 @@ find_package(pugixml REQUIRED)
 find_package(libzip REQUIRED)
 find_package(stb REQUIRED)
 find_package(spdlog REQUIRED)
+find_package(CURL REQUIRED)
 
 # Optional packages for testing and examples
 if(EARTH_MAP_BUILD_TESTS)
@@ -116,6 +117,7 @@ target_link_libraries(earth_map
         libzip::zip
         stb::stb
         spdlog::spdlog
+        CURL::libcurl
 )
 
 # Platform-specific libraries

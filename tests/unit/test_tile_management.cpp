@@ -13,6 +13,7 @@
 #include <earth_map/data/tile_manager.h>
 #include <memory>
 #include <filesystem>
+#include <spdlog/spdlog.h>
 #include <thread>
 #include <chrono>
 
@@ -373,7 +374,7 @@ TEST_F(TileManagementTest, TileManagerIntegration) {
     TileLoaderConfig loader_config;
     auto loader = CreateTileLoader(loader_config);
     ASSERT_TRUE(loader->Initialize(loader_config));
-    loader->SetTileCache(cache);
+    loader->SetTileCache(std::move(cache));
     
     TileIndexConfig index_config;
     auto index = CreateTileIndex(index_config);

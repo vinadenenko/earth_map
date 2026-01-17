@@ -202,7 +202,10 @@ struct Frustum {
      * 
      * @return true if frustum planes are valid, false otherwise
      */
-    bool IsValid() const;
+    bool IsValid() const {
+        // TODO: implement this
+        return true;
+    }
     
     /**
      * @brief Normalize all planes in the frustum

@@ -5,7 +5,6 @@
 
 #include "../../include/earth_map/math/tile_mathematics.h"
 #include <cmath>
-#include <sstream>
 #include <algorithm>
 #include <stdexcept>
 
@@ -391,6 +390,13 @@ char TileMathematics::GetTileSubdomain(const TileCoordinates& tile, const std::s
     
     const int32_t index = (tile.x + tile.y) % subdomains.length();
     return subdomains[index];
+}
+
+double TileMathematics::GetGroundResolution(int32_t zoom)
+{
+    (void)zoom;
+    // TODO: implement
+    return 1.0;
 }
 
 // TilePyramid implementation (simplified versions)
