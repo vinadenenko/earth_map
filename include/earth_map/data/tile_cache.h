@@ -93,6 +93,9 @@ struct TileData {
     /** Number of channels (if applicable) */
     std::uint8_t channels = 0;
     
+    /** Loading state */
+    bool loaded = false;
+    
     /**
      * @brief Default constructor
      */

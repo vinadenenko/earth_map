@@ -97,6 +97,20 @@ struct TileCoordinates {
     }
     
     /**
+     * @brief Get tile center in geographic coordinates
+     * 
+     * @return glm::dvec2 Geographic center point (lon, lat)
+     */
+    glm::dvec2 GetCenter() const {
+        // Simple implementation - convert tile coordinates to geographic center
+        double n = std::pow(2.0, zoom);
+        double lon = (x + 0.5) / n * 360.0 - 180.0;
+        double lat_rad = std::atan(std::sinh(M_PI * (1 - 2 * (y + 0.5) / n)));
+        double lat = lat_rad * 180.0 / M_PI;
+        return glm::dvec2(lon, lat);
+    }
+    
+    /**
      * @brief Equality operator
      */
     bool operator==(const TileCoordinates& other) const {
@@ -117,6 +131,19 @@ struct TileCoordinates {
         if (zoom != other.zoom) return zoom < other.zoom;
         if (x != other.x) return x < other.x;
         return y < other.y;
+    }
+};
+
+/**
+ * @brief Hash function for TileCoordinates
+ */
+struct TileCoordinatesHash {
+    std::size_t operator()(const TileCoordinates& coords) const {
+        std::hash<std::uint64_t> hasher;
+        std::uint64_t combined = (static_cast<std::uint64_t>(coords.x) << 42) | 
+                                (static_cast<std::uint64_t>(coords.y) << 21) | 
+                                static_cast<std::uint64_t>(coords.zoom);
+        return hasher(combined);
     }
 };
 
@@ -356,6 +383,22 @@ public:
      * @return char Selected subdomain
      */
     static char GetTileSubdomain(const TileCoordinates& tile, const std::string& subdomains = "abc");
+    
+    /**
+     * @brief Get tile geographic center point
+     * 
+     * @param tile Tile coordinates
+     * @return glm::dvec2 Geographic center (longitude, latitude)
+     */
+    static glm::dvec2 GetTileCenter(const TileCoordinates& tile);
+    
+    /**
+     * @brief Get ground resolution at zoom level
+     * 
+     * @param zoom Zoom level
+     * @return double Ground resolution in meters per pixel
+     */
+    static double GetGroundResolution(int32_t zoom);
 };
 
 /**

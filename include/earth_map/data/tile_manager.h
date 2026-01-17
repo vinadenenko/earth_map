@@ -312,6 +312,18 @@ private:
      * @brief Get tiles sorted by priority
      */
     std::vector<const Tile*> GetTilesByPriority() const;
+    
+    /**
+     * @brief Calculate screen-space error for a tile
+     */
+    float CalculateScreenSpaceError(const TileCoordinates& tile_coords,
+                                 const glm::vec2& viewport_size,
+                                 float camera_distance) const;
+    
+    /**
+     * @brief Calculate maximum visible distance for LOD level
+     */
+    float CalculateMaxVisibleDistance(std::uint8_t lod_level) const;
 };
 
 } // namespace earth_map
