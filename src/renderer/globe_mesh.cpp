@@ -4,6 +4,7 @@
  */
 
 #include <earth_map/renderer/globe_mesh.h>
+#include <earth_map/math/bounding_box.h>
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>
@@ -459,7 +460,12 @@ std::vector<std::size_t> IcosahedronGlobeMesh::GetTrianglesInBounds(
     std::vector<std::size_t> triangles_in_bounds;
     
     for (std::size_t i = 0; i < triangles_.size(); ++i) {
-        if (bounds.Intersects(triangles_[i].bounds)) {
+        // Simple bounding box intersection test
+        const BoundingBox2D& tri_bounds = triangles_[i].bounds;
+        if (tri_bounds.max.x >= bounds.min.x && tri_bounds.min.x <= bounds.max.x &&
+            tri_bounds.max.y >= bounds.min.y && tri_bounds.min.y <= bounds.max.y)
+         // if (tri_bounds.Intersects(triangles_[i].bounds))
+        {
             triangles_in_bounds.push_back(i);
         }
     }

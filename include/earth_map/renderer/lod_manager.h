@@ -14,12 +14,14 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <array>
 
 namespace earth_map {
 
 // Forward declarations
 struct GlobeTriangle;
 struct Tile;
+struct GlobeVertex;
 
 /**
  * @brief LOD calculation parameters
@@ -287,6 +289,25 @@ private:
      */
     std::uint8_t CalculatePerformanceBasedLOD(std::uint8_t target_lod, 
                                             float performance_impact) const;
+    
+    // Implementation of pure virtual methods from base class
+    float CalculateScreenSpaceError(
+        const glm::vec3& world_position,
+        const glm::mat4& view_matrix,
+        const glm::mat4& projection_matrix,
+        const glm::vec2& viewport_size) const override;
+    
+    float EstimateGPUTime(std::size_t triangle_count,
+                        std::size_t vertex_count,
+                        std::uint8_t lod_level) const override;
+    
+    std::uint8_t CalculateDistanceBasedLOD(float distance) const override;
+    
+    std::uint8_t ApplyHysteresis(std::uint8_t current_lod,
+                                 std::uint8_t target_lod) const override;
+    
+    // Static member for vertex access (placeholder)
+    static std::vector<GlobeVertex> vertices_;
 };
 
 } // namespace earth_map

@@ -9,15 +9,14 @@
  * coordinate generation and normal calculation for realistic Earth rendering.
  */
 
-#include <earth_map/math/coordinate_system.h>
 #include <earth_map/math/bounding_box.h>
-#include <earth_map/math/geodetic_calculations.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include <memory>
 #include <cstdint>
 #include <cstddef>
+#include <unordered_map>
 
 namespace earth_map {
 
@@ -301,6 +300,7 @@ private:
     std::vector<GlobeVertex> vertices_;
     std::vector<GlobeTriangle> triangles_;
     std::vector<std::uint32_t> vertex_indices_;
+    std::unordered_map<std::uint64_t, std::size_t> midpoint_cache_;
     
     /**
      * @brief Generate icosahedron base mesh
@@ -313,9 +313,19 @@ private:
     void SubdivideTriangle(const GlobeTriangle& triangle, std::uint8_t target_level);
     
     /**
+     * @brief Subdivide mesh to target level
+     */
+    void SubdivideToLevel(std::uint8_t target_level);
+    
+    /**
      * @brief Create vertex at midpoint of edge
      */
     std::size_t CreateMidpointVertex(std::size_t v1, std::size_t v2);
+    
+    /**
+     * @brief Generate vertex indices for rendering
+     */
+    void GenerateVertexIndices();
     
     /**
      * @brief Calculate vertex geographic coordinates
