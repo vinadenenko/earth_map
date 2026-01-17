@@ -562,6 +562,9 @@ bool BasicTileLoader::DownloadTile(const std::string& url,
                                   std::uint32_t& status_code) {
     // Simplified placeholder implementation
     // In a real implementation, you would use libcurl or similar HTTP client
+
+    (void)url; // Suppress warning function is a placeholder for now
+    (void)headers; // Suppress warning function is a placeholder for now
     
     // For now, simulate a successful download with dummy data
     status_code = 200;
