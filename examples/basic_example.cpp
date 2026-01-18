@@ -34,6 +34,7 @@ void framebuffer_size_callback(GLFWwindow* /*window*/, int width, int height) {
 
 // Mouse button callback
 void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mods*/) {
+    spdlog::debug("Click");
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
@@ -90,6 +91,7 @@ void cursor_position_callback(GLFWwindow* /*window*/, double xpos, double ypos) 
 
 // Scroll callback for zoom
 void scroll_callback(GLFWwindow* /*window*/, double xoffset, double yoffset) {
+    spdlog::debug("Scroll");
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
@@ -249,9 +251,8 @@ int main() {
                 auto camera = g_earth_map_instance->GetCameraController();
                 
                 if (tile_renderer && camera) {
-                    auto stats = tile_renderer->GetStats();
-                    spdlog::info("Tile Rendering Status - Visible: {}, Rendered: {}", 
-                                stats.visible_tiles, stats.rendered_tiles);
+                    // auto stats = tile_renderer->GetStats();
+                    // spdlog::info("Tile Rendering Status - Visible: {}, Rendered: {}", stats.visible_tiles, stats.rendered_tiles);
                 }
             // }
             }
