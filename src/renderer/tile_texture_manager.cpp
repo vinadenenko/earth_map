@@ -195,7 +195,10 @@ std::uint32_t BasicTileTextureManager::GetTexture(const TileCoordinates& coordin
 std::future<bool> BasicTileTextureManager::LoadTextureAsync(
     const TileCoordinates& coordinates,
     TileTextureCallback callback) {
-    
+
+    spdlog::info("TextureManager: LoadTextureAsync called for {}/{}/{}",
+                 coordinates.x, coordinates.y, coordinates.zoom);
+
     auto promise = std::make_shared<std::promise<bool>>();
     auto future = promise->get_future();
     

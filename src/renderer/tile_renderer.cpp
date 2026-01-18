@@ -148,7 +148,7 @@ public:
             tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
         
         // Log tile count for debugging
-        // spdlog::info("Candidate tiles for zoom {}: {}", zoom_level, candidate_tiles.size());
+        spdlog::info("Candidate tiles for zoom {}: {}", zoom_level, candidate_tiles.size());
         
         // Filter tiles by frustum culling and limit with performance considerations
         std::size_t tiles_added = 0;
@@ -754,6 +754,8 @@ private:
         if (!atlas_dirty_.load()) {
             return;
         }
+
+        spdlog::info("Creating texture atlas with {} tiles", atlas_tiles_.size());
         
         // Proper atlas creation with error checking
         if (atlas_texture_ == 0) {
@@ -1168,12 +1170,12 @@ private:
             auto texture_loaded_callback = [this](const TileCoordinates& loaded_coords, std::uint32_t texture_id) {
                 // Texture loaded successfully, mark atlas as dirty so it gets updated with the new texture
                 atlas_dirty_.store(true);
-                spdlog::debug("Tile texture loaded and atlas marked dirty for {}/{}/{}: texture_id={}",
+                spdlog::info("Tile texture loaded and atlas marked dirty for {}/{}/{}: texture_id={}",
                              loaded_coords.x, loaded_coords.y, loaded_coords.zoom, texture_id);
             };
 
             auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callback);
-            spdlog::debug("Triggered async tile texture loading for {}/{}/{}", coords.x, coords.y, coords.zoom);
+            spdlog::info("Triggered async tile texture loading for {}/{}/{}", coords.x, coords.y, coords.zoom);
         } else {
             spdlog::warn("No tile manager available for loading tiles");
         }
