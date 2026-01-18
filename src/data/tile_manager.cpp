@@ -191,11 +191,10 @@ bool BasicTileManager::LoadTile(const TileCoordinates& coordinates) {
 std::future<bool> BasicTileManager::LoadTileTextureAsync(
     const TileCoordinates& coordinates,
     TileTextureCallback callback) {
-    spdlog::info("TileManager: LoadTileTextureAsync called for {}/{}/{}",
-                 coordinates.x, coordinates.y, coordinates.zoom);
+    // spdlog::info("TileManager: LoadTileTextureAsync called for {}/{}/{}", coordinates.x, coordinates.y, coordinates.zoom);
     // Delegate to texture manager if available
     if (texture_manager_) {
-        spdlog::info("TileManager: Delegating to texture manager");
+        // spdlog::info("TileManager: Delegating to texture manager");
         return texture_manager_->LoadTextureAsync(coordinates, callback);
     }
 

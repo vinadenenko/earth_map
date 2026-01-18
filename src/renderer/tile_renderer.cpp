@@ -152,7 +152,7 @@ public:
             tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
         
         // Log tile count for debugging
-        spdlog::info("Candidate tiles for zoom {}: {}", zoom_level, candidate_tiles.size());
+        // spdlog::info("Candidate tiles for zoom {}: {}", zoom_level, candidate_tiles.size());
         
         // Filter tiles by frustum culling and limit with performance considerations
         std::size_t tiles_added = 0;
@@ -201,8 +201,7 @@ public:
                 // Create test texture if no texture available yet (async loading in progress)
                 if (tile_state.texture_id == 0) {
                     tile_state.texture_id = CreateTestTexture();
-                    spdlog::info("Created test texture {} for tile ({}, {}, {})",
-                                 tile_state.texture_id, tile_coords.x, tile_coords.y, tile_coords.zoom);
+                    // spdlog::info("Created test texture {} for tile ({}, {}, {})", tile_state.texture_id, tile_coords.x, tile_coords.y, tile_coords.zoom);
                     
                     // Trigger async tile loading from texture manager
                     TriggerTileLoading(tile_coords);
@@ -1069,7 +1068,7 @@ private:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         
-        spdlog::info("Created test texture #{} with ID: {}", texture_counter, texture_id);
+        // spdlog::info("Created test texture #{} with ID: {}", texture_counter, texture_id);
         return texture_id;
     }
     
@@ -1246,7 +1245,7 @@ private:
             };
 
             auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callback);
-            spdlog::info("Triggered async tile texture loading for {}/{}/{}", coords.x, coords.y, coords.zoom);
+            // spdlog::info("Triggered async tile texture loading for {}/{}/{}", coords.x, coords.y, coords.zoom);
         } else {
             spdlog::warn("No tile manager available for loading tiles");
         }
