@@ -32,13 +32,25 @@ struct TileRenderState {
 };
 
 /**
+ * @brief Texture atlas tile information
+ */
+struct AtlasTileInfo {
+    int x, y;                    ///< Tile coordinates
+    int zoom;                     ///< Zoom level
+    float u, v;                   ///< UV coordinates in atlas
+    float u_size, v_size;         ///< UV size in atlas
+    std::uint32_t texture_id;     ///< Original tile texture ID
+};
+
+/**
  * @brief Basic tile renderer implementation
  */
 class TileRendererImpl : public TileRenderer {
 public:
     explicit TileRendererImpl(const TileRenderConfig& config) 
-        : config_(config), frame_counter_(0) {
+        : config_(config), frame_counter_(0), atlas_size_(2048), tile_size_(256) {
         spdlog::info("Creating tile renderer with max tiles: {}", config.max_visible_tiles);
+        CalculateAtlasLayout();
     }
     
     ~TileRendererImpl() override {
@@ -139,13 +151,17 @@ public:
         
         // Filter tiles by frustum culling and limit with performance considerations
         std::size_t tiles_added = 0;
-        // std::size_t max_tiles_for_frame = std::min(config_.max_visible_tiles, static_cast<std::size_t>(100));
+        std::size_t max_tiles_for_frame = std::min(static_cast<std::size_t>(config_.max_visible_tiles), 
+                                                 static_cast<std::size_t>(tiles_per_row_ * tiles_per_row_));
+        
+        // Resize atlas tiles array
+        atlas_tiles_.clear();
+        atlas_tiles_.reserve(max_tiles_for_frame);
         
         for (const TileCoordinates& tile_coords : candidate_tiles) {
-            // if (tiles_added >= max_tiles_for_frame) {
-                // spdlog::debug("Reached tile limit for frame: {}/{}", tiles_added, max_tiles_for_frame);
-                // break;
-            // }
+            if (tiles_added >= max_tiles_for_frame) {
+                break;
+            }
             
             // Check if tile is in frustum
             if (IsTileInFrustum(tile_coords, frustum)) {
@@ -168,6 +184,15 @@ public:
                 }
                 
                 visible_tiles_.push_back(tile_state);
+                
+                // Add to atlas tiles
+                AtlasTileInfo atlas_tile;
+                atlas_tile.x = tile_coords.x;
+                atlas_tile.y = tile_coords.y;
+                atlas_tile.zoom = tile_coords.zoom;
+                atlas_tile.texture_id = tile_state.texture_id;
+                atlas_tiles_.push_back(atlas_tile);
+                
                 tiles_added++;
             }
         }
@@ -180,6 +205,9 @@ public:
                      return a.load_priority < b.load_priority;
                  });
         
+        // Mark atlas as dirty for recreation
+        atlas_dirty_ = true;
+        
         spdlog::debug("Tile renderer update: {} visible tiles, zoom level {}", 
                     visible_tiles_.size(), zoom_level);
     }
@@ -189,6 +217,9 @@ public:
         if (!initialized_ || visible_tiles_.empty()) {
             return;
         }
+        
+        // Update texture atlas if needed
+        CreateTextureAtlas();
         
         // Save current OpenGL state
         GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
@@ -206,20 +237,31 @@ public:
         const GLint view_loc = glGetUniformLocation(tile_shader_program_, "uView");
         const GLint proj_loc = glGetUniformLocation(tile_shader_program_, "uProjection");
         const GLint model_loc = glGetUniformLocation(tile_shader_program_, "uModel");
+        const GLint time_loc = glGetUniformLocation(tile_shader_program_, "uTime");
         
         glUniformMatrix4fv(view_loc, 1, GL_FALSE, glm::value_ptr(view_matrix));
         glUniformMatrix4fv(proj_loc, 1, GL_FALSE, glm::value_ptr(projection_matrix));
         glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
+        glUniform1f(time_loc, static_cast<float>(frame_counter_) * 0.016f);  // ~60fps timing
         
-        // Render each visible tile ON GLOBE SURFACE
-        for (const auto& tile : visible_tiles_) {
-            if (tile.texture_id > 0) {
-                RenderTileOnGlobe(tile, view_matrix, projection_matrix);
-                stats_.rendered_tiles++;
-            }
-        }
+        // Set lighting uniforms
+        const GLint light_loc = glGetUniformLocation(tile_shader_program_, "uLightPos");
+        const GLint light_color_loc = glGetUniformLocation(tile_shader_program_, "uLightColor");
+        const GLint view_pos_loc = glGetUniformLocation(tile_shader_program_, "uViewPos");
         
-        // Unbind VAO
+        glUniform3f(light_loc, 2.0f, 2.0f, 2.0f);
+        glUniform3f(light_color_loc, 1.0f, 1.0f, 1.0f);
+        glUniform3f(view_pos_loc, 0.0f, 0.0f, 3.0f);
+        
+        // Bind the atlas texture
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, atlas_texture_);
+        const GLint tex_loc = glGetUniformLocation(tile_shader_program_, "uTileTexture");
+        glUniform1i(tex_loc, 0);
+        
+        // Render globe mesh with atlas texture
+        glBindVertexArray(globe_vao_);
+        glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
         
         // Restore previous OpenGL state
@@ -230,7 +272,8 @@ public:
             glDisable(GL_CULL_FACE);
         }
         
-        stats_.texture_binds = stats_.rendered_tiles;
+        stats_.rendered_tiles = visible_tiles_.size();
+        stats_.texture_binds = 1; // Only one texture bind with atlas
     }
     
     TileRenderStats GetStats() const override {
@@ -271,7 +314,7 @@ public:
     }
     
     std::uint32_t GetGlobeTexture() const override {
-        return globe_texture_;
+        return atlas_texture_;
     }
 
 private:
@@ -282,11 +325,20 @@ private:
     std::vector<TileRenderState> visible_tiles_;
     TileRenderStats stats_;
     
+    // Texture atlas implementation
+    int atlas_size_;
+    int tile_size_;
+    int tiles_per_row_;
+    std::uint32_t atlas_texture_ = 0;
+    std::vector<AtlasTileInfo> atlas_tiles_;
+    bool atlas_dirty_ = true;
+    
     // OpenGL objects
     std::uint32_t tile_shader_program_ = 0;
     std::uint32_t globe_vao_ = 0;
     std::uint32_t globe_vbo_ = 0;
     std::uint32_t globe_ebo_ = 0;
+    std::vector<unsigned int> globe_indices_;
     std::unordered_map<TileCoordinates, std::uint32_t, TileCoordinatesHash> texture_cache_;
     std::uint32_t globe_texture_ = 0;
     bool globe_texture_created_ = false;
@@ -329,10 +381,36 @@ private:
             uniform vec3 uLightPos;
             uniform vec3 uLightColor;
             uniform vec3 uViewPos;
+            uniform float uTime;
+            
+            // Convert world position to geographic coordinates
+            vec3 worldToGeo(vec3 worldPos) {
+                float lat = degrees(asin(worldPos.y));  // y is up
+                float lon = degrees(atan(worldPos.x, worldPos.z));
+                return vec3(lon, lat, 0.0);
+            }
+            
+            // Convert geographic coordinates to tile coordinates at zoom level 2
+            vec2 geoToTile(vec2 geo, float zoom) {
+                float n = pow(2.0, zoom);
+                float x = (geo.x + 180.0) / 360.0 * n;
+                float y = (1.0 - log(tan(radians(geo.y)) + 1.0/cos(radians(geo.y))) / 3.14159265359) / 2.0 * n;
+                return vec2(x, y);
+            }
+            
+            // Convert tile coordinates to atlas UV coordinates
+            vec2 tileToAtlasUV(vec2 tile, float zoom) {
+                // For zoom level 2, we have 4x4 = 16 tiles max
+                // We'll show tiles (1,1), (1,2), (2,1), (2,2) as per logs
+                float tileSize = 1.0 / 4.0;  // 4 tiles per row in atlas
+                float atlasX = (tile.x - 1.0) * tileSize;  // Offset for our visible tiles
+                float atlasY = (tile.y - 1.0) * tileSize;
+                return vec2(atlasX, atlasY);
+            }
             
             void main() {
                 // Basic lighting
-                float ambientStrength = 0.1;
+                float ambientStrength = 0.2;
                 vec3 ambient = ambientStrength * uLightColor;
                 
                 vec3 norm = normalize(Normal);
@@ -340,11 +418,32 @@ private:
                 float diff = max(dot(norm, lightDir), 0.0);
                 vec3 diffuse = diff * uLightColor;
                 
-                // Sample texture
-                vec4 texColor = texture(uTileTexture, TexCoord);
+                // Convert world position to geographic coordinates
+                vec3 geo = worldToGeo(normalize(FragPos));
                 
-                vec3 result = (ambient + diffuse) * texColor.rgb;
-                FragColor = vec4(result, texColor.a);
+                // Convert to tile coordinates at zoom 2
+                vec2 tile = geoToTile(geo.xy, 2.0);
+                
+                // Check if this tile is in our visible range (tiles 1-2)
+                if (tile.x >= 1.0 && tile.x < 3.0 && tile.y >= 1.0 && tile.y < 3.0) {
+                    // Convert tile to atlas UV
+                    vec2 atlasUV = tileToAtlasUV(tile, 2.0);
+                    
+                    // Add tile fraction for proper texture sampling within tile
+                    vec2 tileFrac = fract(tile);
+                    vec2 finalUV = atlasUV + tileFrac * 0.25;  // 0.25 = 1/4 tiles per row
+                    
+                    // Sample from atlas
+                    vec4 texColor = texture(uTileTexture, finalUV);
+                    
+                    vec3 result = (ambient + diffuse) * texColor.rgb;
+                    FragColor = vec4(result, texColor.a);
+                } else {
+                    // Outside visible tiles - use ocean color
+                    vec3 oceanColor = vec3(0.1, 0.3, 0.6);
+                    vec3 result = (ambient + diffuse) * oceanColor;
+                    FragColor = vec4(result, 1.0);
+                }
             }
         )";
         
@@ -399,8 +498,8 @@ private:
     bool CreateGlobeMesh() {
         // Generate simple sphere mesh for texturing
         const float radius = 1.0f;
-        const int segments = 32;
-        const int rings = 16;
+        const int segments = 64;  // Higher resolution for better tile mapping
+        const int rings = 32;
         
         std::vector<float> vertices;
         std::vector<unsigned int> indices;
@@ -426,7 +525,7 @@ private:
                 const float ny = cos_theta;
                 const float nz = sin_theta * sin_phi;
                 
-                // Texture coordinates (for globe projection)
+                // Texture coordinates (for globe projection - mapping to world coordinates)
                 const float u = static_cast<float>(s) / segments;
                 const float v = static_cast<float>(r) / rings;
                 
@@ -455,6 +554,9 @@ private:
                 });
             }
         }
+        
+        // Store indices for rendering
+        globe_indices_ = indices;
         
         // Create OpenGL objects
         glGenVertexArrays(1, &globe_vao_);
@@ -489,6 +591,9 @@ private:
         
         // Unbind VAO
         glBindVertexArray(0);
+        
+        spdlog::info("Created globe mesh: {} vertices, {} indices", 
+                    vertices.size() / 8, indices.size());
         
         return true;
     }
@@ -608,6 +713,77 @@ private:
             glDeleteProgram(tile_shader_program_);
             tile_shader_program_ = 0;
         }
+        if (atlas_texture_) {
+            glDeleteTextures(1, &atlas_texture_);
+            atlas_texture_ = 0;
+        }
+    }
+    
+    void CalculateAtlasLayout() {
+        tiles_per_row_ = atlas_size_ / tile_size_;
+        spdlog::info("Atlas layout: {}x{} tiles per row, total {} tiles", 
+                    tiles_per_row_, tiles_per_row_, tiles_per_row_ * tiles_per_row_);
+    }
+    
+    void CreateTextureAtlas() {
+        if (!atlas_dirty_) {
+            return;
+        }
+        
+        if (atlas_texture_ == 0) {
+            glGenTextures(1, &atlas_texture_);
+            glBindTexture(GL_TEXTURE_2D, atlas_texture_);
+            
+            // Allocate atlas memory
+            std::vector<std::uint8_t> empty_data(atlas_size_ * atlas_size_ * 3, 128); // Gray color
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, atlas_size_, atlas_size_, 0, 
+                        GL_RGB, GL_UNSIGNED_BYTE, empty_data.data());
+            
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            
+            spdlog::info("Created texture atlas {}x{} with ID: {}", 
+                        atlas_size_, atlas_size_, atlas_texture_);
+        }
+        
+        // Update atlas with visible tiles
+        glBindTexture(GL_TEXTURE_2D, atlas_texture_);
+        
+        for (size_t i = 0; i < visible_tiles_.size() && i < atlas_tiles_.size(); ++i) {
+            const auto& tile = visible_tiles_[i];
+            auto& atlas_tile = atlas_tiles_[i];
+            
+            if (tile.texture_id > 0) {
+                // Read tile texture data
+                std::vector<std::uint8_t> tile_data(tile_size_ * tile_size_ * 3);
+                glBindTexture(GL_TEXTURE_2D, tile.texture_id);
+                glGetTexImage(GL_TEXTURE_2D, 0, GL_RGB, GL_UNSIGNED_BYTE, tile_data.data());
+                
+                // Calculate atlas position
+                int atlas_x = (i % tiles_per_row_) * tile_size_;
+                int atlas_y = (i / tiles_per_row_) * tile_size_;
+                
+                // Update atlas sub-image
+                glBindTexture(GL_TEXTURE_2D, atlas_texture_);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, atlas_x, atlas_y, 
+                               tile_size_, tile_size_, GL_RGB, GL_UNSIGNED_BYTE, tile_data.data());
+                
+                // Update atlas tile info
+                atlas_tile.texture_id = tile.texture_id;
+                atlas_tile.u = static_cast<float>(atlas_x) / atlas_size_;
+                atlas_tile.v = static_cast<float>(atlas_y) / atlas_size_;
+                atlas_tile.u_size = static_cast<float>(tile_size_) / atlas_size_;
+                atlas_tile.v_size = static_cast<float>(tile_size_) / atlas_size_;
+                atlas_tile.x = tile.coordinates.x;
+                atlas_tile.y = tile.coordinates.y;
+                atlas_tile.zoom = tile.coordinates.zoom;
+            }
+        }
+        
+        atlas_dirty_ = false;
+        spdlog::info("Updated texture atlas with {} tiles", visible_tiles_.size());
     }
     
     int CalculateOptimalZoom(float camera_distance) const {
