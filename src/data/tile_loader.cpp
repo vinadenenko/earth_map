@@ -313,7 +313,7 @@ private:
     TileLoaderConfig config_;
     std::shared_ptr<TileCache> tile_cache_;
     std::map<std::string, TileProvider> providers_;
-    std::string default_provider_;
+    std::string default_provider_{"OpenStreetMap"};
     TileLoaderStats stats_;
     ThreadPool thread_pool_;
     
@@ -420,6 +420,7 @@ TileLoadResult BasicTileLoader::LoadTile(const TileCoordinates& coordinates,
     // stats_.total_requests++;
     
     // Check cache first
+    // TODO: tile_cache_ is null now, investigate later
     if (tile_cache_) {
         auto cached_tile = tile_cache_->Retrieve(coordinates);
         if (cached_tile && cached_tile->IsValid()) {
