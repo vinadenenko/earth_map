@@ -63,7 +63,7 @@ virtual TileLoadResult LoadTile(const TileCoordinates& coordinates,
 
 **Recommendation:** Consider returning `std::optional<TileData>` or using move semantics more explicitly (though modern compilers should optimize the current approach with RVO).
 
-**Solution** use std::optional
+**Solution** Since std::optional would miss important metadata from TileLoadResult, skip it. It is ok to return TileLoadResult.
 
 ---
 
