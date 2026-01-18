@@ -54,7 +54,7 @@ private:
     std::unique_ptr<SceneManager> scene_manager_; ///< Scene management
     std::unique_ptr<CameraController> camera_controller_; ///< Camera control
     std::unique_ptr<TileManager> tile_manager_; ///< Tile management
-    std::unique_ptr<TileTextureManager> texture_manager_; ///< Texture management
+    std::shared_ptr<TileTextureManager> texture_manager_; ///< Texture management (shared for cross-component access)
     bool initialized_ = false;                 ///< Initialization status
     
     /**

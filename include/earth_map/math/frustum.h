@@ -181,12 +181,24 @@ struct Frustum {
     
     /**
      * @brief Check if a bounding sphere is inside the frustum
-     * 
+     *
      * @param center Sphere center
      * @param radius Sphere radius
      * @return true if sphere is inside or intersects frustum, false otherwise
      */
-    bool Intersects(const glm::vec3& center, float radius) const;
+    bool Intersects(const glm::vec3& center, float radius) const {
+        // Test sphere against each frustum plane
+        for (const auto& plane : planes) {
+            // Calculate signed distance from sphere center to plane
+            float distance = plane.DistanceTo(center);
+            // If sphere is entirely behind any plane, it's outside the frustum
+            if (distance < -radius) {
+                return false;
+            }
+        }
+        // Sphere intersects or is inside all planes
+        return true;
+    }
     
     /**
      * @brief Get frustum corners

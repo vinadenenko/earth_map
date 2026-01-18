@@ -261,20 +261,32 @@ public:
         const GLint proj_loc = glGetUniformLocation(tile_shader_program_, "uProjection");
         const GLint model_loc = glGetUniformLocation(tile_shader_program_, "uModel");
         const GLint time_loc = glGetUniformLocation(tile_shader_program_, "uTime");
-        
+
         glUniformMatrix4fv(view_loc, 1, GL_FALSE, glm::value_ptr(view_matrix));
         glUniformMatrix4fv(proj_loc, 1, GL_FALSE, glm::value_ptr(projection_matrix));
         glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
         glUniform1f(time_loc, static_cast<float>(frame_counter_) * 0.016f);  // ~60fps timing
-        
+
         // Set lighting uniforms
         const GLint light_loc = glGetUniformLocation(tile_shader_program_, "uLightPos");
         const GLint light_color_loc = glGetUniformLocation(tile_shader_program_, "uLightColor");
         const GLint view_pos_loc = glGetUniformLocation(tile_shader_program_, "uViewPos");
-        
+
         glUniform3f(light_loc, 2.0f, 2.0f, 2.0f);
         glUniform3f(light_color_loc, 1.0f, 1.0f, 1.0f);
         glUniform3f(view_pos_loc, 0.0f, 0.0f, 3.0f);
+
+        // Set tile rendering uniforms (dynamic zoom and atlas info)
+        const GLint zoom_loc = glGetUniformLocation(tile_shader_program_, "uZoomLevel");
+        const GLint tiles_per_row_loc = glGetUniformLocation(tile_shader_program_, "uTilesPerRow");
+
+        // Get current zoom level from visible tiles (or use default)
+        float current_zoom = 2.0f;  // Default
+        if (!visible_tiles_.empty()) {
+            current_zoom = static_cast<float>(visible_tiles_[0].coordinates.zoom);
+        }
+        glUniform1f(zoom_loc, current_zoom);
+        glUniform1i(tiles_per_row_loc, tiles_per_row_);
         
         // Bind the atlas texture
         glActiveTexture(GL_TEXTURE0);
@@ -399,74 +411,87 @@ private:
             in vec3 FragPos;
             in vec3 Normal;
             in vec2 TexCoord;
-            
+
             out vec4 FragColor;
-            
+
             uniform sampler2D uTileTexture;
             uniform vec3 uLightPos;
             uniform vec3 uLightColor;
             uniform vec3 uViewPos;
             uniform float uTime;
-            
+            uniform float uZoomLevel;      // Current zoom level (passed from CPU)
+            uniform int uTilesPerRow;      // Tiles per row in atlas
+
             // Convert world position to geographic coordinates
             vec3 worldToGeo(vec3 worldPos) {
-                float lat = degrees(asin(worldPos.y));  // y is up
+                float lat = degrees(asin(clamp(worldPos.y, -1.0, 1.0)));  // y is up
                 float lon = degrees(atan(worldPos.x, worldPos.z));
                 return vec3(lon, lat, 0.0);
             }
-            
-            // Convert geographic coordinates to tile coordinates at zoom level 2
+
+            // Convert geographic coordinates to tile coordinates at given zoom level
             vec2 geoToTile(vec2 geo, float zoom) {
                 float n = pow(2.0, zoom);
                 float x = (geo.x + 180.0) / 360.0 * n;
-                float y = (1.0 - log(tan(radians(geo.y)) + 1.0/cos(radians(geo.y))) / 3.14159265359) / 2.0 * n;
+                // Web Mercator projection with latitude clamping
+                float lat_rad = radians(clamp(geo.y, -85.0511, 85.0511));
+                float y = (1.0 - log(tan(lat_rad) + 1.0/cos(lat_rad)) / 3.14159265359) / 2.0 * n;
                 return vec2(x, y);
             }
-            
-            // Convert tile coordinates to atlas UV coordinates
-            vec2 tileToAtlasUV(vec2 tile, float zoom) {
-                // For zoom level 2, we have 4x4 = 16 tiles max
-                // We'll show tiles (1,1), (1,2), (2,1), (2,2) as per logs
-                float tileSize = 1.0 / 4.0;  // 4 tiles per row in atlas
-                float atlasX = (tile.x - 1.0) * tileSize;  // Offset for our visible tiles
-                float atlasY = (tile.y - 1.0) * tileSize;
-                return vec2(atlasX, atlasY);
-            }
-            
+
             void main() {
                 // Basic lighting
-                float ambientStrength = 0.2;
+                float ambientStrength = 0.25;
                 vec3 ambient = ambientStrength * uLightColor;
-                
+
                 vec3 norm = normalize(Normal);
                 vec3 lightDir = normalize(uLightPos - FragPos);
                 float diff = max(dot(norm, lightDir), 0.0);
                 vec3 diffuse = diff * uLightColor;
-                
+
                 // Convert world position to geographic coordinates
                 vec3 geo = worldToGeo(normalize(FragPos));
-                
-                // Convert to tile coordinates at zoom 2
-                vec2 tile = geoToTile(geo.xy, 2.0);
-                
-                // Check if this tile is in our visible range (tiles 1-2)
-                if (tile.x >= 1.0 && tile.x < 3.0 && tile.y >= 1.0 && tile.y < 3.0) {
-                    // Convert tile to atlas UV
-                    vec2 atlasUV = tileToAtlasUV(tile, 2.0);
-                    
-                    // Add tile fraction for proper texture sampling within tile
-                    vec2 tileFrac = fract(tile);
-                    vec2 finalUV = atlasUV + tileFrac * 0.25;  // 0.25 = 1/4 tiles per row
-                    
-                    // Sample from atlas
-                    vec4 texColor = texture(uTileTexture, finalUV);
-                    
-                    vec3 result = (ambient + diffuse) * texColor.rgb;
+
+                // Convert to tile coordinates at current zoom level
+                float zoom = max(uZoomLevel, 0.0);
+                vec2 tile = geoToTile(geo.xy, zoom);
+
+                // Calculate number of tiles at this zoom level
+                float numTiles = pow(2.0, zoom);
+
+                // Ensure tile coordinates are in valid range [0, numTiles)
+                vec2 tileWrapped = mod(tile, numTiles);
+
+                // Calculate tile fraction (position within the tile)
+                vec2 tileFrac = fract(tileWrapped);
+
+                // Map tile coordinates to atlas UV
+                // Atlas is organized as a grid of tiles, tiling wraps around
+                float tilesPerRowF = float(max(uTilesPerRow, 1));
+                float tileSize = 1.0 / tilesPerRowF;
+
+                // Use tile integer coordinates modulo atlas grid size
+                vec2 tileInt = floor(tileWrapped);
+                vec2 atlasPos = mod(tileInt, vec2(tilesPerRowF));
+
+                // Calculate final UV: atlas position + position within tile
+                vec2 atlasUV = (atlasPos + tileFrac) * tileSize;
+
+                // Sample from atlas texture
+                vec4 texColor = texture(uTileTexture, atlasUV);
+
+                // Check if texture is valid (not empty/black) - if so, use it
+                float texBrightness = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
+
+                vec3 result;
+                if (texBrightness > 0.05) {
+                    // Valid texture - use it with lighting
+                    result = (ambient + diffuse) * texColor.rgb;
                     FragColor = vec4(result, texColor.a);
                 } else {
-                    // Outside visible tiles - use ocean color
-                    vec3 oceanColor = vec3(0.1, 0.3, 0.6);
-                    vec3 result = (ambient + diffuse) * oceanColor;
+                    // Placeholder color based on position (ocean blue with variation)
+                    vec3 oceanColor = vec3(0.1, 0.25 + 0.1 * sin(geo.x * 0.1), 0.5 + 0.1 * cos(geo.y * 0.1));
+                    result = (ambient + diffuse) * oceanColor;
                     FragColor = vec4(result, 1.0);
                 }
             }
@@ -823,26 +848,23 @@ private:
     
     int CalculateOptimalZoom(float camera_distance) const {
         // Realistic zoom calculation based on camera distance from globe surface
-        // Distance from camera to sphere center minus earth radius
-        const float altitude = camera_distance - 1.0f; // Subtract globe radius (1.0f)
-        
-        // Map altitude to zoom levels (0-18 max for OSM)
-        // Very close (altitude < 2): zoom 15-18
-        // Close (2-10): zoom 10-15  
-        // Medium (10-50): zoom 5-10
-        // Far (50-500): zoom 2-5
-        // Very far (>500): zoom 0-2
+        // Distance from camera to sphere center minus earth radius (1.0f in normalized coords)
+        const float altitude = camera_distance - 1.0f;
 
-        return 2;
-        
-        if (altitude < 2.0f) return std::min(18, 15);
-        if (altitude < 5.0f) return 12;
-        if (altitude < 10.0f) return 10;
-        if (altitude < 50.0f) return 8;
-        if (altitude < 100.0f) return 6;
-        if (altitude < 500.0f) return 4;
-        if (altitude < 1000.0f) return 2;
-        return 0;
+        // Map altitude to zoom levels (0-18 max for OSM)
+        // Camera distance is in normalized units where Earth radius = 1.0
+        // altitude ~0.01 = very close (surface), altitude ~2.0 = far (full globe view)
+
+        if (altitude < 0.01f) return 18;   // Extremely close - highest detail
+        if (altitude < 0.02f) return 16;
+        if (altitude < 0.05f) return 14;
+        if (altitude < 0.1f) return 12;
+        if (altitude < 0.2f) return 10;
+        if (altitude < 0.5f) return 8;
+        if (altitude < 1.0f) return 6;
+        if (altitude < 2.0f) return 4;
+        if (altitude < 5.0f) return 2;
+        return 0;  // Very far - lowest detail
     }
     
     BoundingBox2D CalculateVisibleGeographicBounds(const glm::mat4& view_matrix,
@@ -893,12 +915,29 @@ private:
     }
     
     bool IsTileInFrustum(const TileCoordinates& tile, const Frustum& frustum) const {
-        // For now, return true (all tiles visible)
-        // In a full implementation, this would check tile bounds against frustum
-        (void)tile;
-        (void)frustum;
+        // Calculate tile's geographic bounds
+        const BoundingBox2D bounds = TileMathematics::GetTileBounds(tile);
+        const glm::dvec2 center = bounds.GetCenter();
 
-        return true;
+        // Convert tile center to 3D position on unit sphere
+        const double lon_rad = glm::radians(center.x);
+        const double lat_rad = glm::radians(center.y);
+
+        // Calculate 3D position on unit sphere (Earth radius = 1.0)
+        const glm::vec3 tile_center = glm::vec3(
+            static_cast<float>(std::cos(lat_rad) * std::sin(lon_rad)),
+            static_cast<float>(std::sin(lat_rad)),
+            static_cast<float>(std::cos(lat_rad) * std::cos(lon_rad))
+        );
+
+        // Estimate tile radius on sphere surface based on zoom level
+        // Higher zoom = smaller tiles = smaller bounding sphere
+        // At zoom 0, tile covers 180 degrees, at zoom n, tile covers 180/2^n degrees
+        const float tile_angular_size = 180.0f / static_cast<float>(1 << tile.zoom);
+        const float tile_radius = glm::radians(tile_angular_size) * 0.5f;  // Half the angular size
+
+        // Use frustum sphere intersection test
+        return frustum.Intersects(tile_center, tile_radius);
     }
     
     float CalculateTileLOD(const TileCoordinates& tile, float camera_distance) const {
