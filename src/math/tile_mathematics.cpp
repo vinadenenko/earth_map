@@ -234,6 +234,8 @@ std::vector<TileCoordinates> TileMathematics::GetTilesInBounds(const BoundingBox
     const int32_t min_y = std::max(0, std::min(min_tile.y, max_tile.y));
     const int32_t max_y = std::min(n - 1, std::max(min_tile.y, max_tile.y));
 
+    // TODO: If we decide to render all globe (without frustum) at zoom level say 18, then it becomes (156994 - 105149 + 1) * (158843 - 103300 +1)
+    // And for some reason we will exit rendering at frame 0
     tiles.reserve((max_x - min_x + 1) * (max_y - min_y + 1));
     
     // // Calculate expected tile count with safety limits
