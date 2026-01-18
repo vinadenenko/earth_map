@@ -172,6 +172,8 @@ void BasicTileTextureManager::SetTileCache(std::shared_ptr<TileCache> cache) {
 
 void BasicTileTextureManager::SetTileLoader(std::shared_ptr<TileLoader> loader) {
     tile_loader_ = loader;
+    // TODO: remove it from here and handle proper provider init and TileLoader ownership!
+    tile_loader_->Initialize({});
 }
 
 std::uint32_t BasicTileTextureManager::GetTexture(const TileCoordinates& coordinates) {
