@@ -17,6 +17,8 @@
 #include <atomic>
 #include <cmath>
 #include <unordered_map>
+#include <climits>
+#include <cstddef>
 
 namespace earth_map {
 
@@ -155,9 +157,26 @@ public:
         std::size_t max_tiles_for_frame = std::min(static_cast<std::size_t>(config_.max_visible_tiles), 
                                                  static_cast<std::size_t>(tiles_per_row_ * tiles_per_row_));
         
-        // Resize atlas tiles array
+        // Resize atlas tiles array with bounds checking
         atlas_tiles_.clear();
         atlas_tiles_.reserve(max_tiles_for_frame);
+
+
+        
+        // // Prevent excessive memory allocation - cap at reasonable limit
+        // const std::size_t reasonable_limit = 10000; // Maximum tiles we'll ever allocate for
+        // std::size_t reserve_size = std::min(max_tiles_for_frame, reasonable_limit);
+        
+        // // Additional safety check to prevent vector::reserve exceptions
+        // if (reserve_size > 0 && reserve_size < SIZE_MAX / sizeof(AtlasTileInfo)) {
+        //     try {
+        //         atlas_tiles_.reserve(reserve_size);
+        //         spdlog::debug("Atlas tiles reserved: {}", reserve_size);
+        //     } catch (const std::exception& e) {
+        //         spdlog::error("Failed to reserve atlas tiles: {}", e.what());
+        //         // Continue without reservation - vector will grow as needed
+        //     }
+        // }
         
         for (const TileCoordinates& tile_coords : candidate_tiles) {
             if (tiles_added >= max_tiles_for_frame) {

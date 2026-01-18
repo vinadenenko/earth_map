@@ -210,34 +210,54 @@ int main() {
         // Main render loop
         std::cout << "Starting render loop...\n";
         std::cout << "Press ESC to exit\n\n";
-        
+
+        // Debug: Check window state before loop
+        std::cout << "DEBUG: Window pointer: " << window << "\n";
+        std::cout << "DEBUG: glfwWindowShouldClose before loop: " << glfwWindowShouldClose(window) << "\n";
+
         auto last_time = std::chrono::high_resolution_clock::now();
         int frame_count = 0;
-        
+
         while (!glfwWindowShouldClose(window)) {
+            if (frame_count < 3) {
+                std::cout << "DEBUG: Frame " << frame_count << " start\n";
+            }
             // Calculate delta time
             auto current_time = std::chrono::high_resolution_clock::now();
             float delta_time = std::chrono::duration<float>(current_time - last_time).count();
             last_time = current_time;
-            
+
             // Process input
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+                std::cout << "DEBUG: ESC pressed\n";
                 glfwSetWindowShouldClose(window, true);
             }
-            
+
             // Update camera
             auto camera = earth_map_instance->GetCameraController();
             if (camera) {
                 camera->Update(delta_time);
             }
-            
+
+            if (frame_count < 3) {
+                std::cout << "DEBUG: Frame " << frame_count << " calling Render()\n";
+            }
+
             // Render
             earth_map_instance->Render();
+
+            if (frame_count < 3) {
+                std::cout << "DEBUG: Frame " << frame_count << " Render() complete\n";
+            }
             
             // Swap buffers and poll events
             glfwSwapBuffers(window);
             glfwPollEvents();
-            
+
+            if (frame_count < 3) {
+                std::cout << "DEBUG: Frame " << frame_count << " after poll, windowShouldClose=" << glfwWindowShouldClose(window) << "\n";
+            }
+
             // Update frame counter
             frame_count++;
             

@@ -191,19 +191,25 @@ public:
         if (!initialized_) {
             return;
         }
-        
+
+        spdlog::debug("Renderer::Render() - BeginFrame");
         BeginFrame();
-        
+
         // Simple view and projection matrices for demo
         glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -3.0f));
-        glm::mat4 projection = glm::perspective(glm::radians(45.0f), 
-                                              static_cast<float>(config_.screen_width) / config_.screen_height, 
+        glm::mat4 projection = glm::perspective(glm::radians(45.0f),
+                                              static_cast<float>(config_.screen_width) / config_.screen_height,
                                               0.1f, 100.0f);
-        
-        Frustum frustum; // Empty frustum for now
+
+        // Create frustum from view-projection matrix for culling
+        Frustum frustum(projection * view);
+
+        spdlog::debug("Renderer::Render() - RenderScene");
         RenderScene(view, projection, frustum);
-        
+
+        spdlog::debug("Renderer::Render() - EndFrame");
         EndFrame();
+        spdlog::debug("Renderer::Render() - complete");
     }
     
     void Resize(std::uint32_t width, std::uint32_t height) override {
