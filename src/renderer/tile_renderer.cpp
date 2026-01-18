@@ -19,6 +19,8 @@
 #include <unordered_map>
 #include <climits>
 #include <cstddef>
+#include <iostream>
+#include <thread>
 
 namespace earth_map {
 
@@ -874,6 +876,9 @@ private:
         // Camera distance is in normalized units where Earth radius = 1.0
         // altitude ~0.01 = very close (surface), altitude ~2.0 = far (full globe view)
 
+        // Tmp for testing, because now camera distance is wrong
+        return 4;
+
         if (altitude < 0.01f) return 18;   // Extremely close - highest detail
         if (altitude < 0.02f) return 16;
         if (altitude < 0.05f) return 14;
@@ -975,6 +980,14 @@ private:
         // Create a simple test texture (checkerboard pattern)
         static int texture_counter = 0;
         texture_counter++;
+
+        // Check if OpenGL context is available before calling any OpenGL functions
+        // In headless mode or during context issues, gracefully handle the situation
+        auto gl_version = glGetString(GL_VERSION);
+        if (gl_version == nullptr) {
+            spdlog::error("OpenGL context not available in CreateTestTexture - skipping texture creation");
+            return 0;  // Return 0 instead of crashing
+        }
         
         const int texture_size = 256;
         std::vector<std::uint8_t> texture_data;

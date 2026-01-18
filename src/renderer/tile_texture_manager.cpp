@@ -6,6 +6,7 @@
 #include <earth_map/renderer/tile_texture_manager.h>
 #include <earth_map/data/tile_cache.h>
 #include <earth_map/data/tile_loader.h>
+#include <iostream>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 // #include <glad/glad.h>
@@ -203,10 +204,16 @@ std::future<bool> BasicTileTextureManager::LoadTextureAsync(
     auto future = promise->get_future();
     
     // Check if already loading
+
+    // std::thread::id current_id = std::this_thread::get_id();
+    // std::cout << "This thread's ID: " << current_id << std::endl;
+    // std::cout << "Started Loading texture size: " << loading_textures_.size() << std::endl;
     if (loading_textures_.find(coordinates) != loading_textures_.end()) {
+        // std::cout << "Failed Loading texture size: " << loading_textures_.size() << std::endl;
         promise->set_value(false);
         return future;
     }
+    // std::cout << "Finished Loading texture size: " << loading_textures_.size() << std::endl;
     
     loading_textures_.insert(coordinates);
     
