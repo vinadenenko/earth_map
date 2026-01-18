@@ -19,7 +19,7 @@ Like in real project management (development process - Any system should be desc
 The system should never fail, so make no mistakes. Think.
 
 During fixes ignore LSP errors, trust only build process.
-Build always with this steps ONLY (first step could be skipped if you didn't add any new dependency):
+Build always with this steps ONLY (first step could be skipped if this is your first attempt to build or if you didn't add any new dependency):
 1. conan install . --build=missing
 2. cmake --preset conan-debug
 3. cmake --build --preset conan-debug

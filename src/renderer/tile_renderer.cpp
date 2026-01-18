@@ -160,10 +160,12 @@ public:
                 // Get texture from tile manager (this will trigger async loading)
                 tile_state.texture_id = tile_manager_->GetTileTexture(tile_coords);
 
-                // // DEBUG: Force texture creation for testing. Do not remove this commented code
-                // if (tile_state.texture_id == 0) {
-                //     tile_state.texture_id = CreateTestTexture();
-                // }
+                // DEBUG: Force texture creation for testing. Do not remove this commented code
+                if (tile_state.texture_id == 0) {
+                    tile_state.texture_id = CreateTestTexture();
+                    spdlog::info("Created test texture {} for tile ({}, {}, {})",
+                                 tile_state.texture_id, tile_coords.x, tile_coords.y, tile_coords.zoom);
+                }
                 
                 visible_tiles_.push_back(tile_state);
                 tiles_added++;
@@ -209,13 +211,10 @@ public:
         glUniformMatrix4fv(proj_loc, 1, GL_FALSE, glm::value_ptr(projection_matrix));
         glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
         
-        // Bind globe mesh VAO
-        glBindVertexArray(globe_vao_);
-        
-        // Render each visible tile
+        // Render each visible tile ON GLOBE SURFACE
         for (const auto& tile : visible_tiles_) {
             if (tile.texture_id > 0) {
-                RenderSingleTile(tile, view_matrix, projection_matrix);
+                RenderTileOnGlobe(tile, view_matrix, projection_matrix);
                 stats_.rendered_tiles++;
             }
         }
@@ -270,6 +269,10 @@ public:
         (void)projection_matrix;
         return TileCoordinates();
     }
+    
+    std::uint32_t GetGlobeTexture() const override {
+        return globe_texture_;
+    }
 
 private:
     TileRenderConfig config_;
@@ -285,6 +288,8 @@ private:
     std::uint32_t globe_vbo_ = 0;
     std::uint32_t globe_ebo_ = 0;
     std::unordered_map<TileCoordinates, std::uint32_t, TileCoordinatesHash> texture_cache_;
+    std::uint32_t globe_texture_ = 0;
+    bool globe_texture_created_ = false;
     
     bool InitializeOpenGLState() {
         // Create simple textured shader
@@ -542,13 +547,48 @@ private:
         glUniform3f(light_loc, 2.0f, 2.0f, 2.0f);
         glUniform3f(color_loc, 1.0f, 1.0f, 1.0f);
         
-        // Draw a simple quad for this tile
-        glBegin(GL_QUADS);
-        glTexCoord2f(0.0f, 0.0f); glVertex3f(-1.0f, -1.0f, 0.0f);
-        glTexCoord2f(1.0f, 0.0f); glVertex3f(1.0f, -1.0f, 0.0f);
-        glTexCoord2f(1.0f, 1.0f); glVertex3f(1.0f, 1.0f, 0.0f);
-        glTexCoord2f(0.0f, 1.0f); glVertex3f(-1.0f, 1.0f, 0.0f);
-        glEnd();
+        // Draw a simple quad for this tile using modern OpenGL
+        const float quad_vertices[] = {
+            // positions      // texture coords
+            -1.0f, -1.0f, 0.0f,  0.0f, 0.0f,
+             1.0f, -1.0f, 0.0f,  1.0f, 0.0f,
+             1.0f,  1.0f, 0.0f,  1.0f, 1.0f,
+            -1.0f,  1.0f, 0.0f,  0.0f, 1.0f
+        };
+        
+        const unsigned int quad_indices[] = {
+            0, 1, 2,  // first triangle
+            2, 3, 0   // second triangle
+        };
+        
+        // Create temporary VBO and EBO for the quad
+        unsigned int temp_vbo, temp_ebo;
+        glGenBuffers(1, &temp_vbo);
+        glGenBuffers(1, &temp_ebo);
+        
+        // Bind and fill VBO
+        glBindBuffer(GL_ARRAY_BUFFER, temp_vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices), quad_vertices, GL_STATIC_DRAW);
+        
+        // Bind and fill EBO
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, temp_ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(quad_indices), quad_indices, GL_STATIC_DRAW);
+        
+        // Set vertex attributes (position + texcoord)
+        // Position attribute (location = 0)
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        
+        // Texture coordinate attribute (location = 2)
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(2);
+        
+        // Draw the quad
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        
+        // Clean up temporary buffers
+        glDeleteBuffers(1, &temp_vbo);
+        glDeleteBuffers(1, &temp_ebo);
     }
     
     void Cleanup() {
@@ -581,7 +621,8 @@ private:
         // Medium (10-50): zoom 5-10
         // Far (50-500): zoom 2-5
         // Very far (>500): zoom 0-2
-        return 1;
+
+        return 2;
         
         if (altitude < 2.0f) return std::min(18, 15);
         if (altitude < 5.0f) return 12;
@@ -696,6 +737,167 @@ private:
         
         spdlog::info("Created test texture with ID: {}", texture_id);
         return texture_id;
+    }
+    
+    void CreateGlobeTexture() {
+        // Create globe texture using test pattern
+        // In a full implementation, this would blend/combine visible tiles
+        const int texture_size = 1024;  // Higher resolution for globe
+        std::vector<std::uint8_t> texture_data;
+        texture_data.resize(texture_size * texture_size * 3); // RGB
+        
+        // Create a simple world map pattern
+        for (int y = 0; y < texture_size; ++y) {
+            for (int x = 0; x < texture_size; ++x) {
+                int idx = (y * texture_size + x) * 3;
+                
+                // Create latitude-based color bands
+                float lat_norm = static_cast<float>(y) / texture_size;
+                float lon_norm = static_cast<float>(x) / texture_size;
+                
+                // Simulate continents (simplified)
+                bool is_land = false;
+                if (lat_norm > 0.3f && lat_norm < 0.7f) {
+                    if (lon_norm > 0.2f && lon_norm < 0.8f) {
+                        is_land = true;
+                    }
+                }
+                
+                // Create more realistic pattern
+                if (is_land) {
+                    texture_data[idx] = 34;     // R - greenish
+                    texture_data[idx + 1] = 139;  // G  
+                    texture_data[idx + 2] = 34;   // B
+                } else {
+                    texture_data[idx] = 70;      // R - bluish
+                    texture_data[idx + 1] = 130;  // G  
+                    texture_data[idx + 2] = 180;  // B
+                }
+            }
+        }
+        
+        // Create OpenGL texture
+        glGenTextures(1, &globe_texture_);
+        glBindTexture(GL_TEXTURE_2D, globe_texture_);
+        
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size, 0, 
+                     GL_RGB, GL_UNSIGNED_BYTE, texture_data.data());
+        
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        
+        globe_texture_created_ = true;
+        spdlog::info("Created globe texture with ID: {}", globe_texture_);
+    }
+    
+    void RenderTileOnGlobe(const TileRenderState& tile, 
+                          const glm::mat4& view_matrix,
+                          const glm::mat4& projection_matrix) {
+        (void)view_matrix;
+        (void)projection_matrix;
+        // Calculate tile position on globe surface using geographic coordinates
+        auto bounds = tile.geographic_bounds;
+        auto center = bounds.GetCenter();
+        
+        // Convert geographic coordinates to 3D position on sphere
+        double lon = center.x;
+        double lat = center.y;
+        
+        // Convert to radians
+        double lon_rad = lon * M_PI / 180.0;
+        double lat_rad = lat * M_PI / 180.0;
+        
+        // Calculate 3D position on unit sphere
+        glm::vec3 tile_pos = glm::vec3(
+            std::cos(lat_rad) * std::sin(lon_rad),  // x
+            std::sin(lat_rad),                      // y  
+            std::cos(lat_rad) * std::cos(lon_rad)   // z
+        );
+        
+        // Scale tile to cover appropriate area on globe surface
+        // Calculate tile size in radians
+        double lat_span = (bounds.max.y - bounds.min.y) * M_PI / 180.0;
+        double lon_span = (bounds.max.x - bounds.min.x) * M_PI / 180.0;
+        
+        // Use arc length approximation for tile size
+        float tile_size = static_cast<float>(std::max(lat_span, lon_span)) * 0.5f;
+        
+        // Create model matrix for this tile
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), tile_pos);
+        
+        // Scale tile to appropriate size on globe surface
+        model = glm::scale(model, glm::vec3(tile_size));
+        
+        // Orient tile to face outward from globe center (align with normal)
+        glm::vec3 normal = glm::normalize(tile_pos);
+        glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+        glm::vec3 right = glm::cross(up, normal);
+        glm::vec3 tile_up = glm::cross(normal, right);
+        
+        glm::mat4 rotation = glm::mat4(1.0f);
+        rotation[0] = glm::vec4(right, 0.0f);
+        rotation[1] = glm::vec4(tile_up, 0.0f); 
+        rotation[2] = glm::vec4(normal, 0.0f);
+        rotation[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        
+        model = model * rotation;
+        
+        // Set uniforms for this tile
+        const GLint model_loc = glGetUniformLocation(tile_shader_program_, "uModel");
+        glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model));
+        
+        // Bind tile texture
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tile.texture_id);
+        
+        // Set texture uniform
+        const GLint tex_loc = glGetUniformLocation(tile_shader_program_, "uTileTexture");
+        glUniform1i(tex_loc, 0);
+        
+        // Draw tile quad on globe surface
+        const float quad_vertices[] = {
+            // positions      // texture coords
+            -0.5f, -0.5f, 0.0f, 0.0f, 0.0f,
+             0.5f, -0.5f, 0.0f, 1.0f, 0.0f,
+             0.5f,  0.5f, 0.0f, 1.0f, 1.0f,
+            -0.5f,  0.5f, 0.0f, 0.0f, 1.0f
+        };
+        
+        const unsigned int quad_indices[] = {
+            0, 1, 2,  // first triangle
+            2, 3, 0   // second triangle
+        };
+        
+        // Create temporary VBO and EBO for tile quad
+        unsigned int temp_vbo, temp_ebo;
+        glGenBuffers(1, &temp_vbo);
+        glGenBuffers(1, &temp_ebo);
+        
+        // Bind and fill VBO
+        glBindBuffer(GL_ARRAY_BUFFER, temp_vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices), quad_vertices, GL_STATIC_DRAW);
+        
+        // Bind and fill EBO
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, temp_ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(quad_indices), quad_indices, GL_STATIC_DRAW);
+        
+        // Set vertex attributes (position + texcoord)
+        // Position attribute (location = 0)
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        
+        // Texture coordinate attribute (location = 2)
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(2);
+        
+        // Draw tile quad
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        
+        // Clean up temporary buffers
+        glDeleteBuffers(1, &temp_vbo);
+        glDeleteBuffers(1, &temp_ebo);
     }
 };
 

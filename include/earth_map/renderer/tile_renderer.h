@@ -172,6 +172,13 @@ public:
                                                   std::uint32_t screen_height,
                                                   const glm::mat4& view_matrix,
                                                   const glm::mat4& projection_matrix) = 0;
+    
+    /**
+     * @brief Get globe texture for rendering
+     * 
+     * @return std::uint32_t OpenGL texture ID for globe (0 if none)
+     */
+    virtual std::uint32_t GetGlobeTexture() const = 0;
 
 protected:
     /**
