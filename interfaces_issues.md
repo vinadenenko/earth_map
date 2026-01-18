@@ -20,6 +20,8 @@ virtual std::shared_ptr<TileData> Retrieve(const TileCoordinates& coordinates) =
 
 **Recommendation:** Consider renaming to `Get()` for consistency with standard cache naming, or use `std::optional<TileData>` to make cache miss more explicit.
 
+**Solution** use std::optional
+
 ---
 
 ## 2. TileCache - Store vs Put Method Naming
@@ -38,6 +40,7 @@ virtual bool Store(const TileData& tile_data) = 0;
 - `Store()` is not wrong, but less conventional
 
 **Recommendation:** Consider renaming to `Put()` for better alignment with industry standard cache APIs.
+**Solution** Use `Put()`
 
 ---
 
@@ -60,6 +63,8 @@ virtual TileLoadResult LoadTile(const TileCoordinates& coordinates,
 
 **Recommendation:** Consider returning `std::optional<TileData>` or using move semantics more explicitly (though modern compilers should optimize the current approach with RVO).
 
+**Solution** use std::optional
+
 ---
 
 ## 4. TileRenderer - SetTileManager Raw Pointer
@@ -78,6 +83,8 @@ virtual void SetTileManager(TileManager* tile_manager) = 0;
 - Could be `TileManager&` (non-null reference) or `std::shared_ptr<TileManager>` (shared ownership) or `gsl::not_null<TileManager*>` (observer, non-null)
 
 **Recommendation:** Use reference if non-null is required and lifetime is managed externally, or document pointer semantics clearly.
+
+**Solution** Defer this for later.
 
 ---
 
@@ -103,6 +110,7 @@ auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callbac
 - Have TileTextureCoordinator handle all GPU texture concerns
 - Clear separation of concerns: Data vs Rendering
 
+**Solution** Use new approach with TileTextureCoordinator.
 ---
 
 ## 6. Error Handling - Inconsistent Patterns
@@ -130,6 +138,7 @@ auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callbac
   - Use exceptions only for exceptional errors (programming errors, resource exhaustion)
   - Use `bool` + out-parameter for simple success/failure with data
 
+**Solution** Defer it
 ---
 
 ## 7. Thread Safety - Interface Documentation
@@ -148,6 +157,7 @@ auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callbac
 - Explicitly state thread safety guarantees
 - Document which methods require GL thread vs any thread
 
+**Solution** Defer it.
 ---
 
 ## 8. TileCoordinates - Validation
@@ -165,6 +175,7 @@ auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callbac
 - Document preconditions clearly in interface comments
 - Consider using `gsl::Expects()` for preconditions
 
+**Solution** Defer it.
 ---
 
 ## Summary
