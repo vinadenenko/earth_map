@@ -14,6 +14,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <unordered_map>
 
@@ -223,7 +224,7 @@ public:
         }
         
         if (tiles_changed) {
-            atlas_dirty_ = true;
+            atlas_dirty_.store(true);
             last_visible_tiles_.clear();
             for (const auto& tile : visible_tiles_) {
                 last_visible_tiles_.push_back(tile.coordinates);
@@ -354,7 +355,7 @@ private:
     int tiles_per_row_;
     std::uint32_t atlas_texture_ = 0;
     std::vector<AtlasTileInfo> atlas_tiles_;
-    bool atlas_dirty_ = true;
+    std::atomic<bool> atlas_dirty_ = true;
     std::vector<TileCoordinates> last_visible_tiles_;
     
     // OpenGL objects
@@ -750,7 +751,7 @@ private:
     }
     
     void CreateTextureAtlas() {
-        if (!atlas_dirty_) {
+        if (!atlas_dirty_.load()) {
             return;
         }
         
@@ -760,7 +761,7 @@ private:
             
             if (atlas_texture_ == 0) {
                 spdlog::error("Failed to generate atlas texture ID");
-                atlas_dirty_ = false;
+                atlas_dirty_.store(false);
                 return;
             }
             
@@ -813,8 +814,8 @@ private:
                 atlas_tile.zoom = tile.coordinates.zoom;
             }
         }
-        
-        atlas_dirty_ = false;
+
+        atlas_dirty_.store(false);
         // spdlog::info("Updated texture atlas with {} tiles", visible_tiles_.size());
     }
     
@@ -1166,7 +1167,7 @@ private:
             // Define callback to handle texture loading completion
             auto texture_loaded_callback = [this](const TileCoordinates& loaded_coords, std::uint32_t texture_id) {
                 // Texture loaded successfully, mark atlas as dirty so it gets updated with the new texture
-                atlas_dirty_ = true;
+                atlas_dirty_.store(true);
                 spdlog::debug("Tile texture loaded and atlas marked dirty for {}/{}/{}: texture_id={}",
                              loaded_coords.x, loaded_coords.y, loaded_coords.zoom, texture_id);
             };
