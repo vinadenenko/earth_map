@@ -208,8 +208,27 @@ public:
                      return a.load_priority < b.load_priority;
                  });
         
-        // Mark atlas as dirty for recreation
-        atlas_dirty_ = true;
+        // Mark atlas as dirty only if visible tiles changed
+        bool tiles_changed = false;
+        
+        if (visible_tiles_.size() != last_visible_tiles_.size()) {
+            tiles_changed = true;
+        } else {
+            for (size_t i = 0; i < visible_tiles_.size(); ++i) {
+                if (visible_tiles_[i].coordinates != last_visible_tiles_[i]) {
+                    tiles_changed = true;
+                    break;
+                }
+            }
+        }
+        
+        if (tiles_changed) {
+            atlas_dirty_ = true;
+            last_visible_tiles_.clear();
+            for (const auto& tile : visible_tiles_) {
+                last_visible_tiles_.push_back(tile.coordinates);
+            }
+        }
         
         spdlog::debug("Tile renderer update: {} visible tiles, zoom level {}", 
                     visible_tiles_.size(), zoom_level);
@@ -259,6 +278,7 @@ public:
         // Bind the atlas texture
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, atlas_texture_);
+
         const GLint tex_loc = glGetUniformLocation(tile_shader_program_, "uTileTexture");
         glUniform1i(tex_loc, 0);
         
@@ -335,6 +355,7 @@ private:
     std::uint32_t atlas_texture_ = 0;
     std::vector<AtlasTileInfo> atlas_tiles_;
     bool atlas_dirty_ = true;
+    std::vector<TileCoordinates> last_visible_tiles_;
     
     // OpenGL objects
     std::uint32_t tile_shader_program_ = 0;
@@ -733,8 +754,16 @@ private:
             return;
         }
         
+        // Proper atlas creation with error checking
         if (atlas_texture_ == 0) {
             glGenTextures(1, &atlas_texture_);
+            
+            if (atlas_texture_ == 0) {
+                spdlog::error("Failed to generate atlas texture ID");
+                atlas_dirty_ = false;
+                return;
+            }
+            
             glBindTexture(GL_TEXTURE_2D, atlas_texture_);
             
             // Allocate atlas memory
@@ -883,6 +912,9 @@ private:
     
     std::uint32_t CreateTestTexture() {
         // Create a simple test texture (checkerboard pattern)
+        static int texture_counter = 0;
+        texture_counter++;
+        
         const int texture_size = 256;
         std::vector<std::uint8_t> texture_data;
         texture_data.resize(texture_size * texture_size * 3); // RGB
@@ -891,30 +923,79 @@ private:
             for (int x = 0; x < texture_size; ++x) {
                 int idx = (y * texture_size + x) * 3;
                 
-                // Create checkerboard pattern
-                bool is_white = ((x / 32) + (y / 32)) % 2 == 0;
-                std::uint8_t color = is_white ? 255 : 0;
+                // Create different colored patterns for different tiles
+                int pattern = (x / 32) + (y / 32);
+                std::uint8_t r, g, b;
                 
-                texture_data[idx] = color;     // R
-                texture_data[idx + 1] = color; // G  
-                texture_data[idx + 2] = color; // B
+                // Use different colors based on texture counter to make them visually distinct
+                switch (texture_counter % 4) {
+                    case 0: // Red checkerboard
+                        r = pattern % 2 ? 255 : 128;
+                        g = pattern % 2 ? 0 : 64;
+                        b = pattern % 2 ? 0 : 64;
+                        break;
+                    case 1: // Green checkerboard
+                        r = pattern % 2 ? 0 : 64;
+                        g = pattern % 2 ? 255 : 128;
+                        b = pattern % 2 ? 0 : 64;
+                        break;
+                    case 2: // Blue checkerboard
+                        r = pattern % 2 ? 0 : 64;
+                        g = pattern % 2 ? 0 : 64;
+                        b = pattern % 2 ? 255 : 128;
+                        break;
+                    default: // Yellow checkerboard
+                        r = pattern % 2 ? 255 : 128;
+                        g = pattern % 2 ? 255 : 128;
+                        b = pattern % 2 ? 0 : 64;
+                        break;
+                }
+                
+                texture_data[idx] = r;
+                texture_data[idx + 1] = g;
+                texture_data[idx + 2] = b;
             }
         }
         
         // Create OpenGL texture
         std::uint32_t texture_id;
         glGenTextures(1, &texture_id);
+        
+        // Check for texture generation errors
+        GLenum error = glGetError();
+        if (error != GL_NO_ERROR) {
+            spdlog::error("OpenGL error during glGenTextures in CreateTestTexture: {}", error);
+            return 0;
+        }
+        
+        if (texture_id == 0) {
+            spdlog::error("Failed to generate test texture - glGenTextures returned 0");
+            return 0;
+        }
+        
         glBindTexture(GL_TEXTURE_2D, texture_id);
+        error = glGetError();
+        if (error != GL_NO_ERROR) {
+            spdlog::error("OpenGL error during glBindTexture in CreateTestTexture: {}", error);
+            return 0;
+        }
         
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size, 0, 
                      GL_RGB, GL_UNSIGNED_BYTE, texture_data.data());
+        
+        error = glGetError();
+        if (error != GL_NO_ERROR) {
+            spdlog::error("OpenGL error during glTexImage2D in CreateTestTexture: {}", error);
+            glDeleteTextures(1, &texture_id);
+            return 0;
+        }
         
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         
-        spdlog::info("Created test texture with ID: {}", texture_id);
+        spdlog::info("Created test texture #{} with ID: {}", texture_counter, texture_id);
         return texture_id;
     }
     
@@ -1080,10 +1161,21 @@ private:
     }
     
     void TriggerTileLoading(const TileCoordinates& coords) {
-        // For now, just mark atlas as dirty to test texture creation
-        // In a full implementation, this would trigger async tile loading
-        atlas_dirty_ = true;
-        spdlog::debug("Triggering tile loading for {}/{}/{}", coords.x, coords.y, coords.zoom);
+        // Trigger async tile texture loading through tile manager
+        if (tile_manager_) {
+            // Define callback to handle texture loading completion
+            auto texture_loaded_callback = [this](const TileCoordinates& loaded_coords, std::uint32_t texture_id) {
+                // Texture loaded successfully, mark atlas as dirty so it gets updated with the new texture
+                atlas_dirty_ = true;
+                spdlog::debug("Tile texture loaded and atlas marked dirty for {}/{}/{}: texture_id={}",
+                             loaded_coords.x, loaded_coords.y, loaded_coords.zoom, texture_id);
+            };
+
+            auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callback);
+            spdlog::debug("Triggered async tile texture loading for {}/{}/{}", coords.x, coords.y, coords.zoom);
+        } else {
+            spdlog::warn("No tile manager available for loading tiles");
+        }
     }
 };
 

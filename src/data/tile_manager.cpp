@@ -188,6 +188,20 @@ bool BasicTileManager::LoadTile(const TileCoordinates& coordinates) {
     return true;
 }
 
+std::future<bool> BasicTileManager::LoadTileTextureAsync(
+    const TileCoordinates& coordinates,
+    TileTextureCallback callback) {
+    // Delegate to texture manager if available
+    if (texture_manager_) {
+        return texture_manager_->LoadTextureAsync(coordinates, callback);
+    }
+
+    // Return failed future if no texture manager
+    auto promise = std::make_shared<std::promise<bool>>();
+    promise->set_value(false);
+    return promise->get_future();
+}
+
 bool BasicTileManager::UnloadTile(const TileCoordinates& coordinates) {
     for (auto it = tiles_.begin(); it != tiles_.end(); ++it) {
         if ((*it)->coordinates.x == coordinates.x &&

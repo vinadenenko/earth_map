@@ -12,9 +12,10 @@
 #include <earth_map/math/bounding_box.h>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
-// #include <glm/mat4.hpp>
+#include <glm/mat4x4.hpp>
 #include <vector>
 #include <memory>
+#include <future>
 #include <cstdint>
 #include <cstddef>
 
@@ -23,6 +24,11 @@ namespace earth_map {
 // Forward declarations
 class TileCache;
 class TileTextureManager;
+
+/**
+ * @brief Callback for tile texture loading completion
+ */
+using TileTextureCallback = std::function<void(const TileCoordinates&, std::uint32_t)>;
 
 /**
  * @brief Tile data structure
@@ -163,11 +169,22 @@ public:
     
     /**
      * @brief Load tile by coordinates
-     * 
+     *
      * @param coordinates Tile coordinates to load
      * @return true if loading started successfully, false otherwise
      */
     virtual bool LoadTile(const TileCoordinates& coordinates) = 0;
+
+    /**
+     * @brief Load tile texture asynchronously
+     *
+     * @param coordinates Tile coordinates to load texture for
+     * @param callback Optional callback called when texture loading completes
+     * @return std::future<bool> Future that resolves to true if loading succeeded
+     */
+    virtual std::future<bool> LoadTileTextureAsync(
+        const TileCoordinates& coordinates,
+        TileTextureCallback callback = nullptr) = 0;
     
     /**
      * @brief Unload tile by coordinates
@@ -313,6 +330,9 @@ public:
     bool SetConfiguration(const TileManagerConfig& config) override;
     void SetTextureManager(std::shared_ptr<TileTextureManager> texture_manager) override;
     bool InitializeWithTextureManager(std::shared_ptr<TileTextureManager> texture_manager) override;
+    std::future<bool> LoadTileTextureAsync(
+        const TileCoordinates& coordinates,
+        TileTextureCallback callback = nullptr) override;
 
 private:
     TileManagerConfig config_;
