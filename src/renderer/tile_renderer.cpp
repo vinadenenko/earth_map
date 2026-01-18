@@ -876,7 +876,7 @@ private:
         // altitude ~0.01 = very close (surface), altitude ~2.0 = far (full globe view)
 
         // Tmp for testing, because now camera distance is wrong
-        return 4;
+        return 2;
 
         if (altitude < 0.01f) return 18;   // Extremely close - highest detail
         if (altitude < 0.02f) return 16;

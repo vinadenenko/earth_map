@@ -644,6 +644,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
         result.retry_count = attempt;
         
         if (DownloadTile(url, headers, data, status_code)) {
+            spdlog::info("Tile downloaded ok");
             result.status_code = status_code;
             break;
         }
@@ -660,6 +661,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     }
     
     if (data.empty()) {
+        spdlog::warn("Tile downloaded error, x: {}, y: {}, z: {}, url: {}", coordinates.x, coordinates.y, coordinates.zoom, url);
         result.error_message = "Failed to download tile after " + 
                              std::to_string(result.retry_count) + " attempts";
         UpdateStats(result);
