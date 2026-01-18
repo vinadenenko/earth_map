@@ -113,6 +113,8 @@ private:
     // State tracking
     std::atomic<std::uint32_t> uploads_this_frame_{0};
     std::unordered_set<TileCoordinates, TileCoordinatesHash> loading_textures_;
+    // TODO: very bad, at least it should be read/write separated mutex
+    std::mutex loading_textures_mutex_;
     
     // Internal methods
     std::uint32_t CreateOpenGLTexture();
@@ -204,6 +206,7 @@ std::future<bool> BasicTileTextureManager::LoadTextureAsync(
     auto future = promise->get_future();
     
     // Check if already loading
+    std::lock_guard<std::mutex> lock(loading_textures_mutex_);
 
     // std::thread::id current_id = std::this_thread::get_id();
     // std::cout << "This thread's ID: " << current_id << std::endl;
@@ -248,7 +251,7 @@ std::future<bool> BasicTileTextureManager::LoadTextureAsync(
                         callback(coordinates, texture_id);
                     }
                 }
-                
+                std::lock_guard<std::mutex> lock(loading_textures_mutex_);
                 loading_textures_.erase(coordinates);
                 promise->set_value(success);
             });
