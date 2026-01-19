@@ -8,9 +8,8 @@
  * OpenGL rendering operations, shader management, and GPU resource handling.
  */
 
-#include <earth_map/platform/opengl_context.h>
-#include <earth_map/math/bounding_box.h>
-#include <earth_map/math/frustum.h>
+#include "earth_map/math/bounding_box.h"
+#include "earth_map/core/camera_controller.h"
 #include <glm/glm.hpp>
 #include <memory>
 #include <string>
@@ -20,6 +19,7 @@
 namespace earth_map {
 
 // Forward declarations
+struct Configuration;
 class ShaderManager;
 class TileRenderer;
 class PlacemarkRenderer;
@@ -66,10 +66,10 @@ public:
     /**
      * @brief Create a new renderer instance
      * 
-     * @param opengl_context OpenGL context for rendering
+     * @param config Configuration parameters for renderer initialization
      * @return std::unique_ptr<Renderer> New renderer instance
      */
-    static std::unique_ptr<Renderer> Create(OpenGLContext* opengl_context);
+    static std::unique_ptr<Renderer> Create(const Configuration& config);
     
     /**
      * @brief Virtual destructor
@@ -98,6 +98,13 @@ public:
      * Finalizes rendering and presents the frame
      */
     virtual void EndFrame() = 0;
+    
+    /**
+     * @brief Render frame with current camera state
+     * 
+     * Convenience method that performs frame rendering with current state
+     */
+    virtual void Render() = 0;
     
     /**
      * @brief Render the scene
@@ -156,11 +163,25 @@ public:
     virtual LODManager* GetLODManager() = 0;
     
     /**
-     * @brief Get the GPU resource manager
+     * @brief Get GPU resource manager
      * 
      * @return GPUResourceManager* Pointer to GPU resource manager (non-owning)
      */
     virtual GPUResourceManager* GetGPUResourceManager() = 0;
+    
+    /**
+     * @brief Get camera controller
+     * 
+     * @return CameraController* Pointer to camera controller (non-owning)
+     */
+    virtual CameraController* GetCameraController() const = 0;
+    
+    /**
+     * @brief Set camera controller for integration
+     * 
+     * @param camera_controller Pointer to camera controller
+     */
+    virtual void SetCameraController(CameraController* camera_controller) = 0;
 
 protected:
     /**

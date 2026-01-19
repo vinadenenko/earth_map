@@ -15,6 +15,7 @@
 namespace earth_map {
 
 // Forward declarations
+struct Configuration;
 class Renderer;
 class CameraController;
 
@@ -72,5 +73,13 @@ protected:
      */
     SceneManager() = default;
 };
+
+/**
+ * @brief Factory function to create scene manager instance
+ * 
+ * @param config Configuration parameters
+ * @return SceneManager* New scene manager instance (caller owns)
+ */
+SceneManager* CreateSceneManager(const Configuration& config);
 
 } // namespace earth_map

@@ -69,6 +69,9 @@ class EarthMapConan(ConanFile):
         # Logging framework
         self.requires("spdlog/1.13.0")
 
+        # Network requests
+        self.requires("libcurl/8.17.0")
+
         # Testing framework (when tests are enabled)
         if self.options.with_tests:
             self.requires("gtest/1.14.0")

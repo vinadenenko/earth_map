@@ -10,11 +10,15 @@
 
 #include "earth_map/math/frustum.h"
 #include <earth_map/math/bounding_box.h>
+#include "earth_map/renderer/camera.h"
 #include <glm/glm.hpp>
 #include <memory>
 #include <cstdint>
 
 namespace earth_map {
+
+// Forward declarations
+struct Configuration;
 
 /**
  * @brief Camera controller for 3D globe navigation
@@ -24,15 +28,7 @@ namespace earth_map {
  * coordinates and Cartesian coordinates.
  */
 class CameraController {
-public:
-    /**
-     * @brief Camera projection types
-     */
-    enum class ProjectionType {
-        PERSPECTIVE,    ///< Perspective projection (3D)
-        ORTHOGRAPHIC    ///< Orthographic projection (2D)
-    };
-    
+public:   
     /**
      * @brief Camera movement modes
      */
@@ -46,6 +42,15 @@ public:
      * @brief Virtual destructor
      */
     virtual ~CameraController() = default;
+    
+    /**
+     * @brief Initialize the camera controller
+     * 
+     * Sets up initial camera state and internal data structures
+     * 
+     * @return true if initialization succeeded, false otherwise
+     */
+    virtual bool Initialize() = 0;
     
     /**
      * @brief Set camera position in geographic coordinates
@@ -158,14 +163,14 @@ public:
      * 
      * @param projection_type Camera projection type
      */
-    virtual void SetProjectionType(ProjectionType projection_type) = 0;
+    virtual void SetProjectionType(CameraProjectionType projection_type) = 0;
     
     /**
      * @brief Get projection type
      * 
-     * @return ProjectionType Current projection type
+     * @return CameraProjectionType Current projection type
      */
-    virtual ProjectionType GetProjectionType() const = 0;
+    virtual CameraProjectionType GetProjectionType() const = 0;
     
     /**
      * @brief Set movement mode
@@ -201,5 +206,13 @@ protected:
      */
     CameraController() = default;
 };
+
+/**
+ * @brief Factory function to create camera controller instance
+ * 
+ * @param config Configuration parameters
+ * @return CameraController* New camera controller instance (caller owns)
+ */
+CameraController* CreateCameraController(const Configuration& config);
 
 } // namespace earth_map

@@ -1,10 +1,10 @@
 #include <earth_map/core/scene_manager.h>
 #include <earth_map/renderer/renderer.h>
+#include <earth_map/earth_map.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <fstream>
 #include <string>
-#include <earth_map/earth_map.h>
 
 namespace earth_map {
 
@@ -46,7 +46,17 @@ public:
         }
         
         // Update scene objects, perform culling, etc.
-        // For now, this is a placeholder
+            // Get camera and update tile visibility
+        if (renderer_) {
+            auto tile_renderer = renderer_->GetTileRenderer();
+            
+            // For now, notify tile renderer that it should update based on current camera state
+            if (tile_renderer) {
+                // This is a simplified implementation
+                // In a full system, camera_controller would be passed to scene manager
+                spdlog::debug("Scene manager update - tile renderer available");
+            }
+        }
     }
     
     bool LoadData(const std::string& file_path) override {

@@ -1,216 +1,171 @@
+#define GLM_ENABLE_EXPERIMENTAL
 #include "earth_map/core/camera_controller.h"
+#include <earth_map/renderer/camera.h>
 #include <earth_map/earth_map.h>
-#include <earth_map/math/frustum.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
-#include <cmath>
+#include <memory>
 
 namespace earth_map {
 
 /**
- * @brief Basic camera controller implementation
+ * @brief Enhanced camera controller implementation using Phase 5 camera system
  */
 class CameraControllerImpl : public CameraController {
 public:
     explicit CameraControllerImpl(const Configuration& config) : config_(config) {
-        spdlog::info("Creating camera controller");
+        spdlog::info("Creating enhanced camera controller");
+        
+        // Create perspective camera as default
+        camera_ = CreatePerspectiveCamera(config_);
+        
+        // Set default constraints suitable for globe navigation
+        CameraConstraints constraints;
+        constraints.min_altitude = 100.0f;           // 100m above surface
+        constraints.max_altitude = 10000000.0f;      // 10000km max altitude
+        constraints.min_pitch = -89.0f;               // Nearly straight down
+        constraints.max_pitch = 89.0f;                // Nearly straight up
+        constraints.enable_ground_collision = true;
+        constraints.ground_clearance = 10.0f;         // 10m clearance
+        constraints.max_rotation_speed = 180.0f;       // 180°/second
+        constraints.max_movement_speed = 1000.0f;       // 1km/second
+        
+        camera_->SetConstraints(constraints);
+        camera_->SetMovementMode(static_cast<::earth_map::MovementMode>(MovementMode::ORBIT));
+        
         Reset();
     }
     
     ~CameraControllerImpl() override {
-        spdlog::info("Destroying camera controller");
+        spdlog::info("Destroying enhanced camera controller");
     }
     
-    bool Initialize() {
+    bool Initialize() override {
         if (initialized_) {
             return true;
         }
         
-        spdlog::info("Initializing camera controller");
-        initialized_ = true;
+        spdlog::info("Initializing enhanced camera controller");
         
-        spdlog::info("Camera controller initialized successfully");
+        if (!camera_->Initialize()) {
+            spdlog::error("Failed to initialize camera");
+            return false;
+        }
+        
+        initialized_ = true;
+        spdlog::info("Enhanced camera controller initialized successfully");
         return true;
     }
     
     void SetGeographicPosition(double longitude, double latitude, double altitude) override {
-        // Convert geographic coordinates to Cartesian coordinates
-        // This is a simplified conversion for demo purposes
-        const double earth_radius = 6371000.0; // Earth radius in meters
-        
-        double lat_rad = glm::radians(latitude);
-        double lon_rad = glm::radians(longitude);
-        double r = earth_radius + altitude;
-        
-        position_.x = static_cast<float>(r * cos(lat_rad) * cos(lon_rad));
-        position_.y = static_cast<float>(r * sin(lat_rad));
-        position_.z = static_cast<float>(r * cos(lat_rad) * sin(lon_rad));
-        
-        UpdateViewMatrix();
+        camera_->SetGeographicPosition(longitude, latitude, altitude);
     }
     
     void SetPosition(const glm::vec3& position) override {
-        position_ = position;
-        UpdateViewMatrix();
+        camera_->SetPosition(position);
     }
     
     glm::vec3 GetPosition() const override {
-        return position_;
+        return camera_->GetPosition();
     }
     
     void SetGeographicTarget(double longitude, double latitude, double altitude) override {
-        // Convert geographic coordinates to Cartesian coordinates
-        const double earth_radius = 6371000.0;
-        
-        double lat_rad = glm::radians(latitude);
-        double lon_rad = glm::radians(longitude);
-        double r = earth_radius + altitude;
-        
-        target_.x = static_cast<float>(r * cos(lat_rad) * cos(lon_rad));
-        target_.y = static_cast<float>(r * sin(lat_rad));
-        target_.z = static_cast<float>(r * cos(lat_rad) * sin(lon_rad));
-        
-        UpdateViewMatrix();
+        camera_->SetGeographicTarget(longitude, latitude, altitude);
     }
     
     void SetTarget(const glm::vec3& target) override {
-        target_ = target;
-        UpdateViewMatrix();
+        camera_->SetTarget(target);
     }
     
     glm::vec3 GetTarget() const override {
-        return target_;
+        return camera_->GetTarget();
     }
     
     void SetOrientation(double heading, double pitch, double roll) override {
-        heading_ = static_cast<float>(heading);
-        pitch_ = static_cast<float>(pitch);
-        roll_ = static_cast<float>(roll);
-        UpdateViewMatrix();
+        camera_->SetOrientation(heading, pitch, roll);
     }
     
     glm::vec3 GetOrientation() const override {
-        return glm::vec3(heading_, pitch_, roll_);
+        return camera_->GetOrientation();
     }
     
     void SetFieldOfView(float fov_y) override {
-        fov_y_ = glm::clamp(fov_y, 1.0f, 179.0f);
+        camera_->SetFieldOfView(fov_y);
     }
     
     float GetFieldOfView() const override {
-        return fov_y_;
+        return camera_->GetFieldOfView();
     }
     
     void SetClippingPlanes(float near_plane, float far_plane) override {
-        near_plane_ = near_plane;
-        far_plane_ = far_plane;
+        camera_->SetClippingPlanes(near_plane, far_plane);
     }
     
     glm::mat4 GetViewMatrix() const override {
-        return view_matrix_;
+        return camera_->GetViewMatrix();
     }
     
     glm::mat4 GetProjectionMatrix(float aspect_ratio) const override {
-        if (projection_type_ == ProjectionType::PERSPECTIVE) {
-            return glm::perspective(glm::radians(fov_y_), aspect_ratio, near_plane_, far_plane_);
-        } else {
-            float half_height = far_plane_ * glm::tan(glm::radians(fov_y_) * 0.5f);
-            float half_width = half_height * aspect_ratio;
-            return glm::ortho(-half_width, half_width, -half_height, half_height, near_plane_, far_plane_);
-        }
+        return camera_->GetProjectionMatrix(aspect_ratio);
     }
     
     Frustum GetFrustum(float aspect_ratio) const override {
-        // Create a simple frustum (placeholder implementation)
-        Frustum frustum;
-        // TODO: Implement actual frustum calculation
-        return frustum;
+        return camera_->GetFrustum(aspect_ratio);
     }
     
-    void SetProjectionType(ProjectionType projection_type) override {
-        projection_type_ = projection_type;
-    }
-    
-    ProjectionType GetProjectionType() const override {
-        return projection_type_;
-    }
-    
-    void SetMovementMode(MovementMode movement_mode) override {
-        movement_mode_ = movement_mode;
-    }
-    
-    MovementMode GetMovementMode() const override {
-        return movement_mode_;
-    }
-    
-    void Update(float delta_time) override {
-        // Update camera animations and movement
-        if (movement_mode_ == MovementMode::ORBIT) {
-            // Simple orbit animation for demo
-            float rotation_speed = 0.2f; // radians per second
-            float angle = rotation_speed * delta_time;
-            
-            glm::mat4 rotation = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0.0f, 1.0f, 0.0f));
-            position_ = glm::vec3(rotation * glm::vec4(position_, 1.0f));
-            
-            UpdateViewMatrix();
+    void SetProjectionType(CameraProjectionType projection_type) override {
+        // Recreate camera with new projection type
+        switch (projection_type) {
+            case CameraProjectionType::PERSPECTIVE:
+                camera_ = CreatePerspectiveCamera(config_);
+                break;
+            case CameraProjectionType::ORTHOGRAPHIC:
+                camera_ = CreateOrthographicCamera(config_);
+                break;
+        }
+        
+        // Restore current camera state
+        if (initialized_) {
+            camera_->Initialize();
         }
     }
     
+    CameraProjectionType GetProjectionType() const override {
+        return static_cast<CameraProjectionType>(camera_->GetProjectionType());
+    }
+    
+    void SetMovementMode(MovementMode movement_mode) override {
+        camera_->SetMovementMode(static_cast<::earth_map::MovementMode>(movement_mode));
+    }
+    
+    MovementMode GetMovementMode() const override {
+        return static_cast<MovementMode>(camera_->GetMovementMode());
+    }
+    
+    void Update(float delta_time) override {
+        camera_->Update(delta_time);
+    }
+    
     void Reset() override {
-        // Set default position looking at the globe
-        position_ = glm::vec3(0.0f, 0.0f, 3.0f);
-        target_ = glm::vec3(0.0f, 0.0f, 0.0f);
-        up_ = glm::vec3(0.0f, 1.0f, 0.0f);
+        // Reset to default globe view position
+        // Looking at Earth from a distance
+        camera_->Reset();
         
-        heading_ = 0.0f;
-        pitch_ = 0.0f;
-        roll_ = 0.0f;
-        
-        fov_y_ = 45.0f;
-        near_plane_ = 0.1f;
-        far_plane_ = 1000.0f;
-        
-        projection_type_ = ProjectionType::PERSPECTIVE;
-        movement_mode_ = MovementMode::FREE;
-        
-        UpdateViewMatrix();
+        // Set default orbital position
+        camera_->SetGeographicPosition(0.0, 0.0, 6371000.0f * 3.0f); // 3 Earth radii
+        camera_->SetGeographicTarget(0.0, 0.0, 0.0);
+        camera_->SetOrientation(0.0, 0.0, 0.0);
+        camera_->SetMovementMode(static_cast<::earth_map::MovementMode>(MovementMode::ORBIT));
     }
 
 private:
     Configuration config_;
     bool initialized_ = false;
-    
-    // Camera position and orientation
-    glm::vec3 position_ = glm::vec3(0.0f, 0.0f, 3.0f);
-    glm::vec3 target_ = glm::vec3(0.0f, 0.0f, 0.0f);
-    glm::vec3 up_ = glm::vec3(0.0f, 1.0f, 0.0f);
-    
-    // Orientation angles (degrees)
-    float heading_ = 0.0f;
-    float pitch_ = 0.0f;
-    float roll_ = 0.0f;
-    
-    // Projection parameters
-    float fov_y_ = 45.0f;
-    float near_plane_ = 0.1f;
-    float far_plane_ = 1000.0f;
-    
-    // Camera settings
-    ProjectionType projection_type_ = ProjectionType::PERSPECTIVE;
-    MovementMode movement_mode_ = MovementMode::FREE;
-    
-    // Matrices
-    glm::mat4 view_matrix_ = glm::mat4(1.0f);
-    
-    void UpdateViewMatrix() {
-        view_matrix_ = glm::lookAt(position_, target_, up_);
-    }
+    std::unique_ptr<Camera> camera_;
 };
 
-// Factory function - for now, create in the constructor
-// In the future, this might be moved to a factory pattern
+// Factory function implementation
 CameraController* CreateCameraController(const Configuration& config) {
     return new CameraControllerImpl(config);
 }

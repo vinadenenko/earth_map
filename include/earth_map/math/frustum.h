@@ -110,7 +110,51 @@ struct Frustum {
      * 
      * @param view_projection Combined view and projection matrix
      */
-    explicit Frustum(const glm::mat4& view_projection);
+    explicit Frustum(const glm::mat4& view_projection) {
+        // Extract frustum planes from view-projection matrix
+        // Each plane equation: normal · x + distance = 0
+        
+        // Left plane: column 4 + column 1
+        planes[LEFT].normal = glm::vec3(view_projection[0][3] + view_projection[0][0],
+                                           view_projection[1][3] + view_projection[1][0], 
+                                           view_projection[2][3] + view_projection[2][0]);
+        planes[LEFT].distance = view_projection[3][3] + view_projection[3][0];
+        
+        // Right plane: column 4 - column 1  
+        planes[RIGHT].normal = glm::vec3(view_projection[0][3] - view_projection[0][0],
+                                            view_projection[1][3] - view_projection[1][0],
+                                            view_projection[2][3] - view_projection[2][0]);
+        planes[RIGHT].distance = view_projection[3][3] - view_projection[3][0];
+        
+        // Bottom plane: column 4 + column 2
+        planes[BOTTOM].normal = glm::vec3(view_projection[0][3] + view_projection[0][1],
+                                              view_projection[1][3] + view_projection[1][1],
+                                              view_projection[2][3] + view_projection[2][1]);
+        planes[BOTTOM].distance = view_projection[3][3] + view_projection[3][1];
+        
+        // Top plane: column 4 - column 2
+        planes[TOP].normal = glm::vec3(view_projection[0][3] - view_projection[0][1],
+                                           view_projection[1][3] - view_projection[1][1],
+                                           view_projection[2][3] - view_projection[2][1]);
+        planes[TOP].distance = view_projection[3][3] - view_projection[3][1];
+        
+        // Near plane: column 4 + column 3
+        planes[NEAR].normal = glm::vec3(view_projection[0][3] + view_projection[0][2],
+                                             view_projection[1][3] + view_projection[1][2],
+                                             view_projection[2][3] + view_projection[2][2]);
+        planes[NEAR].distance = view_projection[3][3] + view_projection[3][2];
+        
+        // Far plane: column 4 - column 3
+        planes[FAR].normal = glm::vec3(view_projection[0][3] - view_projection[0][2],
+                                           view_projection[1][3] - view_projection[1][2],
+                                           view_projection[2][3] - view_projection[2][2]);
+        planes[FAR].distance = view_projection[3][3] - view_projection[3][2];
+        
+        // Normalize all plane normals
+        for (auto& plane : planes) {
+            plane.normal = glm::normalize(plane.normal);
+        }
+    }
     
     /**
      * @brief Update frustum from view-projection matrix
@@ -137,12 +181,24 @@ struct Frustum {
     
     /**
      * @brief Check if a bounding sphere is inside the frustum
-     * 
+     *
      * @param center Sphere center
      * @param radius Sphere radius
      * @return true if sphere is inside or intersects frustum, false otherwise
      */
-    bool Intersects(const glm::vec3& center, float radius) const;
+    bool Intersects(const glm::vec3& center, float radius) const {
+        // Test sphere against each frustum plane
+        for (const auto& plane : planes) {
+            // Calculate signed distance from sphere center to plane
+            float distance = plane.DistanceTo(center);
+            // If sphere is entirely behind any plane, it's outside the frustum
+            if (distance < -radius) {
+                return false;
+            }
+        }
+        // Sphere intersects or is inside all planes
+        return true;
+    }
     
     /**
      * @brief Get frustum corners
@@ -158,7 +214,10 @@ struct Frustum {
      * 
      * @return true if frustum planes are valid, false otherwise
      */
-    bool IsValid() const;
+    bool IsValid() const {
+        // TODO: implement this
+        return true;
+    }
     
     /**
      * @brief Normalize all planes in the frustum
