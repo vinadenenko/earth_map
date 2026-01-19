@@ -6,6 +6,7 @@
 #include <earth_map/renderer/tile_texture_manager.h>
 #include <earth_map/data/tile_cache.h>
 #include <earth_map/data/tile_loader.h>
+#include <iostream>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 // #include <glad/glad.h>
@@ -112,6 +113,8 @@ private:
     // State tracking
     std::atomic<std::uint32_t> uploads_this_frame_{0};
     std::unordered_set<TileCoordinates, TileCoordinatesHash> loading_textures_;
+    // TODO: very bad, at least it should be read/write separated mutex
+    std::mutex loading_textures_mutex_;
     
     // Internal methods
     std::uint32_t CreateOpenGLTexture();
@@ -169,6 +172,8 @@ void BasicTileTextureManager::SetTileCache(std::shared_ptr<TileCache> cache) {
 
 void BasicTileTextureManager::SetTileLoader(std::shared_ptr<TileLoader> loader) {
     tile_loader_ = loader;
+    // TODO: remove it from here and handle proper provider init and TileLoader ownership!
+    tile_loader_->Initialize({});
 }
 
 std::uint32_t BasicTileTextureManager::GetTexture(const TileCoordinates& coordinates) {
@@ -195,29 +200,38 @@ std::uint32_t BasicTileTextureManager::GetTexture(const TileCoordinates& coordin
 std::future<bool> BasicTileTextureManager::LoadTextureAsync(
     const TileCoordinates& coordinates,
     TileTextureCallback callback) {
-    
+
+    // spdlog::info("TextureManager: LoadTextureAsync called for {}/{}/{}", coordinates.x, coordinates.y, coordinates.zoom);
+
     auto promise = std::make_shared<std::promise<bool>>();
     auto future = promise->get_future();
     
     // Check if already loading
+    std::lock_guard<std::mutex> lock(loading_textures_mutex_);
+
+    // std::thread::id current_id = std::this_thread::get_id();
+    // std::cout << "This thread's ID: " << current_id << std::endl;
+    // std::cout << "Started Loading texture size: " << loading_textures_.size() << std::endl;
     if (loading_textures_.find(coordinates) != loading_textures_.end()) {
+        // std::cout << "Failed Loading texture size: " << loading_textures_.size() << std::endl;
         promise->set_value(false);
         return future;
     }
+    // std::cout << "Finished Loading texture size: " << loading_textures_.size() << std::endl;
     
     loading_textures_.insert(coordinates);
     
     // Check cache first
     if (tile_cache_) {
-        auto cached_tile = tile_cache_->Retrieve(coordinates);
-        if (cached_tile && cached_tile->IsValid()) {
+        auto cached_tile = tile_cache_->Get(coordinates);
+        if (cached_tile.has_value() && cached_tile->IsValid()) {
             bool success = UpdateTexture(coordinates, *cached_tile);
-            
+
             if (callback) {
                 auto texture_id = GetTexture(coordinates);
                 callback(coordinates, texture_id);
             }
-            
+
             loading_textures_.erase(coordinates);
             promise->set_value(success);
             return future;
@@ -238,7 +252,7 @@ std::future<bool> BasicTileTextureManager::LoadTextureAsync(
                         callback(coordinates, texture_id);
                     }
                 }
-                
+                std::lock_guard<std::mutex> lock(loading_textures_mutex_);
                 loading_textures_.erase(coordinates);
                 promise->set_value(success);
             });

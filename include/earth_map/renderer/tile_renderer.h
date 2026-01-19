@@ -20,6 +20,7 @@ namespace earth_map {
 
 // Forward declarations
 class TileManager;
+class TileTextureCoordinator;
 struct Frustum;
 
 /**
@@ -102,11 +103,18 @@ public:
     
     /**
      * @brief Set tile manager for texture access
-     * 
+     *
      * @param tile_manager Pointer to tile manager (non-owning)
      */
     virtual void SetTileManager(TileManager* tile_manager) = 0;
-    
+
+    /**
+     * @brief Set texture coordinator for tile texture management
+     *
+     * @param coordinator Pointer to texture coordinator (non-owning)
+     */
+    virtual void SetTextureCoordinator(TileTextureCoordinator* coordinator) = 0;
+
     /**
      * @brief Update visible tiles based on camera position
      * 
@@ -172,6 +180,13 @@ public:
                                                   std::uint32_t screen_height,
                                                   const glm::mat4& view_matrix,
                                                   const glm::mat4& projection_matrix) = 0;
+    
+    /**
+     * @brief Get globe texture for rendering
+     * 
+     * @return std::uint32_t OpenGL texture ID for globe (0 if none)
+     */
+    virtual std::uint32_t GetGlobeTexture() const = 0;
 
 protected:
     /**

@@ -12,9 +12,10 @@
 #include <earth_map/math/bounding_box.h>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
-// #include <glm/mat4.hpp>
+#include <glm/mat4x4.hpp>
 #include <vector>
 #include <memory>
+#include <future>
 #include <cstdint>
 #include <cstddef>
 
@@ -22,7 +23,6 @@ namespace earth_map {
 
 // Forward declarations
 class TileCache;
-class TileTextureManager;
 
 /**
  * @brief Tile data structure
@@ -154,16 +154,8 @@ public:
     virtual const Tile* GetTile(const TileCoordinates& coordinates) const = 0;
     
     /**
-     * @brief Get OpenGL texture ID for tile
-     * 
-     * @param coordinates Tile coordinates
-     * @return std::uint32_t OpenGL texture ID or 0 if not found
-     */
-    virtual std::uint32_t GetTileTexture(const TileCoordinates& coordinates) const = 0;
-    
-    /**
      * @brief Load tile by coordinates
-     * 
+     *
      * @param coordinates Tile coordinates to load
      * @return true if loading started successfully, false otherwise
      */
@@ -238,26 +230,11 @@ public:
     
     /**
      * @brief Set configuration
-     * 
+     *
      * @param config New configuration parameters
      * @return true if configuration was applied, false otherwise
      */
     virtual bool SetConfiguration(const TileManagerConfig& config) = 0;
-    
-    /**
-     * @brief Set tile texture manager
-     * 
-     * @param texture_manager Texture manager instance
-     */
-    virtual void SetTextureManager(std::shared_ptr<TileTextureManager> texture_manager) = 0;
-    
-    /**
-     * @brief Initialize tile manager with texture manager
-     * 
-     * @param texture_manager Texture manager instance
-     * @return true if initialization succeeded, false otherwise
-     */
-    virtual bool InitializeWithTextureManager(std::shared_ptr<TileTextureManager> texture_manager) = 0;
 
 protected:
     /**
@@ -293,7 +270,6 @@ public:
     
     std::vector<const Tile*> GetVisibleTiles() const override;
     const Tile* GetTile(const TileCoordinates& coordinates) const override;
-    std::uint32_t GetTileTexture(const TileCoordinates& coordinates) const override;
     bool LoadTile(const TileCoordinates& coordinates) override;
     bool UnloadTile(const TileCoordinates& coordinates) override;
     
@@ -311,8 +287,6 @@ public:
     
     TileManagerConfig GetConfiguration() const override;
     bool SetConfiguration(const TileManagerConfig& config) override;
-    void SetTextureManager(std::shared_ptr<TileTextureManager> texture_manager) override;
-    bool InitializeWithTextureManager(std::shared_ptr<TileTextureManager> texture_manager) override;
 
 private:
     TileManagerConfig config_;
@@ -321,8 +295,7 @@ private:
     glm::vec3 last_camera_position_ = glm::vec3(0.0f);
     glm::vec2 last_viewport_size_ = glm::vec2(0.0f);
     bool needs_update_ = true;
-    std::shared_ptr<TileTextureManager> texture_manager_;
-    
+
     /**
      * @brief Find or create tile by coordinates
      */

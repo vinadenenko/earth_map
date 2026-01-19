@@ -34,6 +34,7 @@ void framebuffer_size_callback(GLFWwindow* /*window*/, int width, int height) {
 
 // Mouse button callback
 void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mods*/) {
+    spdlog::info("Click");
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
@@ -90,6 +91,7 @@ void cursor_position_callback(GLFWwindow* /*window*/, double xpos, double ypos) 
 
 // Scroll callback for zoom
 void scroll_callback(GLFWwindow* /*window*/, double xoffset, double yoffset) {
+    spdlog::info("Scroll");
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
@@ -108,7 +110,7 @@ void scroll_callback(GLFWwindow* /*window*/, double xoffset, double yoffset) {
             
             camera->SetPosition(new_pos);
             
-            spdlog::debug("Scroll: zoom_factor={:.3f}, new_distance={:.1f}", zoom_factor, new_distance);
+            spdlog::info("Scroll: zoom_factor={:.3f}, new_distance={:.1f}", zoom_factor, new_distance);
             
             // TODO: Trigger tile loading at new zoom level
             // This would involve:
@@ -130,6 +132,8 @@ int main() {
         // Display library info
         std::cout << "Library Version: " << earth_map::LibraryInfo::GetVersion() << "\n";
         std::cout << "Build Info: " << earth_map::LibraryInfo::GetBuildInfo() << "\n";
+
+        // spdlog::set_level(spdlog::level::debug);
         
         // Initialize GLFW
         if (!glfwInit()) {
@@ -141,7 +145,8 @@ int main() {
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        
+        // glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); // Run in headless mode for debugging
+
         // Create window
         const int window_width = 1280;
         const int window_height = 720;
@@ -207,34 +212,54 @@ int main() {
         // Main render loop
         std::cout << "Starting render loop...\n";
         std::cout << "Press ESC to exit\n\n";
-        
+
+        // Debug: Check window state before loop
+        std::cout << "DEBUG: Window pointer: " << window << "\n";
+        std::cout << "DEBUG: glfwWindowShouldClose before loop: " << glfwWindowShouldClose(window) << "\n";
+
         auto last_time = std::chrono::high_resolution_clock::now();
         int frame_count = 0;
-        
+
         while (!glfwWindowShouldClose(window)) {
+            if (frame_count < 3) {
+                std::cout << "DEBUG: Frame " << frame_count << " start\n";
+            }
             // Calculate delta time
             auto current_time = std::chrono::high_resolution_clock::now();
             float delta_time = std::chrono::duration<float>(current_time - last_time).count();
             last_time = current_time;
-            
+
             // Process input
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+                std::cout << "DEBUG: ESC pressed\n";
                 glfwSetWindowShouldClose(window, true);
             }
-            
+
             // Update camera
             auto camera = earth_map_instance->GetCameraController();
             if (camera) {
                 camera->Update(delta_time);
             }
-            
+
+            if (frame_count < 3) {
+                std::cout << "DEBUG: Frame " << frame_count << " calling Render()\n";
+            }
+
             // Render
             earth_map_instance->Render();
+
+            if (frame_count < 3) {
+                std::cout << "DEBUG: Frame " << frame_count << " Render() complete\n";
+            }
             
             // Swap buffers and poll events
             glfwSwapBuffers(window);
             glfwPollEvents();
-            
+
+            if (frame_count < 3) {
+                std::cout << "DEBUG: Frame " << frame_count << " after poll, windowShouldClose=" << glfwWindowShouldClose(window) << "\n";
+            }
+
             // Update frame counter
             frame_count++;
             
@@ -249,9 +274,8 @@ int main() {
                 auto camera = g_earth_map_instance->GetCameraController();
                 
                 if (tile_renderer && camera) {
-                    auto stats = tile_renderer->GetStats();
-                    spdlog::info("Tile Rendering Status - Visible: {}, Rendered: {}", 
-                                stats.visible_tiles, stats.rendered_tiles);
+                    // auto stats = tile_renderer->GetStats();
+                    // spdlog::info("Tile Rendering Status - Visible: {}, Rendered: {}", stats.visible_tiles, stats.rendered_tiles);
                 }
             // }
             }

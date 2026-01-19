@@ -313,7 +313,7 @@ private:
     TileLoaderConfig config_;
     std::shared_ptr<TileCache> tile_cache_;
     std::map<std::string, TileProvider> providers_;
-    std::string default_provider_;
+    std::string default_provider_{"OpenStreetMap"};
     TileLoaderStats stats_;
     ThreadPool thread_pool_;
     
@@ -420,17 +420,18 @@ TileLoadResult BasicTileLoader::LoadTile(const TileCoordinates& coordinates,
     // stats_.total_requests++;
     
     // Check cache first
+    // TODO: tile_cache_ is null now, investigate later
     if (tile_cache_) {
-        auto cached_tile = tile_cache_->Retrieve(coordinates);
+        auto cached_tile = tile_cache_->Get(coordinates);
         if (cached_tile && cached_tile->IsValid()) {
             stats_.cached_requests++;
-            
+
             TileLoadResult result;
             result.success = true;
-            result.tile_data = cached_tile;
+            result.tile_data = std::make_shared<TileData>(std::move(*cached_tile));
             result.coordinates = coordinates;
             result.provider_name = provider_name.empty() ? default_provider_ : provider_name;
-            
+
             return result;
         }
     }
@@ -643,6 +644,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
         result.retry_count = attempt;
         
         if (DownloadTile(url, headers, data, status_code)) {
+            spdlog::info("Tile downloaded ok");
             result.status_code = status_code;
             break;
         }
@@ -659,6 +661,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     }
     
     if (data.empty()) {
+        spdlog::warn("Tile downloaded error, x: {}, y: {}, z: {}, url: {}", coordinates.x, coordinates.y, coordinates.zoom, url);
         result.error_message = "Failed to download tile after " + 
                              std::to_string(result.retry_count) + " attempts";
         UpdateStats(result);
@@ -677,7 +680,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     
     // Store in cache
     if (tile_cache_) {
-        tile_cache_->Store(*tile_data);
+        tile_cache_->Put(*tile_data);
     }
     
     result.success = true;
