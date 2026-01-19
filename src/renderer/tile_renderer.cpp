@@ -277,9 +277,8 @@ public:
         glUniform3f(light_color_loc, 1.0f, 1.0f, 1.0f);
         glUniform3f(view_pos_loc, 0.0f, 0.0f, 3.0f);
 
-        // Set tile rendering uniforms (dynamic zoom and atlas info)
+        // Set tile rendering uniforms (dynamic zoom)
         const GLint zoom_loc = glGetUniformLocation(tile_shader_program_, "uZoomLevel");
-        const GLint tiles_per_row_loc = glGetUniformLocation(tile_shader_program_, "uTilesPerRow");
 
         // Get current zoom level from visible tiles (or use default)
         float current_zoom = 2.0f;  // Default
@@ -287,7 +286,45 @@ public:
             current_zoom = static_cast<float>(visible_tiles_[0].coordinates.zoom);
         }
         glUniform1f(zoom_loc, current_zoom);
-        glUniform1i(tiles_per_row_loc, tiles_per_row_);
+
+        // Populate tile data arrays for shader (only ready tiles)
+        constexpr int MAX_SHADER_TILES = 256;
+        std::vector<GLint> tile_coords_data;  // Flat array: x0,y0,z0, x1,y1,z1, ...
+        std::vector<GLfloat> tile_uvs_data;   // Flat array: u0,v0,w0,h0, u1,v1,w1,h1, ...
+
+        tile_coords_data.reserve(visible_tiles_.size() * 3);
+        tile_uvs_data.reserve(visible_tiles_.size() * 4);
+
+        int num_shader_tiles = 0;
+        for (const auto& tile : visible_tiles_) {
+            if (num_shader_tiles >= MAX_SHADER_TILES) break;
+            if (!tile.is_ready) continue;  // Only send ready tiles to shader
+
+            // Add tile coordinates
+            tile_coords_data.push_back(static_cast<GLint>(tile.coordinates.x));
+            tile_coords_data.push_back(static_cast<GLint>(tile.coordinates.y));
+            tile_coords_data.push_back(static_cast<GLint>(tile.coordinates.zoom));
+
+            // Add tile UV coordinates
+            tile_uvs_data.push_back(tile.uv_coords.x);  // u_min
+            tile_uvs_data.push_back(tile.uv_coords.y);  // v_min
+            tile_uvs_data.push_back(tile.uv_coords.z);  // u_max
+            tile_uvs_data.push_back(tile.uv_coords.w);  // v_max
+
+            num_shader_tiles++;
+        }
+
+        // Set tile data uniforms
+        const GLint num_tiles_loc = glGetUniformLocation(tile_shader_program_, "uNumTiles");
+        const GLint tile_coords_loc = glGetUniformLocation(tile_shader_program_, "uTileCoords");
+        const GLint tile_uvs_loc = glGetUniformLocation(tile_shader_program_, "uTileUVs");
+
+        glUniform1i(num_tiles_loc, num_shader_tiles);
+
+        if (num_shader_tiles > 0) {
+            glUniform3iv(tile_coords_loc, num_shader_tiles, tile_coords_data.data());
+            glUniform4fv(tile_uvs_loc, num_shader_tiles, tile_uvs_data.data());
+        }
 
         // Bind the coordinator's atlas texture
         glActiveTexture(GL_TEXTURE0);
@@ -299,7 +336,7 @@ public:
 
         const GLint tex_loc = glGetUniformLocation(tile_shader_program_, "uTileTexture");
         glUniform1i(tex_loc, 0);
-        
+
         // Render globe mesh with atlas texture
         glBindVertexArray(globe_vao_);
         glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
@@ -425,12 +462,17 @@ private:
             uniform vec3 uLightColor;
             uniform vec3 uViewPos;
             uniform float uTime;
-            uniform float uZoomLevel;      // Current zoom level (passed from CPU)
-            uniform int uTilesPerRow;      // Tiles per row in atlas
+            uniform float uZoomLevel;      // Current zoom level
+
+            // Tile data from TileTextureCoordinator
+            #define MAX_TILES 256
+            uniform int uNumTiles;                    // Number of visible tiles
+            uniform ivec3 uTileCoords[MAX_TILES];     // Tile coordinates (x, y, zoom)
+            uniform vec4 uTileUVs[MAX_TILES];         // Atlas UV coords (u_min, v_min, u_max, v_max)
 
             // Convert world position to geographic coordinates
             vec3 worldToGeo(vec3 worldPos) {
-                float lat = degrees(asin(clamp(worldPos.y, -1.0, 1.0)));  // y is up
+                float lat = degrees(asin(clamp(worldPos.y, -1.0, 1.0)));
                 float lon = degrees(atan(worldPos.x, worldPos.z));
                 return vec3(lon, lat, 0.0);
             }
@@ -443,6 +485,20 @@ private:
                 float lat_rad = radians(clamp(geo.y, -85.0511, 85.0511));
                 float y = (1.0 - log(tan(lat_rad) + 1.0/cos(lat_rad)) / 3.14159265359) / 2.0 * n;
                 return vec2(x, y);
+            }
+
+            // Find tile UV coordinates from loaded tiles
+            vec4 findTileUV(ivec3 tileCoord, vec2 tileFrac) {
+                // Search for matching tile in loaded tiles
+                for (int i = 0; i < uNumTiles && i < MAX_TILES; i++) {
+                    if (uTileCoords[i] == tileCoord) {
+                        // Found the tile - interpolate within its UV region
+                        vec4 uv = uTileUVs[i];
+                        vec2 atlasUV = mix(uv.xy, uv.zw, tileFrac);
+                        return vec4(atlasUV, 1.0, 1.0);  // Return UV + found flag
+                    }
+                }
+                return vec4(0.0, 0.0, 0.0, 0.0);  // Not found
             }
 
             void main() {
@@ -462,41 +518,36 @@ private:
                 float zoom = max(uZoomLevel, 0.0);
                 vec2 tile = geoToTile(geo.xy, zoom);
 
-                // Calculate number of tiles at this zoom level
-                float numTiles = pow(2.0, zoom);
-
-                // Ensure tile coordinates are in valid range [0, numTiles)
-                vec2 tileWrapped = mod(tile, numTiles);
+                // Get integer tile coordinates
+                ivec2 tileInt = ivec2(floor(tile));
+                int zoomInt = int(zoom);
 
                 // Calculate tile fraction (position within the tile)
-                vec2 tileFrac = fract(tileWrapped);
+                vec2 tileFrac = fract(tile);
 
-                // Map tile coordinates to atlas UV
-                // Atlas is organized as a grid of tiles, tiling wraps around
-                float tilesPerRowF = float(max(uTilesPerRow, 1));
-                float tileSize = 1.0 / tilesPerRowF;
-
-                // Use tile integer coordinates modulo atlas grid size
-                vec2 tileInt = floor(tileWrapped);
-                vec2 atlasPos = mod(tileInt, vec2(tilesPerRowF));
-
-                // Calculate final UV: atlas position + position within tile
-                vec2 atlasUV = (atlasPos + tileFrac) * tileSize;
-
-                // Sample from atlas texture
-                vec4 texColor = texture(uTileTexture, atlasUV);
-
-                // Check if texture is valid (not empty/black) - if so, use it
-                float texBrightness = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
+                // Look up tile UV from coordinator's data
+                ivec3 tileCoord = ivec3(tileInt, zoomInt);
+                vec4 uvResult = findTileUV(tileCoord, tileFrac);
 
                 vec3 result;
-                if (texBrightness > 0.05) {
-                    // Valid texture - use it with lighting
-                    result = (ambient + diffuse) * texColor.rgb;
-                    FragColor = vec4(result, texColor.a);
+                if (uvResult.z > 0.5) {
+                    // Tile found - sample from atlas using coordinator's UV
+                    vec4 texColor = texture(uTileTexture, uvResult.xy);
+
+                    float texBrightness = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
+                    if (texBrightness > 0.05) {
+                        // Valid texture data
+                        result = (ambient + diffuse) * texColor.rgb;
+                        FragColor = vec4(result, texColor.a);
+                    } else {
+                        // Tile loaded but empty - placeholder
+                        vec3 oceanColor = vec3(0.1, 0.3, 0.5);
+                        result = (ambient + diffuse) * oceanColor;
+                        FragColor = vec4(result, 1.0);
+                    }
                 } else {
-                    // Placeholder color based on position (ocean blue with variation)
-                    vec3 oceanColor = vec3(0.1, 0.25 + 0.1 * sin(geo.x * 0.1), 0.5 + 0.1 * cos(geo.y * 0.1));
+                    // Tile not loaded yet - show placeholder (darker blue)
+                    vec3 oceanColor = vec3(0.05, 0.15 + 0.05 * sin(geo.x * 0.1), 0.25 + 0.05 * cos(geo.y * 0.1));
                     result = (ambient + diffuse) * oceanColor;
                     FragColor = vec4(result, 1.0);
                 }
