@@ -195,14 +195,24 @@ public:
         spdlog::debug("Renderer::Render() - BeginFrame");
         BeginFrame();
 
-        // Simple view and projection matrices for demo
-        glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -3.0f));
-        glm::mat4 projection = glm::perspective(glm::radians(45.0f),
-                                              static_cast<float>(config_.screen_width) / config_.screen_height,
-                                              0.1f, 100.0f);
+        // Get view and projection matrices from camera controller
+        glm::mat4 view;
+        glm::mat4 projection;
+        Frustum frustum;
 
-        // Create frustum from view-projection matrix for culling
-        Frustum frustum(projection * view);
+        if (camera_controller_) {
+            float aspect_ratio = static_cast<float>(config_.screen_width) / config_.screen_height;
+            view = camera_controller_->GetViewMatrix();
+            projection = camera_controller_->GetProjectionMatrix(aspect_ratio);
+            frustum = camera_controller_->GetFrustum(aspect_ratio);
+        } else {
+            // Fallback to simple view and projection if no camera
+            view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -3.0f));
+            projection = glm::perspective(glm::radians(45.0f),
+                                          static_cast<float>(config_.screen_width) / config_.screen_height,
+                                          0.1f, 100.0f);
+            frustum = Frustum(projection * view);
+        }
 
         spdlog::debug("Renderer::Render() - RenderScene");
         RenderScene(view, projection, frustum);
