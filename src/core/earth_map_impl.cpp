@@ -141,29 +141,27 @@ bool EarthMapImpl::InitializeSubsystems() {
             spdlog::error("Failed to initialize tile manager");
             return false;
         }
-        
-        // Initialize tile texture manager (using shared_ptr for cross-component access)
-        texture_manager_ = std::shared_ptr<TileTextureManager>(CreateTileTextureManager().release());
-        if (!texture_manager_ || !texture_manager_->Initialize({})) {
-            spdlog::error("Failed to initialize tile texture manager");
-            return false;
-        }
 
-        // Connect tile system components with proper ownership
+        // Initialize tile texture coordinator (new lock-free architecture)
+        // Create shared cache and loader for both tile manager and texture coordinator
+        auto tile_cache = std::shared_ptr<TileCache>(CreateTileCache().release());
+        auto tile_loader = std::shared_ptr<TileLoader>(CreateTileLoader().release());
+
+        texture_coordinator_ = std::make_unique<TileTextureCoordinator>(
+            tile_cache,
+            tile_loader,
+            4  // 4 worker threads for tile loading
+        );
+
+        spdlog::info("Tile texture coordinator initialized with lock-free architecture");
+
+        // Connect tile system components
         auto tile_renderer = renderer_->GetTileRenderer();
         if (tile_renderer) {
-            // texture_manager_ is already a shared_ptr, safe to share with tile manager
-            if (tile_manager_->InitializeWithTextureManager(texture_manager_)) {
-                tile_renderer->SetTileManager(tile_manager_.get());
-                spdlog::info("Tile system initialized and connected successfully");
-            } else {
-                spdlog::error("Failed to initialize tile manager with texture manager");
-            }
+            tile_renderer->SetTileManager(tile_manager_.get());
+            tile_renderer->SetTextureCoordinator(texture_coordinator_.get());
+            spdlog::info("Tile system initialized with new lock-free texture coordinator");
         }
-        
-        // Set up tile cache and loader for texture manager
-        texture_manager_->SetTileCache(CreateTileCache());
-        texture_manager_->SetTileLoader(CreateTileLoader());
         
         spdlog::info("All subsystems initialized successfully");
         return true;

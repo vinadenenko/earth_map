@@ -8,7 +8,7 @@
 #include <earth_map/math/coordinate_system.h>
 #include <earth_map/math/projection.h>
 #include <earth_map/math/tile_mathematics.h>
-#include <earth_map/renderer/tile_texture_manager.h>
+#include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
 #include <spdlog/spdlog.h>
 #include <GL/glew.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -90,12 +90,17 @@ public:
         if (!initialized_) {
             return;
         }
-        
+
         frame_counter_++;
         stats_.render_time_ms = 0.0f;
         stats_.rendered_tiles = 0;
         stats_.texture_binds = 0;
-        
+
+        // Process GL uploads from worker threads (must be on GL thread)
+        if (texture_coordinator_) {
+            texture_coordinator_->ProcessUploads(5);  // Upload up to 5 tiles per frame for 60 FPS
+        }
+
         // Debug: Check if we have tiles loaded
         if (frame_counter_ % 60 == 0) {
             // spdlog::info("Tile renderer debug - visible_tiles: {}, texture_cache_size: {}", visible_tiles_.size(), texture_cache_.size());
@@ -124,6 +129,11 @@ public:
     
     void SetTileManager(TileManager* tile_manager) override {
         tile_manager_ = tile_manager;
+    }
+
+    void SetTextureCoordinator(TileTextureCoordinator* coordinator) override {
+        texture_coordinator_ = coordinator;
+        spdlog::info("Tile renderer: texture coordinator set");
     }
     
     void UpdateVisibleTiles(const glm::mat4& view_matrix,
@@ -180,13 +190,29 @@ public:
         //     }
         // }
         
+        // Collect visible tile coordinates and request them from texture coordinator
+        std::vector<TileCoordinates> visible_tile_coords;
         for (const TileCoordinates& tile_coords : candidate_tiles) {
             if (tiles_added >= max_tiles_for_frame) {
                 break;
             }
-            
+
             // Check if tile is in frustum
             if (IsTileInFrustum(tile_coords, frustum)) {
+                visible_tile_coords.push_back(tile_coords);
+                tiles_added++;
+            }
+        }
+
+        // Request all visible tiles from texture coordinator (idempotent, lock-free)
+        if (texture_coordinator_ && !visible_tile_coords.empty()) {
+            // Calculate priority based on camera distance (closer = lower number = higher priority)
+            int priority = static_cast<int>(camera_distance * 10.0f);
+            texture_coordinator_->RequestTiles(visible_tile_coords, priority);
+        }
+
+        // Build visible tiles list with textures from atlas
+        for (const TileCoordinates& tile_coords : visible_tile_coords) {
                 TileRenderState tile_state;
                 tile_state.coordinates = tile_coords;
                 tile_state.geographic_bounds = TileMathematics::GetTileBounds(tile_coords);
@@ -194,11 +220,15 @@ public:
                 tile_state.last_used = static_cast<float>(frame_counter_);
                 tile_state.load_priority = CalculateLoadPriority(tile_coords, camera_position);
                 tile_state.is_visible = true;
-                
-                // Get texture from tile manager (this will trigger async loading)
-                tile_state.texture_id = tile_manager_->GetTileTexture(tile_coords);
 
-                // Create test texture if no texture available yet (async loading in progress)
+                // Get atlas texture ID from coordinator (all tiles use same atlas)
+                if (texture_coordinator_) {
+                    tile_state.texture_id = texture_coordinator_->GetAtlasTextureID();
+                } else {
+                    tile_state.texture_id = 0;
+                }
+
+                // Create test texture if no texture available yet
                 if (tile_state.texture_id == 0) {
                     tile_state.texture_id = CreateTestTexture();
                     // spdlog::info("Created test texture {} for tile ({}, {}, {})", tile_state.texture_id, tile_coords.x, tile_coords.y, tile_coords.zoom);
@@ -208,7 +238,7 @@ public:
                 }
                 
                 visible_tiles_.push_back(tile_state);
-                
+
                 // Add to atlas tiles
                 AtlasTileInfo atlas_tile;
                 atlas_tile.x = tile_coords.x;
@@ -216,9 +246,6 @@ public:
                 atlas_tile.zoom = tile_coords.zoom;
                 atlas_tile.texture_id = tile_state.texture_id;
                 atlas_tiles_.push_back(atlas_tile);
-                
-                tiles_added++;
-            }
         }
         
         // spdlog::info("Selected {} tiles for rendering (zoom {})", tiles_added, zoom_level);
@@ -376,6 +403,7 @@ public:
 private:
     TileRenderConfig config_;
     TileManager* tile_manager_ = nullptr;
+    TileTextureCoordinator* texture_coordinator_ = nullptr;
     bool initialized_ = false;
     std::uint64_t frame_counter_ = 0;
     std::vector<TileRenderState> visible_tiles_;
