@@ -469,7 +469,7 @@ The Tile Texture Atlas System has been successfully implemented following a clea
 
 **Next Steps:**
 
-1. Review `interfaces_issues.md` for API improvements
+1. Review `interfaces_issues.md` for API improvements [DONE]
 2. Integrate TileTextureCoordinator into TileRenderer
 3. Update shaders for atlas UV sampling
 4. Validate with live basic_example
