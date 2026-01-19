@@ -2,49 +2,7 @@
 
 This document tracks interface design issues discovered during the Texture Atlas System implementation. These should be reviewed and addressed in future iterations.
 
-## 1. TileCache Interface - Retrieve vs Get Method Naming
-
-**File:** `include/earth_map/data/tile_cache.h`
-
-**Issue:** The `TileCache` interface uses `Retrieve()` which returns `std::shared_ptr<TileData>`, but a more conventional pattern would be `Get()` with an out-parameter or optional return.
-
-**Current Signature:**
-```cpp
-virtual std::shared_ptr<TileData> Retrieve(const TileCoordinates& coordinates) = 0;
-```
-
-**Consideration:**
-- Most cache interfaces use `Get()` or `TryGet()` nomenclature
-- Returning `nullptr` for cache miss is fine, but could be more explicit with `std::optional<TileData>` or bool return + out-parameter
-- The shared_ptr adds ref-counting overhead that may not be needed
-
-**Recommendation:** Consider renaming to `Get()` for consistency with standard cache naming, or use `std::optional<TileData>` to make cache miss more explicit.
-
-**Solution** use std::optional
-
----
-
-## 2. TileCache - Store vs Put Method Naming
-
-**File:** `include/earth_map/data/tile_cache.h`
-
-**Issue:** The `TileCache` interface uses `Store()` but cache interfaces typically use `Put()` or `Set()`.
-
-**Current Signature:**
-```cpp
-virtual bool Store(const TileData& tile_data) = 0;
-```
-
-**Consideration:**
-- `Put()` is more common in cache APIs (e.g., Guava Cache, Caffeine, etc.)
-- `Store()` is not wrong, but less conventional
-
-**Recommendation:** Consider renaming to `Put()` for better alignment with industry standard cache APIs.
-**Solution** Use `Put()`
-
----
-
-## 3. TileLoader - Synchronous LoadTile Return Type
+## 1. TileLoader - Synchronous LoadTile Return Type
 
 **File:** `include/earth_map/data/tile_loader.h`
 
@@ -67,7 +25,7 @@ virtual TileLoadResult LoadTile(const TileCoordinates& coordinates,
 
 ---
 
-## 4. TileRenderer - SetTileManager Raw Pointer
+## 2. TileRenderer - SetTileManager Raw Pointer
 
 **File:** `include/earth_map/renderer/tile_renderer.h`
 
@@ -88,32 +46,7 @@ virtual void SetTileManager(TileManager* tile_manager) = 0;
 
 ---
 
-## 5. TileManager - LoadTileTextureAsync Signature
-
-**File:** Observed in `src/renderer/tile_renderer.cpp:1247`
-
-**Issue:** The TileManager appears to have a `LoadTileTextureAsync()` method that overlaps with the new TileTextureCoordinator's responsibilities.
-
-**Current Usage:**
-```cpp
-auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callback);
-```
-
-**Consideration:**
-- This creates coupling between TileManager and texture loading
-- With the new architecture, TileTextureCoordinator should handle all texture concerns
-- TileManager should focus on tile data (cache/network), not texture upload
-
-**Recommendation:**
-- Refactor TileManager to remove texture-specific methods
-- Have TileManager focus on data acquisition (cache + network)
-- Have TileTextureCoordinator handle all GPU texture concerns
-- Clear separation of concerns: Data vs Rendering
-
-**Solution** Use new approach with TileTextureCoordinator.
----
-
-## 6. Error Handling - Inconsistent Patterns
+## 3. Error Handling - Inconsistent Patterns
 
 **Files:** Multiple interfaces
 
@@ -141,7 +74,7 @@ auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callbac
 **Solution** Defer it
 ---
 
-## 7. Thread Safety - Interface Documentation
+## 4. Thread Safety - Interface Documentation
 
 **Files:** Most interfaces
 
@@ -160,7 +93,7 @@ auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callbac
 **Solution** Defer it.
 ---
 
-## 8. TileCoordinates - Validation
+## 5. TileCoordinates - Validation
 
 **File:** `include/earth_map/math/tile_mathematics.h`
 
@@ -180,12 +113,16 @@ auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callbac
 
 ## Summary
 
-Most issues are minor and relate to naming consistency and documentation. The core architecture is sound. Main recommendations:
+Remaining issues are minor and relate to documentation and consistency. The core architecture is sound.
 
-1. **Naming Consistency**: Align with industry standards (Get/Put for cache, etc.)
-2. **Ownership Clarity**: Use references or smart pointers instead of raw pointers
-3. **Error Handling**: Establish consistent patterns across codebase
-4. **Documentation**: Add thread safety and precondition documentation
-5. **Separation of Concerns**: Remove texture logic from TileManager, delegate to TileTextureCoordinator
+**Completed Fixes:**
+- ✅ TileCache naming: Changed `Retrieve()` → `Get()` with `std::optional<TileData>`
+- ✅ TileCache naming: Changed `Store()` → `Put()`
+- ✅ Separation of concerns: TileTextureCoordinator now handles texture loading (TileManager no longer has texture methods)
 
-None of these issues block the current implementation. They should be addressed in a future refactoring pass for polish and maintainability.
+**Remaining Recommendations:**
+1. **Ownership Clarity**: Use references or smart pointers instead of raw pointers (deferred)
+2. **Error Handling**: Establish consistent patterns across codebase (deferred)
+3. **Documentation**: Add thread safety and precondition documentation (deferred)
+
+None of the remaining issues block the current implementation. They should be addressed in a future refactoring pass for polish and maintainability.

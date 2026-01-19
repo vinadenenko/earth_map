@@ -15,8 +15,8 @@ namespace earth_map::tests {
 class MockTileCache : public TileCache {
 public:
     bool Initialize(const TileCacheConfig&) override { return true; }
-    bool Store(const TileData&) override { return true; }
-    std::shared_ptr<TileData> Retrieve(const TileCoordinates&) override { return nullptr; }
+    bool Put(const TileData&) override { return true; }
+    std::optional<TileData> Get(const TileCoordinates&) override { return std::nullopt; }
     bool Contains(const TileCoordinates&) const override { return false; }
     bool Remove(const TileCoordinates&) override { return false; }
     void Clear() override {}

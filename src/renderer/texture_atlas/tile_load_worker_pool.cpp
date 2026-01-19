@@ -142,20 +142,20 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
     spdlog::trace("Processing tile load request: {}", coords.GetKey());
 
     // Step 1: Check cache
-    std::shared_ptr<TileData> cached_data;
+    std::optional<TileData> cached_data;
     bool cache_hit = false;
 
     if (cache_) {
-        cached_data = cache_->Retrieve(coords);
-        cache_hit = (cached_data != nullptr);
+        cached_data = cache_->Get(coords);
+        cache_hit = cached_data.has_value();
         if (cache_hit) {
             spdlog::trace("Cache hit for tile {}", coords.GetKey());
         }
     }
 
     TileData tile_data;
-    if (cache_hit && cached_data) {
-        tile_data = *cached_data;
+    if (cache_hit) {
+        tile_data = std::move(*cached_data);
     } else {
         tile_data.metadata.coordinates = coords;
     }
@@ -179,9 +179,9 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
 
         tile_data = *load_result.tile_data;
 
-        // Store in cache for future use
+        // Put in cache for future use
         if (cache_ && tile_data.loaded) {
-            cache_->Store(tile_data);
+            cache_->Put(tile_data);
         }
     }
 

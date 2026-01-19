@@ -20,8 +20,8 @@ public:
     ~MockTileCache() override = default;
 
     bool Initialize(const TileCacheConfig&) override { return true; }
-    bool Store(const TileData&) override { return true; }
-    std::shared_ptr<TileData> Retrieve(const TileCoordinates&) override { return nullptr; }  // Always miss
+    bool Put(const TileData&) override { return true; }
+    std::optional<TileData> Get(const TileCoordinates&) override { return std::nullopt; }  // Always miss
     bool Contains(const TileCoordinates&) const override { return false; }
     bool Remove(const TileCoordinates&) override { return false; }
     void Clear() override {}

@@ -422,16 +422,16 @@ TileLoadResult BasicTileLoader::LoadTile(const TileCoordinates& coordinates,
     // Check cache first
     // TODO: tile_cache_ is null now, investigate later
     if (tile_cache_) {
-        auto cached_tile = tile_cache_->Retrieve(coordinates);
+        auto cached_tile = tile_cache_->Get(coordinates);
         if (cached_tile && cached_tile->IsValid()) {
             stats_.cached_requests++;
-            
+
             TileLoadResult result;
             result.success = true;
-            result.tile_data = cached_tile;
+            result.tile_data = std::make_shared<TileData>(std::move(*cached_tile));
             result.coordinates = coordinates;
             result.provider_name = provider_name.empty() ? default_provider_ : provider_name;
-            
+
             return result;
         }
     }
@@ -680,7 +680,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     
     // Store in cache
     if (tile_cache_) {
-        tile_cache_->Store(*tile_data);
+        tile_cache_->Put(*tile_data);
     }
     
     result.success = true;
