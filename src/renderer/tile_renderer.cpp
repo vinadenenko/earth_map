@@ -232,9 +232,7 @@ public:
                 if (tile_state.texture_id == 0) {
                     tile_state.texture_id = CreateTestTexture();
                     // spdlog::info("Created test texture {} for tile ({}, {}, {})", tile_state.texture_id, tile_coords.x, tile_coords.y, tile_coords.zoom);
-                    
-                    // Trigger async tile loading from texture manager
-                    TriggerTileLoading(tile_coords);
+                    // Note: Tile loading is now handled by TileTextureCoordinator::RequestTiles() above
                 }
                 
                 visible_tiles_.push_back(tile_state);
@@ -1261,24 +1259,8 @@ private:
         glDeleteBuffers(1, &temp_ebo);
     }
     
-    void TriggerTileLoading(const TileCoordinates& coords) {
-        // Trigger async tile texture loading through tile manager
-        if (tile_manager_) {
-            // Define callback to handle texture loading completion
-            auto texture_loaded_callback = [this](const TileCoordinates& loaded_coords, std::uint32_t texture_id) {
-                // Texture loaded successfully, mark atlas as dirty so it gets updated with the new texture
-                atlas_dirty_.store(true);
-                spdlog::info("Tile texture loaded and atlas marked dirty for {}/{}/{}: texture_id={}",
-                             loaded_coords.x, loaded_coords.y, loaded_coords.zoom, texture_id);
-            };
-
-            auto future = tile_manager_->LoadTileTextureAsync(coords, texture_loaded_callback);
-            // spdlog::info("Triggered async tile texture loading for {}/{}/{}", coords.x, coords.y, coords.zoom);
-        } else {
-            spdlog::warn("No tile manager available for loading tiles");
-        }
-    }
 };
+// Note: TriggerTileLoading() removed - tile loading now handled by TileTextureCoordinator
 
 // Factory function
 std::unique_ptr<TileRenderer> TileRenderer::Create(const TileRenderConfig& config) {
