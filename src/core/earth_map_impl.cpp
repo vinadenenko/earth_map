@@ -146,6 +146,7 @@ bool EarthMapImpl::InitializeSubsystems() {
         // Create shared cache and loader for both tile manager and texture coordinator
         auto tile_cache = std::shared_ptr<TileCache>(CreateTileCache().release());
         auto tile_loader = std::shared_ptr<TileLoader>(CreateTileLoader().release());
+        tile_loader->Initialize({});
 
         texture_coordinator_ = std::make_unique<TileTextureCoordinator>(
             tile_cache,
