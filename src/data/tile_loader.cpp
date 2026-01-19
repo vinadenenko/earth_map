@@ -1,20 +1,24 @@
 /**
  * @file tile_loader.cpp
- * @brief Tile loading system implementation
+ * @brief Tile loading system implementation with libcurl support and thread pool
  */
 
 #include <earth_map/data/tile_loader.h>
-#include <earth_map/data/tile_cache.h>
+#include <earth_map/math/tile_mathematics.h>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <random>
 #include <thread>
-#include <chrono>
+#include <future>
+#include <set>
+#include <unordered_set>
 #include <regex>
+#include <queue>
+#include <condition_variable>
+#include <atomic>
+#include <curl/curl.h>
 #include <spdlog/spdlog.h>
-
-// Note: This is a simplified implementation without actual HTTP client
-// In a real implementation, you would use libcurl or similar
 
 namespace earth_map {
 
@@ -24,12 +28,14 @@ namespace TileProviders {
 const TileProvider OpenStreetMap = {
     .name = "OpenStreetMap",
     .url_template = "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    .subdomains = "abc",
+    .subdomains = "",
     .min_zoom = 0,
     .max_zoom = 19,
     .format = "png",
     .attribution = "© OpenStreetMap contributors",
-    .user_agent = "EarthMap/1.0"
+    .user_agent = "EarthMap/1.0",
+    .api_key = "",
+    .custom_headers = {}
 };
 
 const TileProvider OpenStreetMapHumanitarian = {
@@ -40,7 +46,9 @@ const TileProvider OpenStreetMapHumanitarian = {
     .max_zoom = 19,
     .format = "png",
     .attribution = "© OpenStreetMap contributors, Tiles style by Humanitarian OpenStreetMap Team",
-    .user_agent = "EarthMap/1.0"
+    .user_agent = "EarthMap/1.0",
+    .api_key = "",
+    .custom_headers = {}
 };
 
 const TileProvider StamenTerrain = {
@@ -51,7 +59,9 @@ const TileProvider StamenTerrain = {
     .max_zoom = 18,
     .format = "png",
     .attribution = "Map tiles by Stamen Design, under CC BY 3.0. Data by OpenStreetMap, under ODbL",
-    .user_agent = "EarthMap/1.0"
+    .user_agent = "EarthMap/1.0",
+    .api_key = "",
+    .custom_headers = {}
 };
 
 const TileProvider StamenWatercolor = {
@@ -62,7 +72,9 @@ const TileProvider StamenWatercolor = {
     .max_zoom = 18,
     .format = "jpg",
     .attribution = "Map tiles by Stamen Design, under CC BY 3.0. Data by OpenStreetMap, under CC BY SA",
-    .user_agent = "EarthMap/1.0"
+    .user_agent = "EarthMap/1.0",
+    .api_key = "",
+    .custom_headers = {}
 };
 
 const TileProvider CartoDBPositron = {
@@ -73,7 +85,9 @@ const TileProvider CartoDBPositron = {
     .max_zoom = 18,
     .format = "png",
     .attribution = "© OpenStreetMap contributors © CARTO",
-    .user_agent = "EarthMap/1.0"
+    .user_agent = "EarthMap/1.0",
+    .api_key = "",
+    .custom_headers = {}
 };
 
 const TileProvider CartoDBDarkMatter = {
@@ -84,7 +98,9 @@ const TileProvider CartoDBDarkMatter = {
     .max_zoom = 18,
     .format = "png",
     .attribution = "© OpenStreetMap contributors © CARTO",
-    .user_agent = "EarthMap/1.0"
+    .user_agent = "EarthMap/1.0",
+    .api_key = "",
+    .custom_headers = {}
 };
 
 } // namespace TileProviders
@@ -144,12 +160,116 @@ std::vector<std::pair<std::string, std::string>> TileProvider::GetHeaders() cons
 }
 
 /**
- * @brief Basic tile loader implementation
+ * @brief Download task for thread pool
+ */
+struct DownloadTask {
+    TileCoordinates coordinates;
+    std::string provider_name;
+    std::shared_ptr<std::promise<TileLoadResult>> promise;
+    TileLoadCallback callback;
+    
+    DownloadTask(const TileCoordinates& coords, 
+                const std::string& provider,
+                std::shared_ptr<std::promise<TileLoadResult>> prom,
+                TileLoadCallback cb)
+        : coordinates(coords), provider_name(provider), promise(prom), callback(cb) {}
+};
+
+/**
+ * @brief Thread pool for tile downloading
+ */
+class ThreadPool {
+public:
+    explicit ThreadPool(std::size_t num_threads) : stop_(false) {
+        for (std::size_t i = 0; i < num_threads; ++i) {
+            workers_.emplace_back([this] {
+                while (true) {
+                    std::function<void()> task;
+                    
+                    {
+                        std::unique_lock<std::mutex> lock(queue_mutex_);
+                        condition_.wait(lock, [this] { 
+                            return stop_ || !tasks_.empty(); 
+                        });
+                        
+                        if (stop_ && tasks_.empty()) {
+                            return;
+                        }
+                        
+                        task = std::move(tasks_.front());
+                        tasks_.pop();
+                    }
+                    
+                    task();
+                }
+            });
+        }
+    }
+    
+    ~ThreadPool() {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            stop_ = true;
+        }
+        
+        condition_.notify_all();
+        
+        for (auto& worker : workers_) {
+            worker.join();
+        }
+    }
+    
+    template<class F>
+    void enqueue(F&& f) {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            tasks_.emplace(std::forward<F>(f));
+        }
+        
+        condition_.notify_one();
+    }
+    
+    std::size_t GetQueueSize() const {
+        std::unique_lock<std::mutex> lock(queue_mutex_);
+        return tasks_.size();
+    }
+    
+    std::size_t GetThreadCount() const {
+        return workers_.size();
+    }
+
+private:
+    std::vector<std::thread> workers_;
+    std::queue<std::function<void()>> tasks_;
+    mutable std::mutex queue_mutex_;
+    std::condition_variable condition_;
+    bool stop_;
+};
+
+/**
+ * @brief libcurl write callback
+ */
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::vector<uint8_t>* userp) {
+    size_t total_size = size * nmemb;
+    userp->insert(userp->end(), static_cast<uint8_t*>(contents), 
+                  static_cast<uint8_t*>(contents) + total_size);
+    return total_size;
+}
+
+/**
+ * @brief Basic tile loader implementation with thread pool and libcurl
  */
 class BasicTileLoader : public TileLoader {
 public:
-    explicit BasicTileLoader(const TileLoaderConfig& config) : config_(config) {}
-    ~BasicTileLoader() override = default;
+    explicit BasicTileLoader(const TileLoaderConfig& config) 
+        : config_(config), thread_pool_(config_.max_concurrent_downloads) {
+        // Initialize curl globally
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+    }
+    
+    ~BasicTileLoader() override {
+        curl_global_cleanup();
+    }
     
     bool Initialize(const TileLoaderConfig& config) override;
     void SetTileCache(std::shared_ptr<TileCache> cache) override;
@@ -193,12 +313,13 @@ private:
     TileLoaderConfig config_;
     std::shared_ptr<TileCache> tile_cache_;
     std::map<std::string, TileProvider> providers_;
-    std::string default_provider_;
+    std::string default_provider_{"OpenStreetMap"};
     TileLoaderStats stats_;
+    ThreadPool thread_pool_;
     
     // Async loading state
     mutable std::mutex loading_mutex_;
-    std::set<TileCoordinates> loading_tiles_;
+    std::unordered_set<TileCoordinates, TileCoordinatesHash> loading_tiles_;
     std::map<TileCoordinates, std::shared_ptr<std::promise<TileLoadResult>>> active_loads_;
     
     // Internal methods
@@ -208,6 +329,10 @@ private:
                      const std::vector<std::pair<std::string, std::string>>& headers,
                      std::vector<std::uint8_t>& data,
                      std::uint32_t& status_code);
+    CURL* CreateCurlHandle() const;
+    void SetupCurlHandle(CURL* curl, const std::string& url,
+                        const std::vector<std::pair<std::string, std::string>>& headers,
+                        std::vector<std::uint8_t>& data) const;
     std::uint64_t GetCurrentTimeMs() const;
     void UpdateStats(const TileLoadResult& result);
     TileCoordinatesHash hasher_;
@@ -221,6 +346,8 @@ std::unique_ptr<TileLoader> CreateTileLoader(const TileLoaderConfig& config) {
 bool BasicTileLoader::Initialize(const TileLoaderConfig& config) {
     config_ = config;
     
+    // Thread pool is already initialized in constructor with the initial size
+    
     // Add default providers
     AddProvider(TileProviders::OpenStreetMap);
     AddProvider(TileProviders::OpenStreetMapHumanitarian);
@@ -232,7 +359,8 @@ bool BasicTileLoader::Initialize(const TileLoaderConfig& config) {
         default_provider_ = providers_.begin()->first;
     }
     
-    spdlog::info("Tile loader initialized with {} providers", providers_.size());
+    spdlog::info("Tile loader initialized with {} providers and {} threads", 
+                providers_.size(), config_.max_concurrent_downloads);
     return true;
 }
 
@@ -288,20 +416,22 @@ std::vector<std::string> BasicTileLoader::GetProviderNames() const {
 
 TileLoadResult BasicTileLoader::LoadTile(const TileCoordinates& coordinates,
                                         const std::string& provider_name) {
-    stats_.total_requests++;
+    // Commented for now to prevent double increment in UpdateStats
+    // stats_.total_requests++;
     
     // Check cache first
+    // TODO: tile_cache_ is null now, investigate later
     if (tile_cache_) {
-        auto cached_tile = tile_cache_->Retrieve(coordinates);
+        auto cached_tile = tile_cache_->Get(coordinates);
         if (cached_tile && cached_tile->IsValid()) {
             stats_.cached_requests++;
-            
+
             TileLoadResult result;
             result.success = true;
-            result.tile_data = cached_tile;
+            result.tile_data = std::make_shared<TileData>(std::move(*cached_tile));
             result.coordinates = coordinates;
             result.provider_name = provider_name.empty() ? default_provider_ : provider_name;
-            
+
             return result;
         }
     }
@@ -332,8 +462,8 @@ std::future<TileLoadResult> BasicTileLoader::LoadTileAsync(
         active_loads_[coordinates] = promise;
     }
     
-    // Launch async loading
-    std::thread([this, coordinates, provider_name, callback, promise]() {
+    // Enqueue download task
+    thread_pool_.enqueue([this, coordinates, provider_name, callback, promise]() {
         auto result = LoadTile(coordinates, provider_name);
         
         if (callback) {
@@ -348,7 +478,7 @@ std::future<TileLoadResult> BasicTileLoader::LoadTileAsync(
             loading_tiles_.erase(coordinates);
             active_loads_.erase(coordinates);
         }
-    }).detach();
+    });
     
     return future;
 }
@@ -410,11 +540,18 @@ TileLoaderStats BasicTileLoader::GetStatistics() const {
     
     TileLoaderStats stats = stats_;
     stats.active_downloads = loading_tiles_.size();
+    stats.queued_downloads = thread_pool_.GetQueueSize();
     
     return stats;
 }
 
 bool BasicTileLoader::SetConfiguration(const TileLoaderConfig& config) {
+    if (config.max_concurrent_downloads != config_.max_concurrent_downloads) {
+        // Note: Thread pool size is fixed after construction
+        // In a real implementation, you might recreate the entire loader
+        spdlog::warn("Thread pool size change requires recreating tile loader");
+    }
+    
     config_ = config;
     return true;
 }
@@ -507,6 +644,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
         result.retry_count = attempt;
         
         if (DownloadTile(url, headers, data, status_code)) {
+            spdlog::info("Tile downloaded ok");
             result.status_code = status_code;
             break;
         }
@@ -523,6 +661,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     }
     
     if (data.empty()) {
+        spdlog::warn("Tile downloaded error, x: {}, y: {}, z: {}, url: {}", coordinates.x, coordinates.y, coordinates.zoom, url);
         result.error_message = "Failed to download tile after " + 
                              std::to_string(result.retry_count) + " attempts";
         UpdateStats(result);
@@ -541,7 +680,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     
     // Store in cache
     if (tile_cache_) {
-        tile_cache_->Store(*tile_data);
+        tile_cache_->Put(*tile_data);
     }
     
     result.success = true;
@@ -556,36 +695,95 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     return result;
 }
 
+CURL* BasicTileLoader::CreateCurlHandle() const {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        spdlog::error("Failed to initialize curl handle");
+        return nullptr;
+    }
+    
+    // Set common options
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, config_.user_agent.c_str());
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, config_.follow_redirects ? 1L : 0L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, static_cast<long>(config_.timeout));
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(config_.timeout));
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, config_.verify_ssl ? 1L : 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, config_.verify_ssl ? 2L : 0L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L); // Prevent signals for thread safety
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // Enable all supported encodings
+    
+    if (config_.enable_http2) {
+        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
+    }
+    
+    return curl;
+}
+
+void BasicTileLoader::SetupCurlHandle(CURL* curl, const std::string& url,
+                                     const std::vector<std::pair<std::string, std::string>>& headers,
+                                     std::vector<std::uint8_t>& data) const {
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
+    
+    // Set headers
+    struct curl_slist* header_list = nullptr;
+    for (const auto& [name, value] : headers) {
+        std::string header_str = name + ": " + value;
+        header_list = curl_slist_append(header_list, header_str.c_str());
+    }
+    
+    if (header_list) {
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
+    }
+    
+    // Set proxy if configured
+    if (!config_.proxy_url.empty()) {
+        curl_easy_setopt(curl, CURLOPT_PROXY, config_.proxy_url.c_str());
+        
+        if (!config_.proxy_username.empty()) {
+            curl_easy_setopt(curl, CURLOPT_PROXYUSERNAME, config_.proxy_username.c_str());
+            curl_easy_setopt(curl, CURLOPT_PROXYPASSWORD, config_.proxy_password.c_str());
+        }
+    }
+    
+    // Cleanup will be handled by the caller
+}
+
 bool BasicTileLoader::DownloadTile(const std::string& url,
                                   const std::vector<std::pair<std::string, std::string>>& headers,
                                   std::vector<std::uint8_t>& data,
                                   std::uint32_t& status_code) {
-    // Simplified placeholder implementation
-    // In a real implementation, you would use libcurl or similar HTTP client
-
-    (void)url; // Suppress warning function is a placeholder for now
-    (void)headers; // Suppress warning function is a placeholder for now
+    CURL* curl = CreateCurlHandle();
+    if (!curl) {
+        return false;
+    }
     
-    // For now, simulate a successful download with dummy data
-    status_code = 200;
+    data.clear();
     
-    // Create dummy image data (small PNG header + some data)
-    data = {
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
-        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk start
-        0x00, 0x00, 0x00, 0x01, // Width: 1
-        0x00, 0x00, 0x00, 0x01, // Height: 1
-        0x08, 0x02, 0x00, 0x00, 0x00, // Bit depth, color type, compression, filter, interlace
-        0x90, 0x77, 0x53, 0xDE, // CRC
-        0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, // IDAT chunk start
-        0x08, 0x99, 0x01, 0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, // Compressed data
-        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82 // IEND chunk
-    };
+    SetupCurlHandle(curl, url, headers, data);
     
-    // Simulate network delay
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CURLcode res = curl_easy_perform(curl);
     
-    return true;
+    if (res == CURLE_OK) {
+        long response_code;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+        status_code = static_cast<std::uint32_t>(response_code);
+        
+        // Check if response is successful (2xx status codes)
+        if (status_code >= 200 && status_code < 300) {
+            curl_easy_cleanup(curl);
+            return true;
+        } else {
+            spdlog::warn("HTTP error {} for URL: {}", status_code, url);
+        }
+    } else {
+        spdlog::error("Curl error: {} for URL: {}", curl_easy_strerror(res), url);
+    }
+    
+    curl_easy_cleanup(curl);
+    return false;
 }
 
 std::uint64_t BasicTileLoader::GetCurrentTimeMs() const {

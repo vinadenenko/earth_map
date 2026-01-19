@@ -86,14 +86,28 @@ struct TileCoordinates {
     }
     
     /**
-     * @brief Calculate tile hash
+     * @brief Calculate tile hash [UNUSED]
      * 
      * @return uint64_t Hash value for efficient storage
      */
-    uint64_t GetHash() const {
-        return (static_cast<uint64_t>(zoom) << 42) | 
-               (static_cast<uint64_t>(x) << 21) | 
-               static_cast<uint64_t>(y);
+    // uint64_t GetHash() const {
+    //     return (static_cast<uint64_t>(zoom) << 42) |
+    //            (static_cast<uint64_t>(x) << 21) |
+    //            static_cast<uint64_t>(y);
+    // }
+    
+    /**
+     * @brief Get tile center in geographic coordinates
+     * 
+     * @return glm::dvec2 Geographic center point (lon, lat)
+     */
+    glm::dvec2 GetCenter() const {
+        // Simple implementation - convert tile coordinates to geographic center
+        double n = std::pow(2.0, zoom);
+        double lon = (x + 0.5) / n * 360.0 - 180.0;
+        double lat_rad = std::atan(std::sinh(M_PI * (1 - 2 * (y + 0.5) / n)));
+        double lat = lat_rad * 180.0 / M_PI;
+        return glm::dvec2(lon, lat);
     }
     
     /**
@@ -118,6 +132,34 @@ struct TileCoordinates {
         if (x != other.x) return x < other.x;
         return y < other.y;
     }
+};
+
+/**
+ * @brief Hash function for TileCoordinates
+ */
+struct TileCoordinatesHash {
+    // Fastest
+    std::size_t operator()(const TileCoordinates& coords) const {
+        std::hash<std::uint64_t> hasher;
+        std::uint64_t combined = (static_cast<std::uint64_t>(coords.x) << 42) |
+                                (static_cast<std::uint64_t>(coords.y) << 21) |
+                                static_cast<std::uint64_t>(coords.zoom);
+        return hasher(combined);
+    }
+    // std::size_t operator()(const TileCoordinates& c) const noexcept {
+    //     std::uint64_t h = 14695981039346656037ULL; // FNV offset basis
+
+    //     auto mix = [&h](std::uint64_t v) {
+    //         h ^= v;
+    //         h *= 1099511628211ULL; // FNV prime
+    //     };
+
+    //     mix(static_cast<std::uint64_t>(c.x));
+    //     mix(static_cast<std::uint64_t>(c.y));
+    //     mix(static_cast<std::uint64_t>(c.zoom));
+
+    //     return static_cast<std::size_t>(h);
+    // }
 };
 
 /**
@@ -356,6 +398,22 @@ public:
      * @return char Selected subdomain
      */
     static char GetTileSubdomain(const TileCoordinates& tile, const std::string& subdomains = "abc");
+    
+    /**
+     * @brief Get tile geographic center point
+     * 
+     * @param tile Tile coordinates
+     * @return glm::dvec2 Geographic center (longitude, latitude)
+     */
+    static glm::dvec2 GetTileCenter(const TileCoordinates& tile);
+    
+    /**
+     * @brief Get ground resolution at zoom level
+     * 
+     * @param zoom Zoom level
+     * @return double Ground resolution in meters per pixel
+     */
+    static double GetGroundResolution(int32_t zoom);
 };
 
 /**

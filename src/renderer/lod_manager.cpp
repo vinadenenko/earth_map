@@ -9,6 +9,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <spdlog/spdlog.h>
 
 namespace earth_map {
@@ -60,7 +61,7 @@ float BasicLODManager::CalculateScreenSpaceError(
 }
 
 float BasicLODManager::EstimateGPUTime(std::size_t triangle_count,
-                                           std::size_t vertex_count,
+                                           std::size_t /* vertex_count */,
                                            std::uint8_t lod_level) const {
     
     // Base time per triangle at reference LOD (LOD 0)
@@ -140,6 +141,10 @@ LODResult BasicLODManager::CalculateTriangleLOD(
     const glm::mat4& projection_matrix,
     const glm::vec2& viewport_size) const {
     
+    (void)view_matrix;
+    (void)projection_matrix;
+    (void)viewport_size;
+
     LODResult result;
     
     // Calculate screen-space error
@@ -186,19 +191,24 @@ LODResult BasicLODManager::CalculateTriangleLOD(
 }
 
 LODResult BasicLODManager::CalculateTileLOD(const Tile& tile,
-                                          const glm::vec3& camera_position,
-                                          const glm::mat4& view_matrix,
-                                          const glm::mat4& projection_matrix,
-                                          const glm::vec2& viewport_size) const {
-    
+                                            const glm::vec3& camera_position,
+                                            const glm::mat4& view_matrix,
+                                            const glm::mat4& projection_matrix,
+                                            const glm::vec2& viewport_size ) const {
+    (void)camera_position;
+    (void)view_matrix;
+    (void)projection_matrix;
+    (void)viewport_size;
+
+
     LODResult result;
     
     // Use pre-calculated screen error from tile manager
     result.screen_error = tile.screen_error;
     
     // Calculate distance from camera to tile center
-    BoundingBox2D bounds = tile.geographic_bounds;
-    glm::vec2 tile_center = (bounds.min + bounds.max) * 0.5f;
+    // BoundingBox2D bounds = tile.geographic_bounds; // Unused for now
+    // glm::vec2 tile_center = (bounds.min + bounds.max) * 0.5f; // Unused for now
     
     // Simple distance calculation (should be improved with proper geographic distance)
     float distance = tile.camera_distance;

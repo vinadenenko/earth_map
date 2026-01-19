@@ -4,8 +4,8 @@
 #include <earth_map/math/geodetic_calculations.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <glm/gtx/euler_angles.hpp>
-#include <glm/gtx/quaternion.hpp>
+// #include <glm/gtx/euler_angles.hpp>
+// #include <glm/gtx/quaternion.hpp>
 #include <spdlog/spdlog.h>
 #include <cmath>
 #include <algorithm>
@@ -96,10 +96,10 @@ public:
         initialized_ = true;
         
         // Initialize coordinate system
-        if (!coordinate_system_->Initialize()) {
-            spdlog::error("Failed to initialize coordinate system");
-            return false;
-        }
+        // if (!coordinate_system_->Initialize()) {
+        //     spdlog::error("Failed to initialize coordinate system");
+        //     return false;
+        // }
         
         spdlog::info("Camera initialized successfully");
         return true;
@@ -112,7 +112,7 @@ public:
     }
     
     void SetGeographicPosition(double longitude, double latitude, double altitude) override {
-        auto coords = coordinate_system_->GeographicToEcef(longitude, latitude, altitude);
+        auto coords = coordinate_system_->GeographicToECEF({latitude, longitude, altitude});
         position_ = coords;
         UpdateViewMatrix();
     }
@@ -127,18 +127,44 @@ public:
     }
     
     void SetGeographicTarget(double longitude, double latitude, double altitude) override {
-        auto coords = coordinate_system_->GeographicToEcef(longitude, latitude, altitude);
-        target_ = coords;
-        UpdateViewMatrix();
+        auto coords = coordinate_system_->GeographicToECEF({latitude, longitude, altitude});
+        SetTarget(coords); // Use SetTarget to also update orientation
     }
     
     void SetTarget(const glm::vec3& target) override {
         target_ = target;
+
+        // Calculate orientation from position→target direction
+        glm::vec3 direction = glm::normalize(target - position_);
+
+        // Calculate heading (yaw) from x,z components
+        // atan2(x, z) gives angle in XZ plane
+        heading_ = glm::degrees(std::atan2(direction.x, direction.z));
+
+        // Calculate pitch from y component
+        // Clamp direction.y to [-1, 1] to handle numerical errors
+        float clamped_y = std::clamp(direction.y, -1.0f, 1.0f);
+        pitch_ = glm::degrees(std::asin(clamped_y));
+
+        // Apply constraints
+        pitch_ = std::clamp(pitch_, constraints_.min_pitch, constraints_.max_pitch);
+
         UpdateViewMatrix();
     }
     
     glm::vec3 GetTarget() const override {
-        return target_;
+        // Calculate target from current orientation (consistent with UpdateViewMatrix)
+        float heading_rad = glm::radians(heading_);
+        float pitch_rad = glm::radians(pitch_);
+
+        glm::vec3 forward;
+        forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
+        forward.y = std::sin(pitch_rad);
+        forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
+        forward = glm::normalize(forward);
+
+        // Return point at fixed distance from position along forward direction
+        return position_ + forward;
     }
     
     void SetOrientation(double heading, double pitch, double roll) override {
@@ -171,7 +197,7 @@ public:
     }
     
     glm::mat4 GetProjectionMatrix(float aspect_ratio) const override {
-        if (projection_type_ == ProjectionType::PERSPECTIVE) {
+        if (projection_type_ == CameraProjectionType::PERSPECTIVE) {
             return glm::perspective(glm::radians(fov_y_), aspect_ratio, near_plane_, far_plane_);
         } else {
             float half_height = far_plane_ * glm::tan(glm::radians(fov_y_) * 0.5f);
@@ -189,11 +215,11 @@ public:
         return Frustum(view_projection);
     }
     
-    void SetProjectionType(ProjectionType projection_type) override {
+    void SetProjectionType(CameraProjectionType projection_type) override {
         projection_type_ = projection_type;
     }
     
-    ProjectionType GetProjectionType() const override {
+    CameraProjectionType GetProjectionType() const override {
         return projection_type_;
     }
     
@@ -260,30 +286,29 @@ public:
     void Reset() override {
         // Set default position looking at the globe
         position_ = glm::vec3(0.0f, 0.0f, 3.0f * 6371000.0f); // 3 Earth radii away
-        target_ = glm::vec3(0.0f, 0.0f, 0.0f);
         up_ = glm::vec3(0.0f, 1.0f, 0.0f);
-        
-        heading_ = 0.0f;
-        pitch_ = 0.0f;
+
         roll_ = 0.0f;
-        
+
         fov_y_ = 45.0f;
         near_plane_ = 1000.0f;
         far_plane_ = 10000000.0f;
-        
-        projection_type_ = ProjectionType::PERSPECTIVE;
+
+        projection_type_ = CameraProjectionType::PERSPECTIVE;
         movement_mode_ = MovementMode::FREE;
-        
+
         // Reset movement state
         movement_forward_ = movement_right_ = movement_up_ = 0.0f;
         rotation_x_ = rotation_y_ = rotation_z_ = 0.0f;
-        
-        UpdateViewMatrix();
+
+        // Set target and calculate orientation from position→target direction
+        SetTarget(glm::vec3(0.0f, 0.0f, 0.0f));
+
         animation_.Reset();
     }
     
     void AnimateToGeographic(double longitude, double latitude, double altitude, float duration) override {
-        auto coords = coordinate_system_->GeographicToEcef(longitude, latitude, altitude);
+        auto coords = coordinate_system_->GeographicToECEF({latitude, longitude, altitude});
         
         animation_.start_position = position_;
         animation_.target_position = coords;
@@ -312,7 +337,16 @@ public:
     }
     
     glm::vec3 GetForwardVector() const override {
-        return glm::normalize(target_ - position_);
+        // Calculate forward from orientation (consistent with UpdateViewMatrix)
+        float heading_rad = glm::radians(heading_);
+        float pitch_rad = glm::radians(pitch_);
+
+        glm::vec3 forward;
+        forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
+        forward.y = std::sin(pitch_rad);
+        forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
+
+        return glm::normalize(forward);
     }
     
     glm::vec3 GetRightVector() const override {
@@ -369,7 +403,7 @@ protected:
     float far_plane_ = 10000000.0f;
     
     // Camera settings
-    ProjectionType projection_type_ = ProjectionType::PERSPECTIVE;
+    CameraProjectionType projection_type_ = CameraProjectionType::PERSPECTIVE;
     MovementMode movement_mode_ = MovementMode::FREE;
     CameraConstraints constraints_;
     
@@ -393,7 +427,25 @@ protected:
     glm::mat4 view_matrix_ = glm::mat4(1.0f);
     
     void UpdateViewMatrix() {
-        view_matrix_ = glm::lookAt(position_, target_, up_);
+        // Calculate view direction from orientation (heading/pitch/roll)
+        // Convert angles to radians
+        float heading_rad = glm::radians(heading_);
+        float pitch_rad = glm::radians(pitch_);
+
+        // Calculate forward vector from heading and pitch
+        // Heading: rotation around Y axis (yaw)
+        // Pitch: rotation around X axis (up/down)
+        glm::vec3 forward;
+        forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
+        forward.y = std::sin(pitch_rad);
+        forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
+        forward = glm::normalize(forward);
+
+        // Calculate target point from position and forward direction
+        glm::vec3 computed_target = position_ + forward;
+
+        // Use the computed target for the view matrix
+        view_matrix_ = glm::lookAt(position_, computed_target, up_);
     }
     
     void UpdateAnimation(float delta_time) {
@@ -484,7 +536,7 @@ protected:
             
             // Rotate around target
             glm::vec3 offset = position_ - target_;
-            float distance = glm::length(offset);
+            // float distance = glm::length(offset);
             
             // Horizontal rotation (around Y axis)
             glm::quat horiz_rot = glm::angleAxis(-delta.x * sensitivity * 0.01f, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -605,6 +657,7 @@ protected:
     }
     
     bool HandleDoubleClick(const InputEvent& event) {
+        (void)event;
         // Animate to clicked position on globe
         // This would require ray casting to intersect with globe
         // For now, just zoom in
@@ -614,7 +667,7 @@ protected:
             offset = glm::normalize(offset) * new_distance;
             
             glm::vec3 new_position = target_ + offset;
-            glm::vec3 start_pos = position_;
+            // glm::vec3 start_pos = position_;
             
             AnimateToPosition(new_position, 0.5f);
         }
@@ -639,7 +692,7 @@ protected:
 class PerspectiveCamera : public CameraImpl {
 public:
     explicit PerspectiveCamera(const Configuration& config) : CameraImpl(config) {
-        SetProjectionType(ProjectionType::PERSPECTIVE);
+        SetProjectionType(CameraProjectionType::PERSPECTIVE);
     }
 };
 
@@ -649,7 +702,7 @@ public:
 class OrthographicCamera : public CameraImpl {
 public:
     explicit OrthographicCamera(const Configuration& config) : CameraImpl(config) {
-        SetProjectionType(ProjectionType::ORTHOGRAPHIC);
+        SetProjectionType(CameraProjectionType::ORTHOGRAPHIC);
     }
 };
 

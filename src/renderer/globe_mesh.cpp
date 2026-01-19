@@ -4,6 +4,7 @@
  */
 
 #include <earth_map/renderer/globe_mesh.h>
+#include <earth_map/math/bounding_box.h>
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>
@@ -314,13 +315,155 @@ bool IcosahedronGlobeMesh::UpdateLOD(const glm::vec3& camera_position,
                                    const glm::mat4& view_matrix,
                                    const glm::mat4& projection_matrix,
                                    const glm::vec2& viewport_size) {
-    // TODO: Implement camera-based adaptive LOD
-    // For now, return true without changes
-    (void)camera_position;
-    (void)view_matrix;
-    (void)projection_matrix;
-    (void)viewport_size;
+    (void)view_matrix;  // Reserved for future frustum-based LOD
+
+    if (!params_.enable_adaptive) {
+        return true;  // Adaptive LOD disabled, nothing to do
+    }
+
+    // Track whether mesh was regenerated (for potential GPU buffer updates)
+    [[maybe_unused]] bool mesh_changed = false;
+
+    // Calculate camera distance from globe center
+    // Note: mesh uses normalized radius 1.0, not WGS84 radius
+    const float camera_distance = glm::length(camera_position);
+    const float normalized_radius = 1.0f;  // Mesh uses unit sphere
+
+    // Determine target subdivision level based on camera distance
+    // Closer camera = higher subdivision (more detail)
+    std::uint8_t target_level = 0;
+    if (camera_distance < normalized_radius * 1.01f) {
+        target_level = params_.max_subdivision_level;  // Very close - max detail
+    } else if (camera_distance < normalized_radius * 1.1f) {
+        target_level = std::min(static_cast<std::uint8_t>(params_.max_subdivision_level - 1),
+                               static_cast<std::uint8_t>(7));
+    } else if (camera_distance < normalized_radius * 1.5f) {
+        target_level = std::min(static_cast<std::uint8_t>(params_.max_subdivision_level - 2),
+                               static_cast<std::uint8_t>(5));
+    } else if (camera_distance < normalized_radius * 3.0f) {
+        target_level = std::min(static_cast<std::uint8_t>(params_.max_subdivision_level - 3),
+                               static_cast<std::uint8_t>(4));
+    } else if (camera_distance < normalized_radius * 10.0f) {
+        target_level = 3;
+    } else {
+        target_level = 2;  // Far away - low detail
+    }
+
+    // Clamp to valid range
+    target_level = std::max(target_level, static_cast<std::uint8_t>(1));
+    target_level = std::min(target_level, params_.max_subdivision_level);
+
+    // Check if we need to regenerate the mesh at a different detail level
+    // by examining the current average LOD level
+    std::uint8_t current_avg_level = 0;
+    if (!triangles_.empty()) {
+        std::uint32_t total_level = 0;
+        for (const auto& tri : triangles_) {
+            total_level += tri.lod_level;
+        }
+        current_avg_level = static_cast<std::uint8_t>(total_level / triangles_.size());
+    }
+
+    // If target level differs significantly from current, regenerate
+    if (std::abs(static_cast<int>(target_level) - static_cast<int>(current_avg_level)) >= 1) {
+        spdlog::debug("Adaptive LOD: changing from level {} to {} (camera distance: {:.2f})",
+                     current_avg_level, target_level, camera_distance);
+
+        // Store old params and update subdivision level
+        GlobeMeshParams old_params = params_;
+        params_.max_subdivision_level = target_level;
+
+        // Clear current mesh
+        vertices_.clear();
+        triangles_.clear();
+        midpoint_cache_.clear();
+
+        // Regenerate mesh at new detail level
+        GenerateIcosahedron();
+        SubdivideToLevel(target_level);
+        GenerateVertexIndices();
+
+        // Restore max subdivision level for future reference
+        params_.max_subdivision_level = old_params.max_subdivision_level;
+
+        mesh_changed = true;
+        spdlog::info("Adaptive LOD: mesh regenerated with {} vertices, {} triangles at level {}",
+                    vertices_.size(), triangles_.size(), target_level);
+    }
+
+    // Update triangle visibility and screen errors for fine-grained LOD
+    for (auto& triangle : triangles_) {
+        triangle.screen_error = CalculateScreenError(triangle, camera_position,
+                                                     view_matrix, projection_matrix, viewport_size);
+        // Mark triangles that are facing the camera as visible
+        glm::vec3 triangle_center = (vertices_[triangle.vertices[0]].position +
+                                    vertices_[triangle.vertices[1]].position +
+                                    vertices_[triangle.vertices[2]].position) / 3.0f;
+        glm::vec3 to_camera = glm::normalize(camera_position - triangle_center);
+        glm::vec3 triangle_normal = glm::normalize(triangle_center);  // For sphere, normal = center
+        triangle.visible = glm::dot(to_camera, triangle_normal) > -0.2f;  // Allow some backface
+    }
+
     return true;
+}
+
+float IcosahedronGlobeMesh::CalculateScreenError(const GlobeTriangle& triangle,
+                                                 const glm::vec3& camera_position,
+                                                 const glm::mat4& view_matrix,
+                                                 const glm::mat4& projection_matrix,
+                                                 const glm::vec2& viewport_size) const {
+    (void)view_matrix;  // Reserved for view-space calculations
+
+    // Calculate triangle center in world space
+    const glm::vec3& v0 = vertices_[triangle.vertices[0]].position;
+    const glm::vec3& v1 = vertices_[triangle.vertices[1]].position;
+    const glm::vec3& v2 = vertices_[triangle.vertices[2]].position;
+
+    glm::vec3 center = (v0 + v1 + v2) / 3.0f;
+
+    // Calculate the geometric error (edge length in world space)
+    float edge1 = glm::length(v1 - v0);
+    float edge2 = glm::length(v2 - v1);
+    float edge3 = glm::length(v0 - v2);
+    float max_edge = std::max({edge1, edge2, edge3});
+
+    // Calculate distance from camera to triangle center
+    float distance = glm::length(camera_position - center);
+    if (distance < 0.001f) {
+        distance = 0.001f;  // Prevent division by zero
+    }
+
+    // Project geometric error to screen space
+    // screen_error = (geometric_error * viewport_height) / (distance * 2 * tan(fov/2))
+    // Simplified: screen_error ≈ geometric_error * viewport_height / (distance * fov_factor)
+
+    // Extract approximate FOV from projection matrix
+    float fov_factor = 2.0f;  // Approximation for typical 45-degree FOV
+    if (projection_matrix[1][1] > 0.001f) {
+        fov_factor = 2.0f / projection_matrix[1][1];
+    }
+
+    float screen_error = (max_edge * viewport_size.y) / (distance * fov_factor);
+
+    return screen_error;
+}
+
+bool IcosahedronGlobeMesh::NeedsSubdivision(const GlobeTriangle& triangle,
+                                            const glm::vec3& camera_position,
+                                            const glm::mat4& view_matrix,
+                                            const glm::mat4& projection_matrix,
+                                            const glm::vec2& viewport_size) const {
+    // Check if triangle already at maximum subdivision level
+    if (triangle.lod_level >= params_.max_subdivision_level) {
+        return false;
+    }
+
+    // Calculate screen-space error (view_matrix passed through to CalculateScreenError)
+    float screen_error = CalculateScreenError(triangle, camera_position,
+                                              view_matrix, projection_matrix, viewport_size);
+
+    // Needs subdivision if screen error exceeds threshold
+    return screen_error > params_.max_screen_error;
 }
 
 const std::vector<GlobeVertex>& IcosahedronGlobeMesh::GetVertices() const {
@@ -459,7 +602,12 @@ std::vector<std::size_t> IcosahedronGlobeMesh::GetTrianglesInBounds(
     std::vector<std::size_t> triangles_in_bounds;
     
     for (std::size_t i = 0; i < triangles_.size(); ++i) {
-        if (bounds.Intersects(triangles_[i].bounds)) {
+        // Simple bounding box intersection test
+        const BoundingBox2D& tri_bounds = triangles_[i].bounds;
+        if (tri_bounds.max.x >= bounds.min.x && tri_bounds.min.x <= bounds.max.x &&
+            tri_bounds.max.y >= bounds.min.y && tri_bounds.min.y <= bounds.max.y)
+         // if (tri_bounds.Intersects(triangles_[i].bounds))
+        {
             triangles_in_bounds.push_back(i);
         }
     }

@@ -35,10 +35,10 @@ bool LibraryInfo::CheckSystemRequirements() {
     }
     
     // Check required extensions
-    const GLubyte* extensions = glGetString(GL_EXTENSIONS);
-    if (!extensions) {
-        spdlog::warn("Could not get OpenGL extensions list");
-    }
+    // const GLubyte* extensions = glGetString(GL_EXTENSIONS);
+    // if (!extensions) {
+        // spdlog::warn("Could not get OpenGL extensions list");
+    // }
     
     spdlog::info("System requirements check passed");
     return true;

@@ -52,7 +52,7 @@ Earth Map is a high-performance OpenGL-based 3D tile map renderer designed for G
 1. **Clone the repository**
    ```bash
    # git clone --recursive https://github.com/...
-   cd earth_map
+   # cd earth_map
    ```
 
 2. **Install dependencies**
@@ -62,17 +62,17 @@ Earth Map is a high-performance OpenGL-based 3D tile map renderer designed for G
 
 3. **Configure CMake**
    ```bash
-   cmake --preset conan-default
+   cmake --preset conan-debug
    ```
 
 4. **Build the project**
    ```bash
-   cmake --build --preset conan-release
+   cmake --build --preset conan-debug
    ```
 
 5. **Run tests**
    ```bash
-   cd build/Release
+   cd build/Debug
    ctest --output-on-failure
    ```
 

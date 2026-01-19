@@ -1,7 +1,10 @@
+#include "earth_map/renderer/tile_renderer.h"
 #include <earth_map/core/earth_map_impl.h>
 #include <earth_map/renderer/renderer.h>
 #include <earth_map/core/scene_manager.h>
 #include <earth_map/core/camera_controller.h>
+#include <earth_map/data/tile_manager.h>
+#include <earth_map/renderer/tile_texture_manager.h>
 #include <earth_map/platform/library_info.h>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -130,6 +133,37 @@ bool EarthMapImpl::InitializeSubsystems() {
         if (!camera_controller_ || !camera_controller_->Initialize()) {
             spdlog::error("Failed to initialize camera controller");
             return false;
+        }
+
+        renderer_->SetCameraController(camera_controller_.get());
+        
+        // Initialize tile management system
+        tile_manager_ = CreateTileManager();
+        if (!tile_manager_ || !tile_manager_->Initialize({})) {
+            spdlog::error("Failed to initialize tile manager");
+            return false;
+        }
+
+        // Initialize tile texture coordinator (new lock-free architecture)
+        // Create shared cache and loader for both tile manager and texture coordinator
+        auto tile_cache = std::shared_ptr<TileCache>(CreateTileCache().release());
+        auto tile_loader = std::shared_ptr<TileLoader>(CreateTileLoader().release());
+        tile_loader->Initialize({});
+
+        texture_coordinator_ = std::make_unique<TileTextureCoordinator>(
+            tile_cache,
+            tile_loader,
+            4  // 4 worker threads for tile loading
+        );
+
+        spdlog::info("Tile texture coordinator initialized with lock-free architecture");
+
+        // Connect tile system components
+        auto tile_renderer = renderer_->GetTileRenderer();
+        if (tile_renderer) {
+            tile_renderer->SetTileManager(tile_manager_.get());
+            tile_renderer->SetTextureCoordinator(texture_coordinator_.get());
+            spdlog::info("Tile system initialized with new lock-free texture coordinator");
         }
         
         spdlog::info("All subsystems initialized successfully");

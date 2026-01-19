@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <chrono>
 #include <functional>
+#include <optional>
 
 namespace earth_map {
 
@@ -92,6 +93,9 @@ struct TileData {
     
     /** Number of channels (if applicable) */
     std::uint8_t channels = 0;
+    
+    /** Loading state */
+    bool loaded = false;
     
     /**
      * @brief Default constructor
@@ -226,20 +230,20 @@ public:
     virtual bool Initialize(const TileCacheConfig& config) = 0;
     
     /**
-     * @brief Store tile data in cache
-     * 
+     * @brief Put tile data into cache
+     *
      * @param tile_data Tile data to store
      * @return true if storage succeeded, false otherwise
      */
-    virtual bool Store(const TileData& tile_data) = 0;
-    
+    virtual bool Put(const TileData& tile_data) = 0;
+
     /**
-     * @brief Retrieve tile data from cache
-     * 
+     * @brief Get tile data from cache
+     *
      * @param coordinates Tile coordinates to retrieve
-     * @return std::shared_ptr<TileData> Tile data or nullptr if not found
+     * @return std::optional<TileData> Tile data if found, std::nullopt otherwise
      */
-    virtual std::shared_ptr<TileData> Retrieve(const TileCoordinates& coordinates) = 0;
+    virtual std::optional<TileData> Get(const TileCoordinates& coordinates) = 0;
     
     /**
      * @brief Check if tile exists in cache

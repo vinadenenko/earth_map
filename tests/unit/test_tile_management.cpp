@@ -13,8 +13,12 @@
 #include <earth_map/data/tile_manager.h>
 #include <memory>
 #include <filesystem>
+#include <spdlog/spdlog.h>
 #include <thread>
 #include <chrono>
+#include <fstream>
+#include <iostream>
+#include <sstream>
 
 using namespace earth_map;
 
@@ -85,11 +89,11 @@ TEST_F(TileManagementTest, TileCacheStoreAndRetrieve) {
     TileCoordinates coords = CreateTestTile(100, 200, 10);
     TileData tile_data = CreateTestTileData(coords, "test tile content");
     
-    EXPECT_TRUE(cache->Store(tile_data));
+    EXPECT_TRUE(cache->Put(tile_data));
     
     // Retrieve the tile
-    auto retrieved_data = cache->Retrieve(coords);
-    ASSERT_NE(retrieved_data, nullptr);
+    auto retrieved_data = cache->Get(coords);
+    ASSERT_TRUE(retrieved_data.has_value());
     EXPECT_TRUE(retrieved_data->IsValid());
     EXPECT_EQ(retrieved_data->data, tile_data.data);
     EXPECT_EQ(retrieved_data->metadata.coordinates, coords);
@@ -109,7 +113,7 @@ TEST_F(TileManagementTest, TileCacheContainsAndRemove) {
     EXPECT_FALSE(cache->Contains(coords));
     
     // Store tile
-    EXPECT_TRUE(cache->Store(tile_data));
+    EXPECT_TRUE(cache->Put(tile_data));
     EXPECT_TRUE(cache->Contains(coords));
     
     // Remove tile
@@ -128,7 +132,7 @@ TEST_F(TileManagementTest, TileCacheStatistics) {
     for (int i = 0; i < 5; ++i) {
         TileCoordinates coords = CreateTestTile(i, i, 10);
         TileData tile_data = CreateTestTileData(coords, "tile_" + std::to_string(i));
-        cache->Store(tile_data);
+        cache->Put(tile_data);
     }
     
     auto stats = cache->GetStatistics();
@@ -149,7 +153,7 @@ TEST_F(TileManagementTest, TileCacheEviction) {
     for (int i = 0; i < 10; ++i) {
         TileCoordinates coords = CreateTestTile(i, i, 10);
         TileData tile_data = CreateTestTileData(coords, "large_tile_content_" + std::to_string(i));
-        cache->Store(tile_data);
+        cache->Put(tile_data);
         stored_tiles.push_back(coords);
     }
     
@@ -342,24 +346,58 @@ TEST_F(TileManagementTest, TileIndexStatistics) {
     auto index = CreateTileIndex(config);
     ASSERT_TRUE(index->Initialize(config));
     
-    // Insert tiles at different zoom levels
-    for (int z = 0; z < 3; ++z) {
-        for (int x = 0; x < 4; ++x) {
-            for (int y = 0; y < 4; ++y) {
-                index->Insert(CreateTestTile(x, y, z));
+    // Debug: Count how many tiles we actually insert
+    int inserted_count = 0;
+    
+    // Insert tiles at different zoom levels with valid tile coordinates
+    // Zoom 0: 1 tile (0,0,0)
+    // Zoom 1: 4 tiles (0,0,1) to (1,1,1)  
+    // Zoom 2: 16 tiles (0,0,2) to (3,3,2)
+    
+    // Zoom level 0 - 1 tile
+    for (int x = 0; x < 1; ++x) {
+        for (int y = 0; y < 1; ++y) {
+            TileCoordinates tile = CreateTestTile(x, y, 0);
+            bool inserted = index->Insert(tile);
+            if (inserted) {
+                inserted_count++;
+            }
+        }
+    }
+    
+    // Zoom level 1 - 4 tiles  
+    for (int x = 0; x < 2; ++x) {
+        for (int y = 0; y < 2; ++y) {
+            TileCoordinates tile = CreateTestTile(x, y, 1);
+            bool inserted = index->Insert(tile);
+            if (inserted) {
+                inserted_count++;
+            }
+        }
+    }
+    
+    // Zoom level 2 - 16 tiles
+    for (int x = 0; x < 4; ++x) {
+        for (int y = 0; y < 4; ++y) {
+            TileCoordinates tile = CreateTestTile(x, y, 2);
+            bool inserted = index->Insert(tile);
+            if (inserted) {
+                inserted_count++;
             }
         }
     }
     
     auto stats = index->GetStatistics();
-    EXPECT_EQ(stats.total_tiles, 48);  // 3 levels * 4x4 tiles
+    
+    EXPECT_EQ(stats.total_tiles, inserted_count);
+    EXPECT_EQ(stats.total_tiles, 21);  // 1 + 4 + 16 = 21 tiles
     EXPECT_GT(stats.total_nodes, 0);
     EXPECT_GT(stats.max_depth, 0);
     
     // Check tiles per zoom level
-    EXPECT_EQ(stats.tiles_per_zoom[0], 16);
-    EXPECT_EQ(stats.tiles_per_zoom[1], 16);
-    EXPECT_EQ(stats.tiles_per_zoom[2], 16);
+    EXPECT_EQ(stats.tiles_per_zoom[0], 1);   // 1 tile at zoom 0
+    EXPECT_EQ(stats.tiles_per_zoom[1], 4);   // 4 tiles at zoom 1
+    EXPECT_EQ(stats.tiles_per_zoom[2], 16);  // 16 tiles at zoom 2
 }
 
 // Integration Tests
@@ -373,7 +411,11 @@ TEST_F(TileManagementTest, TileManagerIntegration) {
     TileLoaderConfig loader_config;
     auto loader = CreateTileLoader(loader_config);
     ASSERT_TRUE(loader->Initialize(loader_config));
-    loader->SetTileCache(cache);
+    auto cache_shared = std::shared_ptr<earth_map::TileCache>(cache.release());
+    loader->SetTileCache(cache_shared);
+    
+    // Test that cache is still valid
+    ASSERT_TRUE(cache_shared != nullptr);
     
     TileIndexConfig index_config;
     auto index = CreateTileIndex(index_config);
@@ -391,7 +433,7 @@ TEST_F(TileManagementTest, TileManagerIntegration) {
     ASSERT_TRUE(load_result.success);
     
     // Check it's in cache
-    EXPECT_TRUE(cache->Contains(coords));
+    EXPECT_TRUE(cache_shared->Contains(coords));
     
     // Add to index
     EXPECT_TRUE(index->Insert(coords));
@@ -422,9 +464,9 @@ TEST_F(TileManagementTest, ConcurrencyTest) {
                 TileCoordinates coords = CreateTestTile(t * 100 + i, i, 10);
                 TileData tile_data = CreateTestTileData(coords, "thread_" + std::to_string(t));
                 
-                if (cache->Store(tile_data)) {
-                    auto retrieved = cache->Retrieve(coords);
-                    if (retrieved && retrieved->IsValid()) {
+                if (cache->Put(tile_data)) {
+                    auto retrieved = cache->Get(coords);
+                    if (retrieved.has_value() && retrieved->IsValid()) {
                         success_count++;
                     }
                 }
@@ -496,7 +538,7 @@ TEST_F(TileManagementTest, ErrorHandling) {
     ASSERT_TRUE(cache->Initialize(cache_config));
     
     TileCoordinates invalid_tile = CreateTestTile(-1, -1, -1);
-    EXPECT_FALSE(cache->Retrieve(invalid_tile));
+    EXPECT_FALSE(cache->Get(invalid_tile).has_value());
     EXPECT_FALSE(cache->Remove(invalid_tile));
     
     // Test invalid configuration
@@ -513,6 +555,108 @@ TEST_F(TileManagementTest, ErrorHandling) {
     auto result = loader->LoadTile(CreateTestTile(0, 0, 25), "NonExistentProvider");
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.error_message.empty());
+}
+
+TEST_F(TileManagementTest, SimpleTileDownloadTest) {
+    // Simple test to trigger tile downloading
+    TileCacheConfig cache_config;
+    cache_config.disk_cache_directory = test_dir_.string() + "/download_cache";
+    
+    auto cache = CreateTileCache(cache_config);
+    ASSERT_TRUE(cache->Initialize(cache_config));
+    
+    TileLoaderConfig loader_config;
+    auto loader = CreateTileLoader(loader_config);
+    ASSERT_TRUE(loader->Initialize(loader_config));
+    
+    auto cache_shared = std::shared_ptr<earth_map::TileCache>(cache.release());
+    loader->SetTileCache(cache_shared);
+    
+    // Test downloading a single tile
+    TileCoordinates coords = CreateTestTile(1, 1, 2);
+    std::cout << "Testing download for tile (" << coords.x << "," << coords.y << "," << coords.zoom << ")\n";
+    
+    auto load_result = loader->LoadTile(coords);
+    if (load_result.success) {
+        std::cout << "Tile download successful\n";
+    } else {
+        std::cout << "Tile download failed: " << load_result.error_message << "\n";
+    }
+    
+    // Basic assertion to verify it worked
+    EXPECT_TRUE(load_result.success);
+}
+
+TEST_F(TileManagementTest, ZoomLevelTileDownloadTest) {
+    // Test that downloads tiles for zoom level 2 and saves them to directory
+    TileCacheConfig cache_config;
+    cache_config.disk_cache_directory = test_dir_.string() + "/download_cache";
+    
+    auto cache = CreateTileCache(cache_config);
+    ASSERT_TRUE(cache->Initialize(cache_config));
+    
+    TileLoaderConfig loader_config;
+    auto loader = CreateTileLoader(loader_config);
+    ASSERT_TRUE(loader->Initialize(loader_config));
+    
+    auto cache_shared = std::shared_ptr<earth_map::TileCache>(cache.release());
+    loader->SetTileCache(cache_shared);
+    
+    // Create output directory for downloaded tiles
+    std::filesystem::path output_dir = test_dir_ / "downloaded_tiles";
+    std::filesystem::create_directories(output_dir);
+    
+    // Test tiles for zoom level 2 (around (1,1) to (2,2))
+    std::vector<TileCoordinates> test_tiles = {
+        CreateTestTile(1, 1, 2),   // Top-left
+        CreateTestTile(2, 1, 2),   // Top-right  
+        CreateTestTile(1, 2, 2),   // Bottom-left
+        CreateTestTile(2, 2, 2)    // Bottom-right
+    };
+    
+    std::cout << "Starting tile download test for " << test_tiles.size() << " tiles\n";
+    
+    // Download tiles
+    std::size_t successful_downloads = 0;
+    for (const auto& coords : test_tiles) {
+        auto load_result = loader->LoadTile(coords);
+        if (load_result.success && load_result.tile_data) {
+            // Save tile data to file for verification
+            std::string filename = "tile_" + std::to_string(coords.x) + "_" + std::to_string(coords.y) + "_" + std::to_string(coords.zoom) + ".png";
+            std::filesystem::path filepath = output_dir / filename;
+            
+            // Write tile data to file
+            std::ofstream file(filepath, std::ios::binary);
+            if (file.is_open()) {
+                file.write(reinterpret_cast<const char*>(load_result.tile_data->data.data()), load_result.tile_data->data.size());
+                file.close();
+                
+                std::cout << "Saved tile " << filename << " to " << filepath.string() << "\n";
+                successful_downloads++;
+            }
+        } else {
+            // std::cout << "Failed to download tile (" << coords.x << ", " << coords.y << ", " << coords.zoom << ")\n";
+            spdlog::warn("Failed to download tile ({}, {}, {})", coords.x, coords.y, coords.zoom);
+        }
+    }
+    
+    std::cout << "Tile download test completed: " << successful_downloads << " successful out of " << test_tiles.size() << "\n";
+    
+    // Verify files were created
+    EXPECT_GT(successful_downloads, 0);
+
+    spdlog::info("Tile download test completed: {} successful out of {}", successful_downloads, test_tiles.size());
+    
+    // List downloaded files
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(output_dir)) {
+            if (entry.is_regular_file()) {
+                spdlog::info("Downloaded file: {}", entry.path().string());
+            }
+        }
+    } catch (const std::exception& e) {
+        spdlog::error("Error listing downloaded files: {}", e.what());
+    }
 }
 
 int main(int argc, char** argv) {

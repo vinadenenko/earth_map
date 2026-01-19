@@ -15,16 +15,7 @@
 
 namespace earth_map {
 
-// Simple hash function for tile coordinates
-struct TileCoordinatesHash {
-    std::size_t operator()(const TileCoordinates& coords) const {
-        std::hash<std::uint64_t> hasher;
-        std::uint64_t combined = (static_cast<std::uint64_t>(coords.x) << 42) | 
-                                (static_cast<std::uint64_t>(coords.y) << 21) | 
-                                static_cast<std::uint64_t>(coords.zoom);
-        return hasher(combined);
-    }
-};
+
 
 /**
  * @brief Basic tile cache implementation
@@ -35,8 +26,8 @@ public:
     ~BasicTileCache() override = default;
     
     bool Initialize(const TileCacheConfig& config) override;
-    bool Store(const TileData& tile_data) override;
-    std::shared_ptr<TileData> Retrieve(const TileCoordinates& coordinates) override;
+    bool Put(const TileData& tile_data) override;
+    std::optional<TileData> Get(const TileCoordinates& coordinates) override;
     bool Contains(const TileCoordinates& coordinates) const override;
     bool Remove(const TileCoordinates& coordinates) override;
     void Clear() override;
@@ -121,84 +112,84 @@ bool BasicTileCache::Initialize(const TileCacheConfig& config) {
     }
 }
 
-bool BasicTileCache::Store(const TileData& tile_data) {
+bool BasicTileCache::Put(const TileData& tile_data) {
     if (!tile_data.IsValid()) {
         spdlog::warn("Attempted to store invalid tile data");
         return false;
     }
-    
+
     const auto& coords = tile_data.metadata.coordinates;
     stats_.total_requests++;
-    
+
     // Update metadata
     metadata_cache_[coords] = std::make_shared<TileMetadata>(tile_data.metadata);
     SaveMetadataToDisk(tile_data.metadata);
-    
+
     // Store in memory cache
     auto data_copy = std::make_shared<TileData>(tile_data);
     memory_cache_[coords] = data_copy;
-    
+
     // Update LRU
     UpdateLRU(coords);
-    
+
     // Update statistics
     stats_.memory_cache_size += tile_data.GetDataSize();
     stats_.memory_cache_count++;
-    
+
     // Save to disk cache as well
     if (!SaveTileToDisk(tile_data)) {
         spdlog::warn("Failed to save tile to disk cache: {}/{}/{}",
                      coords.x, coords.y, coords.zoom);
     }
-    
+
     // Check if we need to evict from memory
     std::size_t current_usage = CalculateCurrentMemoryUsage();
     if (current_usage > config_.max_memory_cache_size) {
         EvictFromMemory(current_usage - config_.max_memory_cache_size);
     }
-    
+
     return true;
 }
 
-std::shared_ptr<TileData> BasicTileCache::Retrieve(const TileCoordinates& coordinates) {
+std::optional<TileData> BasicTileCache::Get(const TileCoordinates& coordinates) {
     stats_.total_requests++;
-    
+
     // First try memory cache
     auto it = memory_cache_.find(coordinates);
     if (it != memory_cache_.end()) {
         stats_.memory_cache_hits++;
         UpdateLRU(coordinates);
-        
+
         // Update access metadata
         if (auto metadata = GetMetadata(coordinates)) {
             metadata->access_count++;
             metadata->last_access = std::chrono::system_clock::now();
         }
-        
-        return it->second;
+
+        return *(it->second);  // Return copy of TileData
     }
-    
+
     stats_.memory_cache_misses++;
-    
+
     // Try loading from disk
     auto disk_tile = LoadTileFromDisk(coordinates);
     if (disk_tile && disk_tile->IsValid()) {
         stats_.disk_cache_hits++;
-        
+
         // Add to memory cache
         auto shared_tile = std::shared_ptr<TileData>(disk_tile.release());
         memory_cache_[coordinates] = shared_tile;
         UpdateLRU(coordinates);
-        
+
         // Update statistics
         stats_.memory_cache_size += shared_tile->GetDataSize();
         stats_.memory_cache_count++;
-        
-        return shared_tile;
+
+        return *shared_tile;  // Return copy of TileData
     }
-    
+
     stats_.disk_cache_misses++;
-    return nullptr;
+    return std::nullopt;
 }
 
 bool BasicTileCache::Contains(const TileCoordinates& coordinates) const {
@@ -277,22 +268,25 @@ void BasicTileCache::Clear() {
 }
 
 TileCacheStats BasicTileCache::GetStatistics() const {
-    stats_.disk_cache_size = CalculateCurrentDiskUsage();
-    stats_.disk_cache_count = 0;
+    TileCacheStats stats = stats_;  // Copy current stats
+    
+    // Calculate disk usage (mutable operation but returns copy)
+    stats.disk_cache_size = const_cast<BasicTileCache*>(this)->CalculateCurrentDiskUsage();
+    stats.disk_cache_count = 0;
     
     // Count disk tiles
     try {
         for (const auto& entry : 
              std::filesystem::recursive_directory_iterator(config_.disk_cache_directory)) {
             if (entry.path().extension() == ".tile") {
-                stats_.disk_cache_count++;
+                stats.disk_cache_count++;
             }
         }
     } catch (const std::exception&) {
         // Ignore directory iteration errors
     }
     
-    return stats_;
+    return stats;
 }
 
 bool BasicTileCache::UpdateMetadata(const TileCoordinates& coordinates, 
@@ -311,10 +305,12 @@ std::shared_ptr<TileMetadata> BasicTileCache::GetMetadata(
     }
     
     // Load from disk
-    auto disk_metadata = LoadMetadataFromDisk(coordinates);
+    auto disk_metadata = const_cast<BasicTileCache*>(this)->LoadMetadataFromDisk(coordinates);
     if (disk_metadata) {
         auto shared_metadata = std::shared_ptr<TileMetadata>(disk_metadata.release());
-        metadata_cache_[coordinates] = shared_metadata;
+        // Use const_cast to modify cache in const method - this is logical since
+        // we're just adding a cached result, not changing the logical state
+        const_cast<std::unordered_map<TileCoordinates, std::shared_ptr<TileMetadata>, TileCoordinatesHash>&>(metadata_cache_)[coordinates] = shared_metadata;
         return shared_metadata;
     }
     
@@ -325,8 +321,6 @@ std::size_t BasicTileCache::Cleanup() {
     std::size_t cleaned_count = 0;
     
     // Clean expired tiles
-    auto now = std::chrono::system_clock::now();
-    
     for (auto it = memory_cache_.begin(); it != memory_cache_.end();) {
         if (IsTileExpired(it->second->metadata)) {
             Remove(it->first);
@@ -455,8 +449,9 @@ std::vector<std::uint8_t> BasicTileCache::CompressData(
     const std::vector<std::uint8_t>& data,
     TileMetadata::Compression type) const {
     
-    // TODO: Implement actual compression
+    // TODO: Implement actual compression based on type
     // For now, return data as-is
+    (void)type;  // Suppress unused parameter warning
     return data;
 }
 
@@ -464,8 +459,9 @@ std::vector<std::uint8_t> BasicTileCache::DecompressData(
     const std::vector<std::uint8_t>& data,
     TileMetadata::Compression type) const {
     
-    // TODO: Implement actual decompression
+    // TODO: Implement actual decompression based on type
     // For now, return data as-is
+    (void)type;  // Suppress unused parameter warning
     return data;
 }
 
@@ -700,6 +696,7 @@ void BasicTileCache::EvictFromMemory(std::size_t required_space) {
 }
 
 void BasicTileCache::EvictFromDisk(std::size_t required_space) {
+    (void)required_space;  // Suppress unused parameter warning
     // TODO: Implement disk eviction logic
     // This would involve analyzing file sizes and removing oldest/largest files
     spdlog::warn("Disk eviction not yet implemented");
@@ -710,7 +707,7 @@ bool BasicTileCache::IsTileExpired(const TileMetadata& metadata) const {
     auto age = std::chrono::duration_cast<std::chrono::seconds>(
         now - metadata.last_modified).count();
     
-    return age > config_.tile_ttl;
+    return static_cast<std::uint64_t>(age) > config_.tile_ttl;
 }
 
 std::size_t BasicTileCache::CalculateCurrentMemoryUsage() const {

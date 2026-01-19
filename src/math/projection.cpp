@@ -30,7 +30,7 @@ GeographicCoordinates WebMercatorProjection::Unproject(const ProjectedCoordinate
     const double y = proj.y;
     
     const double lon_rad = x * M_PI / WEB_MERCATOR_HALF_WORLD;
-    const double lat_rad = M_PI_2 - 2.0 * std::exp(-y * M_PI / WEB_MERCATOR_HALF_WORLD);
+    const double lat_rad = 2.0 * std::atan(std::exp(y * M_PI / WEB_MERCATOR_HALF_WORLD)) - M_PI_2;
     
     // Clamp latitude to valid range
     const double clamped_lat = std::max(-MAX_LATITUDE, std::min(MAX_LATITUDE, 

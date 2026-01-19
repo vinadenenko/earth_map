@@ -12,8 +12,10 @@
 #include <earth_map/math/bounding_box.h>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/mat4x4.hpp>
 #include <vector>
 #include <memory>
+#include <future>
 #include <cstdint>
 #include <cstddef>
 
@@ -153,7 +155,7 @@ public:
     
     /**
      * @brief Load tile by coordinates
-     * 
+     *
      * @param coordinates Tile coordinates to load
      * @return true if loading started successfully, false otherwise
      */
@@ -175,6 +177,16 @@ public:
      */
     virtual std::vector<const Tile*> GetTilesInBounds(
         const BoundingBox2D& bounds) const = 0;
+    
+    /**
+     * @brief Get tile coordinates in geographic bounds at specific zoom level
+     * 
+     * @param bounds Geographic bounds to query
+     * @param zoom_level Zoom level for tile coordinates
+     * @return std::vector<TileCoordinates> List of tile coordinates in bounds
+     */
+    virtual std::vector<TileCoordinates> GetTilesInBounds(
+        const BoundingBox2D& bounds, int32_t zoom_level) const = 0;
     
     /**
      * @brief Get tiles at specific LOD level
@@ -218,7 +230,7 @@ public:
     
     /**
      * @brief Set configuration
-     * 
+     *
      * @param config New configuration parameters
      * @return true if configuration was applied, false otherwise
      */
@@ -261,8 +273,8 @@ public:
     bool LoadTile(const TileCoordinates& coordinates) override;
     bool UnloadTile(const TileCoordinates& coordinates) override;
     
-    std::vector<const Tile*> GetTilesInBounds(
-        const BoundingBox2D& bounds) const override;
+    std::vector<const Tile*> GetTilesInBounds(const BoundingBox2D& bounds) const override;
+    std::vector<TileCoordinates> GetTilesInBounds(const BoundingBox2D& bounds, int32_t zoom_level) const override;
     std::vector<const Tile*> GetTilesAtLOD(std::uint8_t lod_level) const override;
     
     std::uint8_t CalculateOptimalLOD(
@@ -283,7 +295,7 @@ private:
     glm::vec3 last_camera_position_ = glm::vec3(0.0f);
     glm::vec2 last_viewport_size_ = glm::vec2(0.0f);
     bool needs_update_ = true;
-    
+
     /**
      * @brief Find or create tile by coordinates
      */
@@ -312,6 +324,18 @@ private:
      * @brief Get tiles sorted by priority
      */
     std::vector<const Tile*> GetTilesByPriority() const;
+    
+    /**
+     * @brief Calculate screen-space error for a tile
+     */
+    float CalculateScreenSpaceError(const TileCoordinates& tile_coords,
+                                 const glm::vec2& viewport_size,
+                                 float camera_distance) const;
+    
+    /**
+     * @brief Calculate maximum visible distance for LOD level
+     */
+    float CalculateMaxVisibleDistance(std::uint8_t lod_level) const;
 };
 
 } // namespace earth_map

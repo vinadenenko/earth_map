@@ -283,8 +283,7 @@ public:
 private:
     TileIndexConfig config_;
     std::shared_ptr<QuadtreeNode> root_;
-    std::unordered_map<TileCoordinates, BoundingBox2D> tile_bounds_;
-    TileCoordinatesHash hasher_;
+    std::unordered_map<TileCoordinates, BoundingBox2D, TileCoordinatesHash> tile_bounds_;
     
     // Statistics tracking
     mutable std::size_t query_count_ = 0;
@@ -396,6 +395,12 @@ std::vector<TileCoordinates> BasicTileIndex::QueryVisible(
     const glm::mat4& view_matrix,
     const glm::mat4& projection_matrix,
     const glm::vec2& viewport_size) const {
+    
+    // Suppress unused parameter warnings for now
+    (void)camera_position;
+    (void)view_matrix;
+    (void)projection_matrix;
+    (void)viewport_size;
     
     // Simplified visibility query
     // In a full implementation, you would project the frustum and determine visible bounds
@@ -561,6 +566,10 @@ BoundingBox2D BasicTileIndex::GetWorldBounds() const {
 }
 
 void BasicTileIndex::UpdateStatistics(const TileCoordinates& tile, bool added) {
+    // Suppress unused parameter warnings for now
+    (void)tile;
+    (void)added;
+    
     // Statistics are updated lazily in GetStatistics()
     // This could be optimized to maintain running counts
 }

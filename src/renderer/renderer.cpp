@@ -1,6 +1,7 @@
 #include <earth_map/renderer/renderer.h>
 #include <earth_map/earth_map.h>
 #include <earth_map/platform/opengl_context.h>
+#include <earth_map/renderer/tile_renderer.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
@@ -112,6 +113,16 @@ public:
             CreateGlobeMesh();
             SetupOpenGLState();
             
+    // Initialize tile renderer
+        tile_renderer_ = TileRenderer::Create();
+        if (!tile_renderer_ || !tile_renderer_->Initialize()) {
+            spdlog::error("Failed to create or initialize tile renderer");
+            return false;
+        }
+        
+        // Set tile manager for tile renderer (will be available through scene manager)
+        // This is simplified - in a full system, tile manager would be passed from higher level
+            
             initialized_ = true;
             spdlog::info("Renderer initialized successfully");
             return true;
@@ -129,32 +140,39 @@ public:
             return;
         }
         
-        (void)frustum; // Suppress unused parameter warning
+        // Update tile renderer with current view
+        if (tile_renderer_) {
+            tile_renderer_->BeginFrame();
+            tile_renderer_->UpdateVisibleTiles(view_matrix, projection_matrix,
+                                                 camera_controller_->GetPosition(), frustum);
+            tile_renderer_->RenderTiles(view_matrix, projection_matrix);
+            tile_renderer_->EndFrame();
+        }
         
-        // Use basic shader
-        glUseProgram(shader_program_);
-        
-        // Set uniforms
-        glm::mat4 model = glm::rotate(glm::mat4(1.0f), 
-                                     static_cast<float>(glfwGetTime()) * 0.5f, 
-                                     glm::vec3(0.0f, 1.0f, 0.0f));
-        
-        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uModel"), 
-                         1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uView"), 
-                         1, GL_FALSE, glm::value_ptr(view_matrix));
-        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uProjection"), 
-                         1, GL_FALSE, glm::value_ptr(projection_matrix));
-        
-        glUniform3f(glGetUniformLocation(shader_program_, "uLightPos"), 2.0f, 2.0f, 2.0f);
-        glUniform3f(glGetUniformLocation(shader_program_, "uLightColor"), 1.0f, 1.0f, 1.0f);
-        glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"), 0.0f, 0.0f, 3.0f);
-        glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 0.2f, 0.6f, 0.2f);
-        
-        // Render globe
-        glBindVertexArray(vao_);
-        glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
-        glBindVertexArray(0);
+        // Fallback to basic globe if tile renderer not available
+        if (!tile_renderer_ || tile_renderer_->GetStats().visible_tiles == 0) {
+            glUseProgram(shader_program_);
+            
+            // Set uniforms
+            glm::mat4 model = glm::mat4(1.0f);
+            
+            glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uModel"), 
+                              1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uView"), 
+                              1, GL_FALSE, glm::value_ptr(view_matrix));
+            glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uProjection"), 
+                              1, GL_FALSE, glm::value_ptr(projection_matrix));
+            
+            glUniform3f(glGetUniformLocation(shader_program_, "uLightPos"), 2.0f, 2.0f, 2.0f);
+            glUniform3f(glGetUniformLocation(shader_program_, "uLightColor"), 1.0f, 1.0f, 1.0f);
+            glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"), 0.0f, 0.0f, 3.0f);
+            glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 0.2f, 0.6f, 0.2f);
+            
+            // Render globe
+            glBindVertexArray(vao_);
+            glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
+            glBindVertexArray(0);
+        }
     }
     
     void BeginFrame() override {
@@ -173,19 +191,35 @@ public:
         if (!initialized_) {
             return;
         }
-        
+
+        spdlog::debug("Renderer::Render() - BeginFrame");
         BeginFrame();
-        
-        // Simple view and projection matrices for demo
-        glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -3.0f));
-        glm::mat4 projection = glm::perspective(glm::radians(45.0f), 
-                                              static_cast<float>(config_.screen_width) / config_.screen_height, 
-                                              0.1f, 100.0f);
-        
-        Frustum frustum; // Empty frustum for now
+
+        // Get view and projection matrices from camera controller
+        glm::mat4 view;
+        glm::mat4 projection;
+        Frustum frustum;
+
+        if (camera_controller_) {
+            float aspect_ratio = static_cast<float>(config_.screen_width) / config_.screen_height;
+            view = camera_controller_->GetViewMatrix();
+            projection = camera_controller_->GetProjectionMatrix(aspect_ratio);
+            frustum = camera_controller_->GetFrustum(aspect_ratio);
+        } else {
+            // Fallback to simple view and projection if no camera
+            view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -3.0f));
+            projection = glm::perspective(glm::radians(45.0f),
+                                          static_cast<float>(config_.screen_width) / config_.screen_height,
+                                          0.1f, 100.0f);
+            frustum = Frustum(projection * view);
+        }
+
+        spdlog::debug("Renderer::Render() - RenderScene");
         RenderScene(view, projection, frustum);
-        
+
+        spdlog::debug("Renderer::Render() - EndFrame");
         EndFrame();
+        spdlog::debug("Renderer::Render() - complete");
     }
     
     void Resize(std::uint32_t width, std::uint32_t height) override {
@@ -203,8 +237,24 @@ public:
         return shader_manager_.get();
     }
     
+    CameraController* GetCameraController() const override {
+        return camera_controller_;
+    }
+    
+    void SetCameraController(CameraController* camera_controller) override {
+        camera_controller_ = camera_controller;
+        
+        // Pass camera controller to tile renderer
+        if (tile_renderer_) {
+            // Note: This is a simplified approach
+            // In a full system, this would be handled through proper dependency injection
+            // TODO
+            spdlog::debug("Camera controller set in renderer");
+        }
+    }
+    
     TileRenderer* GetTileRenderer() override {
-        return nullptr; // TODO: Implement
+        return tile_renderer_.get();
     }
     
     PlacemarkRenderer* GetPlacemarkRenderer() override {
@@ -235,6 +285,8 @@ private:
     std::vector<unsigned int> globe_indices_;
     
     std::unique_ptr<ShaderManager> shader_manager_;
+    std::unique_ptr<TileRenderer> tile_renderer_;
+    CameraController* camera_controller_ = nullptr;
     
     bool LoadShaders() {
         // Compile vertex shader
