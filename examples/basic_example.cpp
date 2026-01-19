@@ -110,7 +110,7 @@ void scroll_callback(GLFWwindow* /*window*/, double xoffset, double yoffset) {
             
             camera->SetPosition(new_pos);
             
-            spdlog::debug("Scroll: zoom_factor={:.3f}, new_distance={:.1f}", zoom_factor, new_distance);
+            spdlog::info("Scroll: zoom_factor={:.3f}, new_distance={:.1f}", zoom_factor, new_distance);
             
             // TODO: Trigger tile loading at new zoom level
             // This would involve:

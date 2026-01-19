@@ -143,8 +143,8 @@ public:
         // Update tile renderer with current view
         if (tile_renderer_) {
             tile_renderer_->BeginFrame();
-            tile_renderer_->UpdateVisibleTiles(view_matrix, projection_matrix, 
-                                                 glm::vec3(0.0f), frustum);
+            tile_renderer_->UpdateVisibleTiles(view_matrix, projection_matrix,
+                                                 camera_controller_->GetPosition(), frustum);
             tile_renderer_->RenderTiles(view_matrix, projection_matrix);
             tile_renderer_->EndFrame();
         }

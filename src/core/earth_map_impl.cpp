@@ -134,6 +134,8 @@ bool EarthMapImpl::InitializeSubsystems() {
             spdlog::error("Failed to initialize camera controller");
             return false;
         }
+
+        renderer_->SetCameraController(camera_controller_.get());
         
         // Initialize tile management system
         tile_manager_ = CreateTileManager();

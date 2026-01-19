@@ -148,7 +148,7 @@ public:
         
         // Calculate geographic bounds of visible area
         const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
-            view_matrix, projection_matrix);
+            camera_position, view_matrix, projection_matrix);
         
         // Get tiles in visible bounds at appropriate zoom
         const std::vector<TileCoordinates> candidate_tiles =
@@ -850,41 +850,44 @@ private:
         return 0;  // Very far - lowest detail
     }
     
-    BoundingBox2D CalculateVisibleGeographicBounds(const glm::mat4& view_matrix,
+    BoundingBox2D CalculateVisibleGeographicBounds(const glm::vec3& camera_position,
+                                               const glm::mat4& view_matrix,
                                                const glm::mat4& projection_matrix) const {
         (void)projection_matrix;
-        // Calculate realistic visible bounds based on camera position
-        // Extract camera position from view matrix
-        glm::vec3 camera_pos = glm::vec3(view_matrix[3]);
-        float distance = glm::length(camera_pos);
-        
+        (void)view_matrix;
+
+        // Use the camera position directly (in world coordinates)
+        float distance = glm::length(camera_position);
+
         // Calculate visible angle based on field of view
-        const float fov_rad = glm::radians(45.0f); // From renderer projection
+        const float fov_rad = glm::radians(45.0f);
         const float visible_radius = distance * std::tan(fov_rad / 2.0f);
-        
-        // Convert visible radius to angular degrees (approximate)
+
+        // Convert visible radius to angular degrees
         const float visible_angle_deg = glm::degrees(visible_radius / distance) * 2.0f;
-        // const float half_angle = visible_angle_deg / 2.0f;
-        
-        // Get camera forward direction
-        glm::vec3 camera_forward = -glm::normalize(glm::vec3(view_matrix[2]));
-        
-        // Convert camera position to geographic coordinates (simplified)
-        const float lat = glm::degrees(std::asin(-camera_pos.y / distance));
-        const float lon = glm::degrees(std::atan2(camera_forward.x, -camera_forward.z));
-        
+
+        // Convert camera position to geographic coordinates (unit sphere conversion)
+        // Normalize position to unit sphere for geographic conversion
+        glm::vec3 normalized_pos = glm::normalize(camera_position);
+
+        // Convert to geographic: x,z form longitude plane, y is latitude
+        // lat = asin(y), lon = atan2(x, z)
+        const float lat = glm::degrees(std::asin(std::clamp(normalized_pos.y, -1.0f, 1.0f)));
+        const float lon = glm::degrees(std::atan2(normalized_pos.x, normalized_pos.z));
+
         // Calculate bounds based on visible area around camera
-        const float lat_range = std::min(180.0f, visible_angle_deg * 1.5f);
+        const float lat_range = std::min(170.0f, visible_angle_deg * 1.5f);
         const float lon_range = std::min(360.0f, visible_angle_deg * 1.5f);
-        
-        const double min_lat = std::max(-90.0, static_cast<double>(lat - lat_range / 2.0f));
-        const double max_lat = std::min(90.0, static_cast<double>(lat + lat_range / 2.0f));
+
+        // Clamp to Web Mercator valid bounds (-85.0511 to 85.0511)
+        const double min_lat = std::max(-85.0, static_cast<double>(lat - lat_range / 2.0f));
+        const double max_lat = std::min(85.0, static_cast<double>(lat + lat_range / 2.0f));
         const double min_lon = static_cast<double>(lon - lon_range / 2.0f);
         const double max_lon = static_cast<double>(lon + lon_range / 2.0f);
-        
-        spdlog::debug("Camera distance: {:.1f}, visible bounds: lat[ {:.2f}, {:.2f} ] lon[ {:.2f}, {:.2f} ]", 
+
+        spdlog::debug("Camera distance: {:.1f}, visible bounds: lat[ {:.2f}, {:.2f} ] lon[ {:.2f}, {:.2f} ]",
                     distance, min_lat, max_lat, min_lon, max_lon);
-        
+
         return BoundingBox2D(
             glm::dvec2(min_lon, min_lat),
             glm::dvec2(max_lon, max_lat)
