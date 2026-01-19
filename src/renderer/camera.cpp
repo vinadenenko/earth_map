@@ -393,7 +393,25 @@ protected:
     glm::mat4 view_matrix_ = glm::mat4(1.0f);
     
     void UpdateViewMatrix() {
-        view_matrix_ = glm::lookAt(position_, target_, up_);
+        // Calculate view direction from orientation (heading/pitch/roll)
+        // Convert angles to radians
+        float heading_rad = glm::radians(heading_);
+        float pitch_rad = glm::radians(pitch_);
+
+        // Calculate forward vector from heading and pitch
+        // Heading: rotation around Y axis (yaw)
+        // Pitch: rotation around X axis (up/down)
+        glm::vec3 forward;
+        forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
+        forward.y = std::sin(pitch_rad);
+        forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
+        forward = glm::normalize(forward);
+
+        // Calculate target point from position and forward direction
+        glm::vec3 computed_target = position_ + forward;
+
+        // Use the computed target for the view matrix
+        view_matrix_ = glm::lookAt(position_, computed_target, up_);
     }
     
     void UpdateAnimation(float delta_time) {
