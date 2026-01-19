@@ -223,15 +223,15 @@ std::future<bool> BasicTileTextureManager::LoadTextureAsync(
     
     // Check cache first
     if (tile_cache_) {
-        auto cached_tile = tile_cache_->Retrieve(coordinates);
-        if (cached_tile && cached_tile->IsValid()) {
+        auto cached_tile = tile_cache_->Get(coordinates);
+        if (cached_tile.has_value() && cached_tile->IsValid()) {
             bool success = UpdateTexture(coordinates, *cached_tile);
-            
+
             if (callback) {
                 auto texture_id = GetTexture(coordinates);
                 callback(coordinates, texture_id);
             }
-            
+
             loading_textures_.erase(coordinates);
             promise->set_value(success);
             return future;

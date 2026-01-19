@@ -13,7 +13,7 @@
 #include <earth_map/core/scene_manager.h>
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/data/tile_manager.h>
-#include <earth_map/renderer/tile_texture_manager.h>
+#include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
 #include <memory>
 
 namespace earth_map {
@@ -54,7 +54,7 @@ private:
     std::unique_ptr<SceneManager> scene_manager_; ///< Scene management
     std::unique_ptr<CameraController> camera_controller_; ///< Camera control
     std::unique_ptr<TileManager> tile_manager_; ///< Tile management
-    std::shared_ptr<TileTextureManager> texture_manager_; ///< Texture management (shared for cross-component access)
+    std::unique_ptr<TileTextureCoordinator> texture_coordinator_; ///< Texture atlas coordinator (new lock-free architecture)
     bool initialized_ = false;                 ///< Initialization status
     
     /**

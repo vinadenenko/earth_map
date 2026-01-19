@@ -89,11 +89,11 @@ TEST_F(TileManagementTest, TileCacheStoreAndRetrieve) {
     TileCoordinates coords = CreateTestTile(100, 200, 10);
     TileData tile_data = CreateTestTileData(coords, "test tile content");
     
-    EXPECT_TRUE(cache->Store(tile_data));
+    EXPECT_TRUE(cache->Put(tile_data));
     
     // Retrieve the tile
-    auto retrieved_data = cache->Retrieve(coords);
-    ASSERT_NE(retrieved_data, nullptr);
+    auto retrieved_data = cache->Get(coords);
+    ASSERT_TRUE(retrieved_data.has_value());
     EXPECT_TRUE(retrieved_data->IsValid());
     EXPECT_EQ(retrieved_data->data, tile_data.data);
     EXPECT_EQ(retrieved_data->metadata.coordinates, coords);
@@ -113,7 +113,7 @@ TEST_F(TileManagementTest, TileCacheContainsAndRemove) {
     EXPECT_FALSE(cache->Contains(coords));
     
     // Store tile
-    EXPECT_TRUE(cache->Store(tile_data));
+    EXPECT_TRUE(cache->Put(tile_data));
     EXPECT_TRUE(cache->Contains(coords));
     
     // Remove tile
@@ -132,7 +132,7 @@ TEST_F(TileManagementTest, TileCacheStatistics) {
     for (int i = 0; i < 5; ++i) {
         TileCoordinates coords = CreateTestTile(i, i, 10);
         TileData tile_data = CreateTestTileData(coords, "tile_" + std::to_string(i));
-        cache->Store(tile_data);
+        cache->Put(tile_data);
     }
     
     auto stats = cache->GetStatistics();
@@ -153,7 +153,7 @@ TEST_F(TileManagementTest, TileCacheEviction) {
     for (int i = 0; i < 10; ++i) {
         TileCoordinates coords = CreateTestTile(i, i, 10);
         TileData tile_data = CreateTestTileData(coords, "large_tile_content_" + std::to_string(i));
-        cache->Store(tile_data);
+        cache->Put(tile_data);
         stored_tiles.push_back(coords);
     }
     
@@ -464,9 +464,9 @@ TEST_F(TileManagementTest, ConcurrencyTest) {
                 TileCoordinates coords = CreateTestTile(t * 100 + i, i, 10);
                 TileData tile_data = CreateTestTileData(coords, "thread_" + std::to_string(t));
                 
-                if (cache->Store(tile_data)) {
-                    auto retrieved = cache->Retrieve(coords);
-                    if (retrieved && retrieved->IsValid()) {
+                if (cache->Put(tile_data)) {
+                    auto retrieved = cache->Get(coords);
+                    if (retrieved.has_value() && retrieved->IsValid()) {
                         success_count++;
                     }
                 }
@@ -538,7 +538,7 @@ TEST_F(TileManagementTest, ErrorHandling) {
     ASSERT_TRUE(cache->Initialize(cache_config));
     
     TileCoordinates invalid_tile = CreateTestTile(-1, -1, -1);
-    EXPECT_FALSE(cache->Retrieve(invalid_tile));
+    EXPECT_FALSE(cache->Get(invalid_tile).has_value());
     EXPECT_FALSE(cache->Remove(invalid_tile));
     
     // Test invalid configuration

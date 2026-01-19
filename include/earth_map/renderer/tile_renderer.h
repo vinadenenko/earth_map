@@ -20,6 +20,7 @@ namespace earth_map {
 
 // Forward declarations
 class TileManager;
+class TileTextureCoordinator;
 struct Frustum;
 
 /**
@@ -102,11 +103,18 @@ public:
     
     /**
      * @brief Set tile manager for texture access
-     * 
+     *
      * @param tile_manager Pointer to tile manager (non-owning)
      */
     virtual void SetTileManager(TileManager* tile_manager) = 0;
-    
+
+    /**
+     * @brief Set texture coordinator for tile texture management
+     *
+     * @param coordinator Pointer to texture coordinator (non-owning)
+     */
+    virtual void SetTextureCoordinator(TileTextureCoordinator* coordinator) = 0;
+
     /**
      * @brief Update visible tiles based on camera position
      * 

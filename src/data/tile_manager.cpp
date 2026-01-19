@@ -3,7 +3,6 @@
  * @brief Tile management system implementation
  */
 
-#include "earth_map/renderer/tile_texture_manager.h"
 #include <earth_map/data/tile_manager.h>
 #include <earth_map/math/tile_mathematics.h>
 #include <algorithm>
@@ -148,20 +147,6 @@ const Tile* BasicTileManager::GetTile(const TileCoordinates& coordinates) const 
     return nullptr;
 }
 
-uint32_t BasicTileManager::GetTileTexture(const TileCoordinates &coordinates) const
-{
-    // Delegate to tile texture manager if available
-    // This assumes texture_manager_ is added as a member variable
-    if (texture_manager_) {
-        return texture_manager_->GetTexture(coordinates);
-    }
-    
-    // Fallback: return 0 (no texture) if no texture manager
-    spdlog::debug("GetTileTexture called for ({}, {}, {}), no texture manager available",
-                  coordinates.x, coordinates.y, coordinates.zoom);
-    return 0;
-}
-
 bool BasicTileManager::LoadTile(const TileCoordinates& coordinates) {
     // Check if tile is already loaded
     if (GetTile(coordinates) != nullptr) {
@@ -186,23 +171,6 @@ bool BasicTileManager::LoadTile(const TileCoordinates& coordinates) {
     needs_update_ = true;  // Trigger visibility update
     
     return true;
-}
-
-std::future<bool> BasicTileManager::LoadTileTextureAsync(
-    const TileCoordinates& coordinates,
-    TileTextureCallback callback) {
-    // spdlog::info("TileManager: LoadTileTextureAsync called for {}/{}/{}", coordinates.x, coordinates.y, coordinates.zoom);
-    // Delegate to texture manager if available
-    if (texture_manager_) {
-        // spdlog::info("TileManager: Delegating to texture manager");
-        return texture_manager_->LoadTextureAsync(coordinates, callback);
-    }
-
-    spdlog::warn("TileManager: No texture manager available");
-    // Return failed future if no texture manager
-    auto promise = std::make_shared<std::promise<bool>>();
-    promise->set_value(false);
-    return promise->get_future();
 }
 
 bool BasicTileManager::UnloadTile(const TileCoordinates& coordinates) {
@@ -311,18 +279,6 @@ bool BasicTileManager::SetConfiguration(const TileManagerConfig& config) {
     config_ = config;
     needs_update_ = true;
     return true;
-}
-
-void BasicTileManager::SetTextureManager(std::shared_ptr<TileTextureManager> texture_manager) {
-    texture_manager_ = texture_manager;
-}
-
-bool BasicTileManager::InitializeWithTextureManager(std::shared_ptr<TileTextureManager> texture_manager) {
-    texture_manager_ = texture_manager;
-    
-    // Initialize tile manager with default config
-    TileManagerConfig config;
-    return Initialize(config);
 }
 
 void BasicTileManager::EvictTiles() {

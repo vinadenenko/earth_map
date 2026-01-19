@@ -26,8 +26,8 @@ public:
     ~BasicTileCache() override = default;
     
     bool Initialize(const TileCacheConfig& config) override;
-    bool Store(const TileData& tile_data) override;
-    std::shared_ptr<TileData> Retrieve(const TileCoordinates& coordinates) override;
+    bool Put(const TileData& tile_data) override;
+    std::optional<TileData> Get(const TileCoordinates& coordinates) override;
     bool Contains(const TileCoordinates& coordinates) const override;
     bool Remove(const TileCoordinates& coordinates) override;
     void Clear() override;
@@ -112,84 +112,84 @@ bool BasicTileCache::Initialize(const TileCacheConfig& config) {
     }
 }
 
-bool BasicTileCache::Store(const TileData& tile_data) {
+bool BasicTileCache::Put(const TileData& tile_data) {
     if (!tile_data.IsValid()) {
         spdlog::warn("Attempted to store invalid tile data");
         return false;
     }
-    
+
     const auto& coords = tile_data.metadata.coordinates;
     stats_.total_requests++;
-    
+
     // Update metadata
     metadata_cache_[coords] = std::make_shared<TileMetadata>(tile_data.metadata);
     SaveMetadataToDisk(tile_data.metadata);
-    
+
     // Store in memory cache
     auto data_copy = std::make_shared<TileData>(tile_data);
     memory_cache_[coords] = data_copy;
-    
+
     // Update LRU
     UpdateLRU(coords);
-    
+
     // Update statistics
     stats_.memory_cache_size += tile_data.GetDataSize();
     stats_.memory_cache_count++;
-    
+
     // Save to disk cache as well
     if (!SaveTileToDisk(tile_data)) {
         spdlog::warn("Failed to save tile to disk cache: {}/{}/{}",
                      coords.x, coords.y, coords.zoom);
     }
-    
+
     // Check if we need to evict from memory
     std::size_t current_usage = CalculateCurrentMemoryUsage();
     if (current_usage > config_.max_memory_cache_size) {
         EvictFromMemory(current_usage - config_.max_memory_cache_size);
     }
-    
+
     return true;
 }
 
-std::shared_ptr<TileData> BasicTileCache::Retrieve(const TileCoordinates& coordinates) {
+std::optional<TileData> BasicTileCache::Get(const TileCoordinates& coordinates) {
     stats_.total_requests++;
-    
+
     // First try memory cache
     auto it = memory_cache_.find(coordinates);
     if (it != memory_cache_.end()) {
         stats_.memory_cache_hits++;
         UpdateLRU(coordinates);
-        
+
         // Update access metadata
         if (auto metadata = GetMetadata(coordinates)) {
             metadata->access_count++;
             metadata->last_access = std::chrono::system_clock::now();
         }
-        
-        return it->second;
+
+        return *(it->second);  // Return copy of TileData
     }
-    
+
     stats_.memory_cache_misses++;
-    
+
     // Try loading from disk
     auto disk_tile = LoadTileFromDisk(coordinates);
     if (disk_tile && disk_tile->IsValid()) {
         stats_.disk_cache_hits++;
-        
+
         // Add to memory cache
         auto shared_tile = std::shared_ptr<TileData>(disk_tile.release());
         memory_cache_[coordinates] = shared_tile;
         UpdateLRU(coordinates);
-        
+
         // Update statistics
         stats_.memory_cache_size += shared_tile->GetDataSize();
         stats_.memory_cache_count++;
-        
-        return shared_tile;
+
+        return *shared_tile;  // Return copy of TileData
     }
-    
+
     stats_.disk_cache_misses++;
-    return nullptr;
+    return std::nullopt;
 }
 
 bool BasicTileCache::Contains(const TileCoordinates& coordinates) const {

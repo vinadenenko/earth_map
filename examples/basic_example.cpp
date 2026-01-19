@@ -34,7 +34,7 @@ void framebuffer_size_callback(GLFWwindow* /*window*/, int width, int height) {
 
 // Mouse button callback
 void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mods*/) {
-    spdlog::debug("Click");
+    spdlog::info("Click");
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
@@ -91,7 +91,7 @@ void cursor_position_callback(GLFWwindow* /*window*/, double xpos, double ypos) 
 
 // Scroll callback for zoom
 void scroll_callback(GLFWwindow* /*window*/, double xoffset, double yoffset) {
-    spdlog::debug("Scroll");
+    spdlog::info("Scroll");
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
@@ -110,7 +110,7 @@ void scroll_callback(GLFWwindow* /*window*/, double xoffset, double yoffset) {
             
             camera->SetPosition(new_pos);
             
-            spdlog::debug("Scroll: zoom_factor={:.3f}, new_distance={:.1f}", zoom_factor, new_distance);
+            spdlog::info("Scroll: zoom_factor={:.3f}, new_distance={:.1f}", zoom_factor, new_distance);
             
             // TODO: Trigger tile loading at new zoom level
             // This would involve:
@@ -132,6 +132,8 @@ int main() {
         // Display library info
         std::cout << "Library Version: " << earth_map::LibraryInfo::GetVersion() << "\n";
         std::cout << "Build Info: " << earth_map::LibraryInfo::GetBuildInfo() << "\n";
+
+        // spdlog::set_level(spdlog::level::debug);
         
         // Initialize GLFW
         if (!glfwInit()) {
