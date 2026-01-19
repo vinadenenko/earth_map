@@ -101,6 +101,7 @@ class TileManager {
 
 **Severity:** Medium (Performance)
 **Type:** Atlas Integration Incomplete
+**Status:** ✅ **RESOLVED** (2026-01-20)
 
 ### Problem
 
@@ -114,36 +115,36 @@ struct TileRenderState {
 
 With texture atlas, all tiles share ONE atlas texture. UV coordinates differentiate tiles.
 
-### Current State
+### Resolution (Completed)
 
-- `UpdateVisibleTiles()` assigns `atlas_texture_id` to each tile
-- Shader needs UV coordinates, not individual texture IDs
-- Inefficient: binding same texture multiple times
+**Date:** 2026-01-20
 
-### Recommended Solution
+**Changes Made:**
 
-```cpp
-struct TileRenderState {
-    TileCoordinates coordinates;
-    glm::vec4 uv_coords;  // ← From TileTextureCoordinator::GetTileUV()
-    bool is_ready;        // ← From TileTextureCoordinator::IsTileReady()
-    // NO texture_id - renderer binds atlas once per frame
-};
-```
+1. **Updated TileRenderState structure** (tile_renderer.cpp:30-39):
+   - ❌ Removed `std::uint32_t texture_id` field
+   - ✅ Added `glm::vec4 uv_coords` - Atlas UV coordinates from coordinator
+   - ✅ Added `bool is_ready` - Whether tile texture is ready in atlas
 
-Rendering flow:
-```cpp
-// Bind atlas once
-glBindTexture(GL_TEXTURE_2D, texture_coordinator_->GetAtlasTextureID());
+2. **Updated UpdateVisibleTiles** (tile_renderer.cpp:186-207):
+   - ✅ Query `texture_coordinator_->GetTileUV(coords)` for UV coordinates
+   - ✅ Query `texture_coordinator_->IsTileReady(coords)` for ready state
+   - ✅ Removed individual texture ID assignment per tile
 
-for (auto& tile : visible_tiles_) {
-    if (tile.is_ready) {
-        // Pass UV coordinates to shader
-        shader.setVec4("uTileUV", tile.uv_coords);
-        // Render tile geometry
-    }
-}
-```
+3. **Updated RenderTiles** (tile_renderer.cpp:292-298):
+   - ✅ Bind coordinator's atlas once: `texture_coordinator_->GetAtlasTextureID()`
+   - ✅ Single texture bind per frame (all tiles use same atlas)
+
+4. **Updated helper methods**:
+   - ✅ RenderSingleTile: Changed to use `is_ready` and coordinator's atlas
+   - ✅ RenderTileOnGlobe: Changed to use coordinator's atlas
+   - ✅ GetGlobeTexture: Returns coordinator's atlas texture ID
+
+**Result:**
+- ✅ All tiles now use single shared atlas texture
+- ✅ UV coordinates stored per tile for atlas sampling
+- ✅ Build successful, tests passing (41/42)
+- ✅ Ready for visual testing
 
 ---
 
@@ -151,44 +152,61 @@ for (auto& tile : visible_tiles_) {
 
 **Severity:** Medium (Functional)
 **Type:** Missing Implementation
+**Status:** ⏳ **PARTIALLY RESOLVED** (2026-01-20)
 
 ### Problem
 
 Current fragment shader calculates tile texture sampling based on world position, but doesn't use atlas UV coordinates from TileTextureCoordinator.
 
-### Current Shader
+### Current State
 
+**Shader:** The fragment shader (tile_renderer.cpp:448-503) calculates UV coordinates dynamically:
 ```glsl
-// Calculates tile position dynamically (doesn't use atlas UVs)
+// Calculates tile position dynamically from world coordinates
+vec3 geo = worldToGeo(normalize(FragPos));
 vec2 tile = geoToTile(geo.xy, zoom);
 vec2 atlasUV = (atlasPos + tileFrac) * tileSize;
 vec4 texColor = texture(uTileTexture, atlasUV);
 ```
 
-### Recommended Solution
+### Resolution (Partially Completed)
 
-Pass UV coordinates from CPU (pre-computed by TileTextureCoordinator):
+**Date:** 2026-01-20
 
-```glsl
-// Vertex shader
-layout (location = 3) in vec4 aTileUV;  // (u_min, v_min, u_max, v_max)
-out vec4 TileUV;
+**Changes Made:**
 
-void main() {
-    TileUV = aTileUV;
-    // ...
-}
+1. **TileRenderer binds coordinator's atlas** (tile_renderer.cpp:292-298):
+   - ✅ Correctly binds `texture_coordinator_->GetAtlasTextureID()`
+   - ✅ All rendering code updated to use coordinator's atlas
 
-// Fragment shader
-in vec4 TileUV;
+2. **TileRenderState stores UV coordinates** (tile_renderer.cpp:30-39):
+   - ✅ `glm::vec4 uv_coords` field added
+   - ✅ Populated from `texture_coordinator_->GetTileUV()`
 
-void main() {
-    // Interpolate within tile's UV region
-    vec2 atlasUV = mix(TileUV.xy, TileUV.zw, tileFrac);
-    vec4 texColor = texture(uTileTexture, atlasUV);
-    // ...
-}
-```
+**Limitation:**
+
+The shader still uses dynamic UV calculation instead of the pre-computed UV coordinates from `TileRenderState`. This works for basic rendering but has limitations:
+- Assumes tiles are arranged in a grid pattern in the atlas
+- May not correctly map to coordinator's actual atlas slot allocation
+- Cannot handle non-contiguous atlas layouts
+
+**Future Work:**
+
+For full per-tile UV support, the shader needs to:
+1. Accept per-tile UV coordinates (either as vertex attributes or uniform buffer)
+2. Use those coordinates directly for atlas sampling
+3. Handle cases where tiles are not yet loaded
+
+This requires either:
+- Per-tile rendering (one draw call per tile with different UV uniform)
+- Uniform buffer with UV lookup table indexed by tile coordinates
+- Vertex attributes for UV coordinates
+
+**Result:**
+- ✅ Basic shader functionality preserved
+- ✅ Binds correct atlas texture from coordinator
+- ⚠️ Dynamic UV calculation may not perfectly align with atlas slots
+- ✅ Ready for visual testing to identify any rendering issues
 
 ---
 
@@ -220,22 +238,35 @@ void main() {
 
 ## Summary
 
-| Issue | Severity | Status | Fix Priority |
-|-------|----------|--------|--------------|
-| TileManager texture methods | High | ✅ **RESOLVED** | ~~Phase 2~~ DONE |
-| Individual texture IDs per tile | Medium | TODO | Phase 1 |
-| Shader atlas UV support | Medium | TODO | Phase 1 |
-| Dead TriggerTileLoading code | Low | ✅ **RESOLVED** | ~~Phase 1~~ DONE |
+| Issue | Severity | Status | Date Resolved |
+|-------|----------|--------|---------------|
+| #1: TileManager texture methods | High | ✅ **RESOLVED** | 2026-01-19 |
+| #2: Individual texture IDs per tile | Medium | ✅ **RESOLVED** | 2026-01-20 |
+| #3: Shader atlas UV support | Medium | ⏳ **PARTIAL** | 2026-01-20 |
+| #4: Dead TriggerTileLoading code | Low | ✅ **RESOLVED** | 2026-01-19 |
+| Dual Atlas Systems (discovered) | High | ✅ **RESOLVED** | 2026-01-20 |
 
-**Completed:**
+**Completed (2026-01-19):**
 1. ✅ Complete basic integration (TileTextureCoordinator wired to TileRenderer)
 2. ✅ Build and test current integration (21/22 tests passing)
-3. ✅ Remove TileManager texture methods entirely (Issue #1 - RESOLVED)
-4. ✅ Remove TriggerTileLoading() dead code (Issue #4 - RESOLVED)
+3. ✅ Remove TileManager texture methods entirely (Issue #1)
+4. ✅ Remove TriggerTileLoading() dead code (Issue #4)
 
-**Next Steps:**
-1. 🔄 Update shader to use atlas UVs (Issue #3 - High Priority)
-2. 🔄 Remove TileRenderState::texture_id (Issue #2 - Medium Priority)
+**Completed (2026-01-20):**
+1. ✅ Discovered and documented dual atlas systems issue
+2. ✅ Removed old atlas system (CreateTextureAtlas, atlas_texture_, atlas_tiles_, atlas_dirty_)
+3. ✅ Updated TileRenderState to use UV coordinates and is_ready flag (Issue #2)
+4. ✅ Updated UpdateVisibleTiles to query coordinator for UV coords and ready state
+5. ✅ Updated RenderTiles to bind coordinator's atlas texture
+6. ✅ Updated all helper methods (RenderSingleTile, RenderTileOnGlobe, GetGlobeTexture)
+7. ✅ Build successful, tests passing (41/42)
+8. ✅ Ready for visual testing
+
+**Remaining Work:**
+1. ⚠️ Shader UV integration (Issue #3 - Partial): Shader still uses dynamic UV calculation
+   - Current: Works for basic rendering, may have tile mapping issues
+   - Future: Full per-tile UV support via vertex attributes or uniform buffer
+2. 📋 Visual testing by user to verify atlas rendering works correctly
 
 ---
 

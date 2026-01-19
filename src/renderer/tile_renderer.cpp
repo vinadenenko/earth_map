@@ -29,7 +29,8 @@ namespace earth_map {
  */
 struct TileRenderState {
     TileCoordinates coordinates;        ///< Tile coordinates (x, y, zoom)
-    std::uint32_t texture_id;       ///< OpenGL texture ID
+    glm::vec4 uv_coords;            ///< Atlas UV coordinates (u_min, v_min, u_max, v_max)
+    bool is_ready;                   ///< Whether tile texture is ready in atlas
     BoundingBox2D geographic_bounds;   ///< Geographic bounds of this tile
     float lod_level;                 ///< Level of detail for this tile
     bool is_visible;                 ///< Whether tile is currently visible
@@ -38,25 +39,17 @@ struct TileRenderState {
 };
 
 /**
- * @brief Texture atlas tile information
- */
-struct AtlasTileInfo {
-    int x, y;                    ///< Tile coordinates
-    int zoom;                     ///< Zoom level
-    float u, v;                   ///< UV coordinates in atlas
-    float u_size, v_size;         ///< UV size in atlas
-    std::uint32_t texture_id;     ///< Original tile texture ID
-};
-
-/**
  * @brief Basic tile renderer implementation
  */
 class TileRendererImpl : public TileRenderer {
 public:
-    explicit TileRendererImpl(const TileRenderConfig& config) 
+    explicit TileRendererImpl(const TileRenderConfig& config)
         : config_(config), frame_counter_(0), atlas_size_(2048), tile_size_(256) {
         spdlog::info("Creating tile renderer with max tiles: {}", config.max_visible_tiles);
-        CalculateAtlasLayout();
+        // Calculate tiles per row for atlas layout
+        tiles_per_row_ = atlas_size_ / tile_size_;
+        spdlog::info("Atlas layout: {}x{} tiles per row, total {} tiles",
+                    tiles_per_row_, tiles_per_row_, tiles_per_row_ * tiles_per_row_);
     }
     
     ~TileRendererImpl() override {
@@ -166,30 +159,9 @@ public:
         
         // Filter tiles by frustum culling and limit with performance considerations
         std::size_t tiles_added = 0;
-        std::size_t max_tiles_for_frame = std::min(static_cast<std::size_t>(config_.max_visible_tiles), 
+        std::size_t max_tiles_for_frame = std::min(static_cast<std::size_t>(config_.max_visible_tiles),
                                                  static_cast<std::size_t>(tiles_per_row_ * tiles_per_row_));
-        
-        // Resize atlas tiles array with bounds checking
-        atlas_tiles_.clear();
-        atlas_tiles_.reserve(max_tiles_for_frame);
 
-
-        
-        // // Prevent excessive memory allocation - cap at reasonable limit
-        // const std::size_t reasonable_limit = 10000; // Maximum tiles we'll ever allocate for
-        // std::size_t reserve_size = std::min(max_tiles_for_frame, reasonable_limit);
-        
-        // // Additional safety check to prevent vector::reserve exceptions
-        // if (reserve_size > 0 && reserve_size < SIZE_MAX / sizeof(AtlasTileInfo)) {
-        //     try {
-        //         atlas_tiles_.reserve(reserve_size);
-        //         spdlog::debug("Atlas tiles reserved: {}", reserve_size);
-        //     } catch (const std::exception& e) {
-        //         spdlog::error("Failed to reserve atlas tiles: {}", e.what());
-        //         // Continue without reservation - vector will grow as needed
-        //     }
-        // }
-        
         // Collect visible tile coordinates and request them from texture coordinator
         std::vector<TileCoordinates> visible_tile_coords;
         for (const TileCoordinates& tile_coords : candidate_tiles) {
@@ -211,7 +183,7 @@ public:
             texture_coordinator_->RequestTiles(visible_tile_coords, priority);
         }
 
-        // Build visible tiles list with textures from atlas
+        // Build visible tiles list with UV coords from coordinator
         for (const TileCoordinates& tile_coords : visible_tile_coords) {
                 TileRenderState tile_state;
                 tile_state.coordinates = tile_coords;
@@ -221,29 +193,17 @@ public:
                 tile_state.load_priority = CalculateLoadPriority(tile_coords, camera_position);
                 tile_state.is_visible = true;
 
-                // Get atlas texture ID from coordinator (all tiles use same atlas)
+                // Get UV coordinates and ready state from coordinator
                 if (texture_coordinator_) {
-                    tile_state.texture_id = texture_coordinator_->GetAtlasTextureID();
+                    tile_state.uv_coords = texture_coordinator_->GetTileUV(tile_coords);
+                    tile_state.is_ready = texture_coordinator_->IsTileReady(tile_coords);
                 } else {
-                    tile_state.texture_id = 0;
+                    // Default UV coords (full texture)
+                    tile_state.uv_coords = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
+                    tile_state.is_ready = false;
                 }
 
-                // Create test texture if no texture available yet
-                if (tile_state.texture_id == 0) {
-                    tile_state.texture_id = CreateTestTexture();
-                    // spdlog::info("Created test texture {} for tile ({}, {}, {})", tile_state.texture_id, tile_coords.x, tile_coords.y, tile_coords.zoom);
-                    // Note: Tile loading is now handled by TileTextureCoordinator::RequestTiles() above
-                }
-                
                 visible_tiles_.push_back(tile_state);
-
-                // Add to atlas tiles
-                AtlasTileInfo atlas_tile;
-                atlas_tile.x = tile_coords.x;
-                atlas_tile.y = tile_coords.y;
-                atlas_tile.zoom = tile_coords.zoom;
-                atlas_tile.texture_id = tile_state.texture_id;
-                atlas_tiles_.push_back(atlas_tile);
         }
         
         // spdlog::info("Selected {} tiles for rendering (zoom {})", tiles_added, zoom_level);
@@ -253,10 +213,10 @@ public:
                  [](const TileRenderState& a, const TileRenderState& b) {
                      return a.load_priority < b.load_priority;
                  });
-        
-        // Mark atlas as dirty only if visible tiles changed
+
+        // Track visible tiles for change detection
         bool tiles_changed = false;
-        
+
         if (visible_tiles_.size() != last_visible_tiles_.size()) {
             tiles_changed = true;
         } else {
@@ -267,16 +227,15 @@ public:
                 }
             }
         }
-        
+
         if (tiles_changed) {
-            atlas_dirty_.store(true);
             last_visible_tiles_.clear();
             for (const auto& tile : visible_tiles_) {
                 last_visible_tiles_.push_back(tile.coordinates);
             }
         }
-        
-        spdlog::debug("Tile renderer update: {} visible tiles, zoom level {}", 
+
+        spdlog::debug("Tile renderer update: {} visible tiles, zoom level {}",
                     visible_tiles_.size(), zoom_level);
     }
     
@@ -285,10 +244,7 @@ public:
         if (!initialized_ || visible_tiles_.empty()) {
             return;
         }
-        
-        // Update texture atlas if needed
-        CreateTextureAtlas();
-        
+
         // Save current OpenGL state
         GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
         GLboolean cull_face_enabled = glIsEnabled(GL_CULL_FACE);
@@ -332,10 +288,14 @@ public:
         }
         glUniform1f(zoom_loc, current_zoom);
         glUniform1i(tiles_per_row_loc, tiles_per_row_);
-        
-        // Bind the atlas texture
+
+        // Bind the coordinator's atlas texture
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, atlas_texture_);
+        std::uint32_t atlas_texture_id = 0;
+        if (texture_coordinator_) {
+            atlas_texture_id = texture_coordinator_->GetAtlasTextureID();
+        }
+        glBindTexture(GL_TEXTURE_2D, atlas_texture_id);
 
         const GLint tex_loc = glGetUniformLocation(tile_shader_program_, "uTileTexture");
         glUniform1i(tex_loc, 0);
@@ -395,7 +355,10 @@ public:
     }
     
     std::uint32_t GetGlobeTexture() const override {
-        return atlas_texture_;
+        if (texture_coordinator_) {
+            return texture_coordinator_->GetAtlasTextureID();
+        }
+        return 0;
     }
 
 private:
@@ -411,9 +374,6 @@ private:
     int atlas_size_;
     int tile_size_;
     int tiles_per_row_;
-    std::uint32_t atlas_texture_ = 0;
-    std::vector<AtlasTileInfo> atlas_tiles_;
-    std::atomic<bool> atlas_dirty_ = true;
     std::vector<TileCoordinates> last_visible_tiles_;
     
     // OpenGL objects
@@ -694,43 +654,47 @@ private:
         return true;
     }
     
-    void RenderSingleTile(const TileRenderState& tile, 
+    void RenderSingleTile(const TileRenderState& tile,
                           const glm::mat4& view_matrix,
                           const glm::mat4& projection_matrix) {
-        // For now, skip tiles with no texture
-        if (tile.texture_id == 0) {
+        // For now, skip tiles that are not ready
+        if (!tile.is_ready) {
             return;
         }
-        
+
         // Calculate tile's geographic bounds
         auto bounds = tile.geographic_bounds;
         auto center = bounds.GetCenter();
-        
+
         // Convert geographic coordinates to world position
         // This is a simplified approach - in full implementation would use proper projection
         double lon = center.x;
         double lat = center.y;
-        
+
         // Simple conversion to 3D position on sphere
         float phi = static_cast<float>((90.0 - lat) * M_PI / 180.0);
         float theta = static_cast<float>(lon * M_PI / 180.0);
-        
+
         glm::vec3 tile_pos = glm::vec3(
             std::cos(phi) * std::sin(theta),
             std::sin(phi),
             std::cos(phi) * std::cos(theta)
         );
-        
+
         // Scale by tile size (simplified - should use proper tile size calculation)
         float tile_scale = 0.1f; // Small scale for testing
-        
+
         // Create model matrix for this tile
         glm::mat4 model = glm::translate(glm::mat4(1.0f), tile_pos);
         model = glm::scale(model, glm::vec3(tile_scale));
-        
-        // Bind tile texture
+
+        // Bind coordinator's atlas texture
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, tile.texture_id);
+        std::uint32_t atlas_texture_id = 0;
+        if (texture_coordinator_) {
+            atlas_texture_id = texture_coordinator_->GetAtlasTextureID();
+        }
+        glBindTexture(GL_TEXTURE_2D, atlas_texture_id);
         stats_.texture_binds++;
         
         // Set shader uniforms
@@ -809,87 +773,6 @@ private:
             glDeleteProgram(tile_shader_program_);
             tile_shader_program_ = 0;
         }
-        if (atlas_texture_) {
-            glDeleteTextures(1, &atlas_texture_);
-            atlas_texture_ = 0;
-        }
-    }
-    
-    void CalculateAtlasLayout() {
-        tiles_per_row_ = atlas_size_ / tile_size_;
-        spdlog::info("Atlas layout: {}x{} tiles per row, total {} tiles", 
-                    tiles_per_row_, tiles_per_row_, tiles_per_row_ * tiles_per_row_);
-    }
-    
-    void CreateTextureAtlas() {
-        if (!atlas_dirty_.load()) {
-            return;
-        }
-
-        spdlog::info("Creating texture atlas with {} tiles", atlas_tiles_.size());
-        
-        // Proper atlas creation with error checking
-        if (atlas_texture_ == 0) {
-            glGenTextures(1, &atlas_texture_);
-            
-            if (atlas_texture_ == 0) {
-                spdlog::error("Failed to generate atlas texture ID");
-                atlas_dirty_.store(false);
-                return;
-            }
-            
-            glBindTexture(GL_TEXTURE_2D, atlas_texture_);
-            
-            // Allocate atlas memory
-            std::vector<std::uint8_t> empty_data(atlas_size_ * atlas_size_ * 3, 128); // Gray color
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, atlas_size_, atlas_size_, 0, 
-                        GL_RGB, GL_UNSIGNED_BYTE, empty_data.data());
-            
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            
-            spdlog::info("Created texture atlas {}x{} with ID: {}", 
-                        atlas_size_, atlas_size_, atlas_texture_);
-        }
-        
-        // Update atlas with visible tiles
-        glBindTexture(GL_TEXTURE_2D, atlas_texture_);
-        
-        for (size_t i = 0; i < visible_tiles_.size() && i < atlas_tiles_.size(); ++i) {
-            const auto& tile = visible_tiles_[i];
-            auto& atlas_tile = atlas_tiles_[i];
-            
-            if (tile.texture_id > 0) {
-                // Read tile texture data
-                std::vector<std::uint8_t> tile_data(tile_size_ * tile_size_ * 3);
-                glBindTexture(GL_TEXTURE_2D, tile.texture_id);
-                glGetTexImage(GL_TEXTURE_2D, 0, GL_RGB, GL_UNSIGNED_BYTE, tile_data.data());
-                
-                // Calculate atlas position
-                int atlas_x = (i % tiles_per_row_) * tile_size_;
-                int atlas_y = (i / tiles_per_row_) * tile_size_;
-                
-                // Update atlas sub-image
-                glBindTexture(GL_TEXTURE_2D, atlas_texture_);
-                glTexSubImage2D(GL_TEXTURE_2D, 0, atlas_x, atlas_y, 
-                               tile_size_, tile_size_, GL_RGB, GL_UNSIGNED_BYTE, tile_data.data());
-                
-                // Update atlas tile info
-                atlas_tile.texture_id = tile.texture_id;
-                atlas_tile.u = static_cast<float>(atlas_x) / atlas_size_;
-                atlas_tile.v = static_cast<float>(atlas_y) / atlas_size_;
-                atlas_tile.u_size = static_cast<float>(tile_size_) / atlas_size_;
-                atlas_tile.v_size = static_cast<float>(tile_size_) / atlas_size_;
-                atlas_tile.x = tile.coordinates.x;
-                atlas_tile.y = tile.coordinates.y;
-                atlas_tile.zoom = tile.coordinates.zoom;
-            }
-        }
-
-        atlas_dirty_.store(false);
-        // spdlog::info("Updated texture atlas with {} tiles", visible_tiles_.size());
     }
     
     int CalculateOptimalZoom(float camera_distance) const {
@@ -1206,11 +1089,15 @@ private:
         // Set uniforms for this tile
         const GLint model_loc = glGetUniformLocation(tile_shader_program_, "uModel");
         glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model));
-        
-        // Bind tile texture
+
+        // Bind coordinator's atlas texture
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, tile.texture_id);
-        
+        std::uint32_t atlas_texture_id = 0;
+        if (texture_coordinator_) {
+            atlas_texture_id = texture_coordinator_->GetAtlasTextureID();
+        }
+        glBindTexture(GL_TEXTURE_2D, atlas_texture_id);
+
         // Set texture uniform
         const GLint tex_loc = glGetUniformLocation(tile_shader_program_, "uTileTexture");
         glUniform1i(tex_loc, 0);
