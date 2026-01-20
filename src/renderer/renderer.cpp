@@ -113,9 +113,11 @@ public:
             CreateGlobeMesh();
             SetupOpenGLState();
 
-            // Set initial viewport
-            glViewport(0, 0, config_.screen_width, config_.screen_height);
-            spdlog::info("Viewport set to {}x{}", config_.screen_width, config_.screen_height);
+        // Set initial viewport
+        glViewport(0, 0, config_.screen_width, config_.screen_height);
+        spdlog::info("Viewport set to {}x{}", config_.screen_width, config_.screen_height);
+
+        CreateReferenceGeometry();
 
     // Initialize tile renderer
         tile_renderer_ = TileRenderer::Create();
@@ -189,6 +191,65 @@ public:
             glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
             glBindVertexArray(0);
         }
+
+        // Always render reference geometry for debugging
+        RenderReferenceGeometry(view_matrix, projection_matrix);
+    }
+
+    void RenderReferenceGeometry(const glm::mat4& view_matrix, const glm::mat4& projection_matrix) {
+        if (reference_vertices_.empty()) {
+            return;
+        }
+
+        glUseProgram(shader_program_);
+
+        // Set uniforms for reference geometry
+        glm::mat4 model = glm::mat4(1.0f);
+        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uModel"),
+                          1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uView"),
+                          1, GL_FALSE, glm::value_ptr(view_matrix));
+        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uProjection"),
+                          1, GL_FALSE, glm::value_ptr(projection_matrix));
+
+        // Get actual camera position
+        glm::vec3 view_pos(0.0f, 0.0f, 3.0f * 6371000.0f);
+        if (camera_controller_) {
+            view_pos = camera_controller_->GetPosition();
+        }
+
+        // Position light far from Earth
+        glm::vec3 light_pos = glm::normalize(view_pos) * 1.5e11f;
+
+        glUniform3f(glGetUniformLocation(shader_program_, "uLightPos"),
+                   light_pos.x, light_pos.y, light_pos.z);
+        glUniform3f(glGetUniformLocation(shader_program_, "uLightColor"), 1.0f, 1.0f, 1.0f);
+        glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"),
+                   view_pos.x, view_pos.y, view_pos.z);
+
+        // Render reference geometry
+        glBindVertexArray(reference_vao_);
+
+        // X axis (red)
+        glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 1.0f, 0.0f, 0.0f);
+        glDrawElements(GL_LINES, 2, GL_UNSIGNED_INT, (void*)(0 * sizeof(unsigned int)));
+
+        // Y axis (green)
+        glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 0.0f, 1.0f, 0.0f);
+        glDrawElements(GL_LINES, 2, GL_UNSIGNED_INT, (void*)(2 * sizeof(unsigned int)));
+
+        // Z axis (blue)
+        glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 0.0f, 0.0f, 1.0f);
+        glDrawElements(GL_LINES, 2, GL_UNSIGNED_INT, (void*)(4 * sizeof(unsigned int)));
+
+        // Reference sphere (gray)
+        glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 0.5f, 0.5f, 0.5f);
+        if (reference_indices_.size() > 6) {
+            glDrawElements(GL_TRIANGLES, reference_indices_.size() - 6, GL_UNSIGNED_INT,
+                          (void*)(6 * sizeof(unsigned int)));
+        }
+
+        glBindVertexArray(0);
     }
     
     void BeginFrame() override {
@@ -299,7 +360,14 @@ private:
     // Globe geometry
     std::vector<float> globe_vertices_;
     std::vector<unsigned int> globe_indices_;
-    
+
+    // Reference geometry for debugging
+    std::vector<float> reference_vertices_;
+    std::vector<unsigned int> reference_indices_;
+    std::uint32_t reference_vao_ = 0;
+    std::uint32_t reference_vbo_ = 0;
+    std::uint32_t reference_ebo_ = 0;
+
     std::unique_ptr<ShaderManager> shader_manager_;
     std::unique_ptr<TileRenderer> tile_renderer_;
     CameraController* camera_controller_ = nullptr;
@@ -365,60 +433,172 @@ private:
     }
     
     void CreateGlobeMesh() {
-        const float radius = 1.0f;
+        const float radius = 6371000.0f; // Earth radius in meters
         const int segments = 32;
         const int rings = 16;
-        
+
         // Generate vertices
         for (int r = 0; r <= rings; ++r) {
             float theta = static_cast<float>(r) * glm::pi<float>() / rings;
             float sin_theta = std::sin(theta);
             float cos_theta = std::cos(theta);
-            
+
             for (int s = 0; s <= segments; ++s) {
                 float phi = static_cast<float>(s) * 2.0f * glm::pi<float>() / segments;
                 float sin_phi = std::sin(phi);
                 float cos_phi = std::cos(phi);
-                
+
                 // Position
                 float x = radius * sin_theta * cos_phi;
                 float y = radius * cos_theta;
                 float z = radius * sin_theta * sin_phi;
-                
+
                 // Normal (same as position for sphere)
                 float nx = sin_theta * cos_phi;
                 float ny = cos_theta;
                 float nz = sin_theta * sin_phi;
-                
+
                 // Texture coordinates
                 float u = static_cast<float>(s) / segments;
                 float v = static_cast<float>(r) / rings;
-                
+
                 // Add vertex (position + normal + texcoord)
                 globe_vertices_.insert(globe_vertices_.end(), {x, y, z, nx, ny, nz, u, v});
             }
         }
-        
+
         // Generate indices
         for (int r = 0; r < rings; ++r) {
             for (int s = 0; s < segments; ++s) {
                 int current = r * (segments + 1) + s;
                 int next = current + segments + 1;
-                
+
                 // First triangle
                 globe_indices_.insert(globe_indices_.end(), {
-                    static_cast<unsigned int>(current), 
-                    static_cast<unsigned int>(next), 
+                    static_cast<unsigned int>(current),
+                    static_cast<unsigned int>(next),
                     static_cast<unsigned int>(current + 1)
                 });
                 // Second triangle
                 globe_indices_.insert(globe_indices_.end(), {
-                    static_cast<unsigned int>(next), 
-                    static_cast<unsigned int>(next + 1), 
+                    static_cast<unsigned int>(next),
+                    static_cast<unsigned int>(next + 1),
                     static_cast<unsigned int>(current + 1)
                 });
             }
         }
+    }
+
+    void CreateReferenceGeometry() {
+        // Create coordinate axes and reference points
+        reference_vertices_.clear();
+        reference_indices_.clear();
+
+        // Coordinate axes (X=red, Y=green, Z=blue)
+        const float axis_length = 10000000.0f; // 10,000 km
+
+        // X axis (red) - format: position(3), normal(3), texcoord(2)
+        reference_vertices_.insert(reference_vertices_.end(), {
+            0.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, // origin
+            axis_length, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  1.0f, 0.0f // +X
+        });
+
+        // Y axis (green)
+        reference_vertices_.insert(reference_vertices_.end(), {
+            0.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f, // origin
+            0.0f, axis_length, 0.0f,  0.0f, 1.0f, 0.0f,  0.0f, 1.0f // +Y
+        });
+
+        // Z axis (blue)
+        reference_vertices_.insert(reference_vertices_.end(), {
+            0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, // origin
+            0.0f, 0.0f, axis_length,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f // +Z
+        });
+
+        // Reference sphere at origin (small)
+        const float ref_radius = 100000.0f; // 100 km radius
+        const int ref_segments = 16;
+        const int ref_rings = 8;
+
+        for (int r = 0; r <= ref_rings; ++r) {
+            float theta = static_cast<float>(r) * glm::pi<float>() / ref_rings;
+            float sin_theta = std::sin(theta);
+            float cos_theta = std::cos(theta);
+
+            for (int s = 0; s <= ref_segments; ++s) {
+                float phi = static_cast<float>(s) * 2.0f * glm::pi<float>() / ref_segments;
+                float sin_phi = std::sin(phi);
+                float cos_phi = std::cos(phi);
+
+                float x = ref_radius * sin_theta * cos_phi;
+                float y = ref_radius * cos_theta;
+                float z = ref_radius * sin_theta * sin_phi;
+
+                // Normal for sphere is normalized position
+                float nx = sin_theta * cos_phi;
+                float ny = cos_theta;
+                float nz = sin_theta * sin_phi;
+
+                reference_vertices_.insert(reference_vertices_.end(), {
+                    x, y, z,  nx, ny, nz,  0.0f, 0.0f // position, normal, texcoord
+                });
+            }
+        }
+
+        // Generate indices for reference geometry (lines for axes, triangles for sphere)
+        // Axes indices (lines)
+        reference_indices_.insert(reference_indices_.end(), {0, 1}); // X axis
+        reference_indices_.insert(reference_indices_.end(), {2, 3}); // Y axis
+        reference_indices_.insert(reference_indices_.end(), {4, 5}); // Z axis
+
+        // Reference sphere indices
+        int base_index = 6; // After the 6 axis vertices
+        for (int r = 0; r < ref_rings; ++r) {
+            for (int s = 0; s < ref_segments; ++s) {
+                int current = base_index + r * (ref_segments + 1) + s;
+                int next = current + ref_segments + 1;
+
+                reference_indices_.insert(reference_indices_.end(), {
+                    static_cast<unsigned int>(current),
+                    static_cast<unsigned int>(next),
+                    static_cast<unsigned int>(current + 1)
+                });
+                reference_indices_.insert(reference_indices_.end(), {
+                    static_cast<unsigned int>(next),
+                    static_cast<unsigned int>(next + 1),
+                    static_cast<unsigned int>(current + 1)
+                });
+            }
+        }
+
+        // Setup reference geometry VAO/VBO/EBO
+        glGenVertexArrays(1, &reference_vao_);
+        glGenBuffers(1, &reference_vbo_);
+        glGenBuffers(1, &reference_ebo_);
+
+        glBindVertexArray(reference_vao_);
+
+        glBindBuffer(GL_ARRAY_BUFFER, reference_vbo_);
+        glBufferData(GL_ARRAY_BUFFER, reference_vertices_.size() * sizeof(float),
+                    reference_vertices_.data(), GL_STATIC_DRAW);
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, reference_ebo_);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, reference_indices_.size() * sizeof(unsigned int),
+                    reference_indices_.data(), GL_STATIC_DRAW);
+
+        // Position (location = 0) - 8 floats per vertex (pos3 + normal3 + texcoord2)
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+
+        // Normal (location = 1)
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+
+        // TexCoord (location = 2)
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+        glEnableVertexAttribArray(2);
+
+        glBindVertexArray(0);
     }
     
     void SetupOpenGLState() {
@@ -481,6 +661,18 @@ private:
         if (ebo_) {
             glDeleteBuffers(1, &ebo_);
             ebo_ = 0;
+        }
+        if (reference_vao_) {
+            glDeleteVertexArrays(1, &reference_vao_);
+            reference_vao_ = 0;
+        }
+        if (reference_vbo_) {
+            glDeleteBuffers(1, &reference_vbo_);
+            reference_vbo_ = 0;
+        }
+        if (reference_ebo_) {
+            glDeleteBuffers(1, &reference_ebo_);
+            reference_ebo_ = 0;
         }
         if (shader_program_) {
             glDeleteProgram(shader_program_);
