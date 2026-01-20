@@ -239,6 +239,16 @@ int main() {
             auto camera = earth_map_instance->GetCameraController();
             if (camera) {
                 camera->Update(delta_time);
+
+                // Log camera and globe information every frame
+                auto camera_pos = camera->GetPosition();
+                // Globe parameters (currently fixed, but defined here for future flexibility)
+                const glm::vec3 GLOBE_CENTER(0.0f, 0.0f, 0.0f);
+                const double GLOBE_RADIUS = 6378137.0;
+                spdlog::info("Camera position: ({:.2f}, {:.2f}, {:.2f}), Globe center: ({:.2f}, {:.2f}, {:.2f}), Globe radius: {:.1f}",
+                           camera_pos.x, camera_pos.y, camera_pos.z,
+                           GLOBE_CENTER.x, GLOBE_CENTER.y, GLOBE_CENTER.z,
+                           GLOBE_RADIUS);
             }
 
             if (frame_count < 3) {

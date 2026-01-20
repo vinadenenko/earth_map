@@ -152,10 +152,10 @@ public:
         // Looking at Earth from a distance
         camera_->Reset();
         
-        // Set default orbital position
-        camera_->SetGeographicPosition(0.0, 0.0, 6371000.0f * 3.0f); // 3 Earth radii
-        camera_->SetGeographicTarget(0.0, 0.0, 0.0);
-        camera_->SetOrientation(0.0, 0.0, 0.0);
+        // Set default orbital position - closer view for visibility
+        camera_->SetPosition(glm::vec3(0.0f, 0.0f, /*10000000.0f*/6371000.0f * 2.5f)); // 1.57 Earth radii from center - clearly visible
+        camera_->SetTarget(glm::vec3(0.0f, 0.0f, 0.0f)); // Look at Earth's center
+        // camera_->SetOrientation(0.0, 0.0, 0.0);
         camera_->SetMovementMode(static_cast<::earth_map::MovementMode>(MovementMode::ORBIT));
     }
 

@@ -291,8 +291,8 @@ public:
         roll_ = 0.0f;
 
         fov_y_ = 45.0f;
-        near_plane_ = 1000.0f;
-        far_plane_ = 10000000.0f;
+        near_plane_ = 100.0f;
+        far_plane_ = 50000000000.0f;
 
         projection_type_ = CameraProjectionType::PERSPECTIVE;
         movement_mode_ = MovementMode::FREE;

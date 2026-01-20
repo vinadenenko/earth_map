@@ -154,7 +154,9 @@ public:
             glUseProgram(shader_program_);
             
             // Set uniforms
-            glm::mat4 model = glm::mat4(1.0f);
+            // Scale unit sphere to Earth size
+            const double EARTH_RADIUS = 6378137.0;
+            glm::mat4 model = glm::scale(glm::mat4(1.0f), glm::vec3(EARTH_RADIUS));
             
             glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uModel"), 
                               1, GL_FALSE, glm::value_ptr(model));
@@ -165,7 +167,12 @@ public:
             
             glUniform3f(glGetUniformLocation(shader_program_, "uLightPos"), 2.0f, 2.0f, 2.0f);
             glUniform3f(glGetUniformLocation(shader_program_, "uLightColor"), 1.0f, 1.0f, 1.0f);
-            glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"), 0.0f, 0.0f, 3.0f);
+            if (camera_controller_) {
+                glm::vec3 camera_pos = camera_controller_->GetPosition();
+                glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"), camera_pos.x, camera_pos.y, camera_pos.z);
+            } else {
+                glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"), 0.0f, 0.0f, 3.0f);
+            }
             glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 0.2f, 0.6f, 0.2f);
             
             // Render globe
