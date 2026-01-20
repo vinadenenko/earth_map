@@ -872,14 +872,16 @@ private:
         // Convert visible radius to angular degrees
         const float visible_angle_deg = glm::degrees(visible_radius / distance) * 2.0f;
 
-        // Convert camera position to geographic coordinates (unit sphere conversion)
-        // Normalize position to unit sphere for geographic conversion
-        glm::vec3 normalized_pos = glm::normalize(camera_position);
+        // CRITICAL FIX: Calculate where camera is LOOKING, not where it IS
+        // Camera is positioned OUTSIDE globe looking TOWARDS origin (0,0,0)
+        // The look direction is the negative of the position (pointing inward)
+        glm::vec3 look_direction = -glm::normalize(camera_position);
 
-        // Convert to geographic: x,z form longitude plane, y is latitude
+        // Convert look direction to geographic coordinates
+        // This gives us the point on the sphere surface where camera is looking
         // lat = asin(y), lon = atan2(x, z)
-        const float lat = glm::degrees(std::asin(std::clamp(normalized_pos.y, -1.0f, 1.0f)));
-        const float lon = glm::degrees(std::atan2(normalized_pos.x, normalized_pos.z));
+        const float lat = glm::degrees(std::asin(std::clamp(look_direction.y, -1.0f, 1.0f)));
+        const float lon = glm::degrees(std::atan2(look_direction.x, look_direction.z));
 
         // Calculate bounds based on visible area around camera
         const float lat_range = std::min(170.0f, visible_angle_deg * 1.5f);
