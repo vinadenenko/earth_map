@@ -161,55 +161,47 @@ void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int
 
 // Mouse button callback
 void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mods*/) {
-    spdlog::info("Click");
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
-            // Update dragging state for our own tracking
-            if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                if (action == GLFW_PRESS) {
-                    glfwGetCursorPos(window, &last_mouse_x, &last_mouse_y);
-                    mouse_dragging = true;
-                    spdlog::debug("Mouse button pressed at ({:.1f}, {:.1f})", last_mouse_x, last_mouse_y);
-                } else if (action == GLFW_RELEASE) {
-                    mouse_dragging = false;
-                    spdlog::debug("Mouse button released");
-                }
+            // Create InputEvent and forward to camera
+            earth_map::InputEvent event;
+
+            if (action == GLFW_PRESS) {
+                event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS;
+                glfwGetCursorPos(window, &last_mouse_x, &last_mouse_y);
+                mouse_dragging = true;
+            } else if (action == GLFW_RELEASE) {
+                event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE;
+                mouse_dragging = false;
             }
+
+            event.button = button;
+            event.x = last_mouse_x;
+            event.y = last_mouse_y;
+            event.timestamp = glfwGetTime() * 1000.0;  // Convert to milliseconds
+
+            camera->ProcessInput(event);
         }
     }
-    
-    // Suppress unused parameter warning for window
+
     (void)window;
 }
 
 // Mouse motion callback
 void cursor_position_callback(GLFWwindow* /*window*/, double xpos, double ypos) {
-    if (mouse_dragging && g_earth_map_instance) {
-        double dx = xpos - last_mouse_x;
-        double dy = ypos - last_mouse_y;
-        
+    if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
-            // Calculate rotation based on mouse movement
-            float rotation_speed = 0.5f; // degrees per pixel
-            float heading_delta = static_cast<float>(dx) * rotation_speed;
-            float pitch_delta = static_cast<float>(-dy) * rotation_speed; // Invert Y for natural feeling
-            
-            // Get current orientation
-            auto current_orientation = camera->GetOrientation();
-            
-            // Update orientation
-            float new_heading = current_orientation.x + heading_delta;
-            float new_pitch = std::clamp(current_orientation.y + pitch_delta, -89.0f, 89.0f);
-            
-            camera->SetOrientation(new_heading, new_pitch, current_orientation.z);
-            
-            if (std::abs(dx) > 0.1 || std::abs(dy) > 0.1) {
-                spdlog::debug("Mouse drag: dx={:.2f}, dy={:.2f}, heading_delta={:.2f}, pitch_delta={:.2f}", 
-                            dx, dy, heading_delta, pitch_delta);
-            }
-            
+            // Create InputEvent and forward to camera
+            earth_map::InputEvent event;
+            event.type = earth_map::InputEvent::Type::MOUSE_MOVE;
+            event.x = xpos;
+            event.y = ypos;
+            event.timestamp = glfwGetTime() * 1000.0;  // Convert to milliseconds
+
+            camera->ProcessInput(event);
+
             last_mouse_x = xpos;
             last_mouse_y = ypos;
         }
@@ -218,39 +210,20 @@ void cursor_position_callback(GLFWwindow* /*window*/, double xpos, double ypos) 
 
 // Scroll callback for zoom
 void scroll_callback(GLFWwindow* /*window*/, double xoffset, double yoffset) {
-    spdlog::info("Scroll");
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
-            // Simple zoom by adjusting altitude
-            auto current_pos = camera->GetPosition();
-            float distance = glm::length(current_pos);
-            float zoom_factor = 1.0f + static_cast<float>(yoffset) * 0.1f;
-            float new_distance = distance * zoom_factor;
-            
-            // Clamp to reasonable range
-            new_distance = std::clamp(new_distance,
-                earth_map::constants::camera::DEFAULT_NEAR_PLANE_METERS,
-                earth_map::constants::camera::DEFAULT_FAR_PLANE_METERS);
-            
-            // Move camera along its forward vector
-            glm::vec3 forward = glm::normalize(-current_pos);
-            glm::vec3 new_pos = forward * new_distance;
-            
-            camera->SetPosition(new_pos);
-            
-            spdlog::info("Scroll: zoom_factor={:.3f}, new_distance={:.1f}", zoom_factor, new_distance);
-            
-            // TODO: Trigger tile loading at new zoom level
-            // This would involve:
-            // 1. Calculating new tile coordinates based on zoom level
-            // 2. Requesting tiles from the tile loader  
-            // 3. Updating texture manager with new tiles
-            
-            // Suppress unused parameter warning
-            (void)xoffset;
+            // Create InputEvent and forward to camera
+            earth_map::InputEvent event;
+            event.type = earth_map::InputEvent::Type::MOUSE_SCROLL;
+            event.scroll_delta = static_cast<float>(yoffset);
+            event.timestamp = glfwGetTime() * 1000.0;  // Convert to milliseconds
+
+            camera->ProcessInput(event);
         }
     }
+
+    (void)xoffset;  // Suppress unused parameter warning
 }
 
 int main() {

@@ -188,17 +188,25 @@ public:
     
     /**
      * @brief Update camera animation
-     * 
+     *
      * @param delta_time Time since last update in seconds
      */
     virtual void Update(float delta_time) = 0;
-    
+
     /**
      * @brief Reset camera to default position
-     * 
+     *
      * Resets camera to default globe view position
      */
     virtual void Reset() = 0;
+
+    /**
+     * @brief Process input event
+     *
+     * @param event Input event to process
+     * @return true if event was handled, false otherwise
+     */
+    virtual bool ProcessInput(const InputEvent& event) = 0;
 
 protected:
     /**

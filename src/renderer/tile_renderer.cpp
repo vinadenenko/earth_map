@@ -835,19 +835,25 @@ private:
         // Camera distance is in normalized units where Earth radius = 1.0
         // altitude ~0.01 = very close (surface), altitude ~2.0 = far (full globe view)
 
-        // Tmp for testing, because now camera distance is wrong
+        // Logarithmic mapping: lower altitude = higher zoom
+        // altitude = 0.01 -> zoom = 10 (close up)
+        // altitude = 2.0 -> zoom = 2 (full globe)
+        // altitude = 10.0 -> zoom = 0 (very far)
+
+        // DO NOT REMOVE THIS. IT AFFECTS NOTHING, THE ENTIRE EARTH WILL BE RENREDER AT ZOOM LEVEL 2 with just 16 TILES. IT IS NEEDED TO NOT OVERLOAD NETWORK
         return 2;
 
-        if (altitude < 0.01f) return 18;   // Extremely close - highest detail
-        if (altitude < 0.02f) return 16;
-        if (altitude < 0.05f) return 14;
-        if (altitude < 0.1f) return 12;
-        if (altitude < 0.2f) return 10;
-        if (altitude < 0.5f) return 8;
-        if (altitude < 1.0f) return 6;
-        if (altitude < 2.0f) return 4;
-        if (altitude < 5.0f) return 2;
-        return 0;  // Very far - lowest detail
+        if (altitude <= 0.0f) {
+            return 10;  // Maximum zoom when on/below surface
+        }
+
+        // Use logarithmic scale: zoom = max_zoom - log2(altitude + 1) * scale_factor
+        const float max_zoom = 10.0f;
+        const float scale_factor = 3.0f;  // Adjust to tune zoom sensitivity
+        int zoom = static_cast<int>(max_zoom - std::log2(altitude + 1.0f) * scale_factor);
+
+        // Clamp to valid range [0, 10]
+        return std::clamp(zoom, 0, 10);
     }
     
     BoundingBox2D CalculateVisibleGeographicBounds(const glm::vec3& camera_position,

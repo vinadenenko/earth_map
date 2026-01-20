@@ -153,6 +153,11 @@ public:
         camera_->Reset();
     }
 
+    bool ProcessInput(const InputEvent& event) override {
+        // Forward input event to underlying camera
+        return camera_->ProcessInput(event);
+    }
+
 private:
     Configuration config_;
     bool initialized_ = false;

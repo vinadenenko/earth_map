@@ -154,18 +154,23 @@ public:
     }
     
     glm::vec3 GetTarget() const override {
-        // Calculate target from current orientation (consistent with UpdateViewMatrix)
-        float heading_rad = glm::radians(heading_);
-        float pitch_rad = glm::radians(pitch_);
+        if (movement_mode_ == MovementMode::ORBIT) {
+            // ORBIT mode: Return stored fixed target
+            return target_;
+        } else {
+            // FREE mode: Calculate target from current orientation
+            float heading_rad = glm::radians(heading_);
+            float pitch_rad = glm::radians(pitch_);
 
-        glm::vec3 forward;
-        forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
-        forward.y = std::sin(pitch_rad);
-        forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
-        forward = glm::normalize(forward);
+            glm::vec3 forward;
+            forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
+            forward.y = std::sin(pitch_rad);
+            forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
+            forward = glm::normalize(forward);
 
-        // Return point at fixed distance from position along forward direction
-        return position_ + forward;
+            // Return point at fixed distance from position along forward direction
+            return position_ + forward;
+        }
     }
     
     void SetOrientation(double heading, double pitch, double roll) override {
