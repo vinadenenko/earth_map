@@ -112,7 +112,11 @@ public:
             
             CreateGlobeMesh();
             SetupOpenGLState();
-            
+
+            // Set initial viewport
+            glViewport(0, 0, config_.screen_width, config_.screen_height);
+            spdlog::info("Viewport set to {}x{}", config_.screen_width, config_.screen_height);
+
     // Initialize tile renderer
         tile_renderer_ = TileRenderer::Create();
         if (!tile_renderer_ || !tile_renderer_->Initialize()) {
