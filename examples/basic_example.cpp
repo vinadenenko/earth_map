@@ -25,11 +25,72 @@ static double last_mouse_x = 0.0;
 static double last_mouse_y = 0.0;
 static bool mouse_dragging = false;
 static earth_map::EarthMap* g_earth_map_instance = nullptr;
-static int frame_counter = 0;
+static bool show_help = true;
+
+// Helper function to print camera controls
+void print_help() {
+    std::cout << "\n╔════════════════════════════════════════════════════════════╗\n";
+    std::cout << "║          EARTH MAP - CAMERA CONTROLS                       ║\n";
+    std::cout << "╠════════════════════════════════════════════════════════════╣\n";
+    std::cout << "║ Mouse Controls:                                            ║\n";
+    std::cout << "║   Left Mouse + Drag : Rotate camera view                   ║\n";
+    std::cout << "║   Scroll Wheel      : Zoom in/out                          ║\n";
+    std::cout << "║                                                            ║\n";
+    std::cout << "║ Keyboard Controls:                                         ║\n";
+    std::cout << "║   F                 : Toggle camera mode (FREE/ORBIT)      ║\n";
+    std::cout << "║   R                 : Reset camera to default view         ║\n";
+    std::cout << "║   H                 : Toggle this help text                ║\n";
+    std::cout << "║   ESC               : Exit application                     ║\n";
+    std::cout << "║                                                            ║\n";
+    std::cout << "║ Camera Modes:                                              ║\n";
+    std::cout << "║   FREE   : Free-flying camera, rotate around view point   ║\n";
+    std::cout << "║   ORBIT  : Orbit around Earth center                       ║\n";
+    std::cout << "╚════════════════════════════════════════════════════════════╝\n\n";
+}
 
 // Callback function for window resize
 void framebuffer_size_callback(GLFWwindow* /*window*/, int width, int height) {
     glViewport(0, 0, width, height);
+}
+
+// Keyboard callback
+void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int /*mods*/) {
+    if (action == GLFW_PRESS && g_earth_map_instance) {
+        auto camera = g_earth_map_instance->GetCameraController();
+        if (!camera) return;
+
+        switch (key) {
+            case GLFW_KEY_F: {
+                // Toggle camera mode
+                auto current_mode = camera->GetMovementMode();
+                if (current_mode == earth_map::CameraController::MovementMode::FREE) {
+                    camera->SetMovementMode(earth_map::CameraController::MovementMode::ORBIT);
+                    std::cout << "→ Camera Mode: ORBIT (orbiting around Earth)\n";
+                } else {
+                    camera->SetMovementMode(earth_map::CameraController::MovementMode::FREE);
+                    std::cout << "→ Camera Mode: FREE (free-flying)\n";
+                }
+                break;
+            }
+            case GLFW_KEY_R:
+                // Reset camera
+                camera->Reset();
+                std::cout << "→ Camera reset to default view\n";
+                break;
+            case GLFW_KEY_H:
+                // Toggle help
+                show_help = !show_help;
+                if (show_help) {
+                    print_help();
+                } else {
+                    std::cout << "→ Help hidden (press H to show again)\n";
+                }
+                break;
+            case GLFW_KEY_ESCAPE:
+                glfwSetWindowShouldClose(window, true);
+                break;
+        }
+    }
 }
 
 // Mouse button callback
@@ -162,6 +223,7 @@ int main() {
         
         // Set input callbacks
         glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+        glfwSetKeyCallback(window, key_callback);
         glfwSetMouseButtonCallback(window, mouse_button_callback);
         glfwSetCursorPosCallback(window, cursor_position_callback);
         glfwSetScrollCallback(window, scroll_callback);
@@ -203,37 +265,38 @@ int main() {
         }
         
         std::cout << "Earth Map initialized successfully\n";
-        
-        // Check system requirements now that OpenGL context is fully initialized
-        std::cout << "System Requirements: " 
-                  << (earth_map::LibraryInfo::CheckSystemRequirements() ? "Met" : "Not Met") 
-                  << "\n\n";
-        
-        // Main render loop
-        std::cout << "Starting render loop...\n";
-        std::cout << "Press ESC to exit\n\n";
 
-        // Debug: Check window state before loop
-        std::cout << "DEBUG: Window pointer: " << window << "\n";
-        std::cout << "DEBUG: glfwWindowShouldClose before loop: " << glfwWindowShouldClose(window) << "\n";
+        // Check system requirements now that OpenGL context is fully initialized
+        std::cout << "System Requirements: "
+                  << (earth_map::LibraryInfo::CheckSystemRequirements() ? "Met" : "Not Met")
+                  << "\n\n";
+
+        // Display help
+        print_help();
+
+        // Display initial camera state
+        auto camera = earth_map_instance->GetCameraController();
+        if (camera) {
+            auto pos = camera->GetPosition();
+            auto mode = camera->GetMovementMode();
+            std::cout << "Initial Camera State:\n";
+            std::cout << "  Position: (" << pos.x << ", " << pos.y << ", " << pos.z << ")\n";
+            std::cout << "  Distance from origin: " << glm::length(pos) / 1000.0 << " km\n";
+            std::cout << "  Mode: " << (mode == earth_map::CameraController::MovementMode::FREE ? "FREE" : "ORBIT") << "\n\n";
+        }
+
+        // Main render loop
+        std::cout << "Starting render loop...\n\n";
 
         auto last_time = std::chrono::high_resolution_clock::now();
         int frame_count = 0;
+        auto last_status_time = last_time;
 
         while (!glfwWindowShouldClose(window)) {
-            if (frame_count < 3) {
-                std::cout << "DEBUG: Frame " << frame_count << " start\n";
-            }
             // Calculate delta time
             auto current_time = std::chrono::high_resolution_clock::now();
             float delta_time = std::chrono::duration<float>(current_time - last_time).count();
             last_time = current_time;
-
-            // Process input
-            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-                std::cout << "DEBUG: ESC pressed\n";
-                glfwSetWindowShouldClose(window, true);
-            }
 
             // Update camera
             auto camera = earth_map_instance->GetCameraController();
@@ -241,60 +304,46 @@ int main() {
                 camera->Update(delta_time);
             }
 
-            if (frame_count < 3) {
-                std::cout << "DEBUG: Frame " << frame_count << " calling Render()\n";
-            }
-
             // Render
             earth_map_instance->Render();
 
-            if (frame_count < 3) {
-                std::cout << "DEBUG: Frame " << frame_count << " Render() complete\n";
-            }
-            
             // Swap buffers and poll events
             glfwSwapBuffers(window);
             glfwPollEvents();
 
-            if (frame_count < 3) {
-                std::cout << "DEBUG: Frame " << frame_count << " after poll, windowShouldClose=" << glfwWindowShouldClose(window) << "\n";
-            }
-
             // Update frame counter
             frame_count++;
-            
-            // Use frame_counter to avoid warning
-            (void)frame_counter;
-            
-            // Simple demonstration of tile system working
-            // The system now has tile rendering capability, even if basic
-            if (frame_count % 120 == 0) {  // Every ~2 seconds at 60fps
-                auto renderer = g_earth_map_instance->GetRenderer();
-                auto tile_renderer = renderer ? renderer->GetTileRenderer() : nullptr;
-                auto camera = g_earth_map_instance->GetCameraController();
-                
-                if (tile_renderer && camera) {
-                    // auto stats = tile_renderer->GetStats();
-                    // spdlog::info("Tile Rendering Status - Visible: {}, Rendered: {}", stats.visible_tiles, stats.rendered_tiles);
+
+            // Print status every 5 seconds
+            auto elapsed = std::chrono::duration<float>(current_time - last_status_time).count();
+            if (elapsed >= 5.0f) {
+                if (camera) {
+                    auto pos = camera->GetPosition();
+                    auto orient = camera->GetOrientation();
+                    auto mode = camera->GetMovementMode();
+                    float fps = frame_count / elapsed;
+
+                    std::cout << "Status: FPS=" << static_cast<int>(fps)
+                              << " | Distance=" << static_cast<int>(glm::length(pos) / 1000.0) << "km"
+                              << " | Heading=" << static_cast<int>(orient.x) << "°"
+                              << " | Pitch=" << static_cast<int>(orient.y) << "°"
+                              << " | Mode=" << (mode == earth_map::CameraController::MovementMode::FREE ? "FREE" : "ORBIT")
+                              << "\n";
                 }
-            // }
+                frame_count = 0;
+                last_status_time = current_time;
             }
-            
-            // Update performance stats every second [not doing it since it is just a placeholder]
-            // if (frame_count % 60 == 0) {
-                // std::string stats = earth_map_instance->GetPerformanceStats();
-                // std::cout << "Performance: " << stats << "\n";
-            // }
         }
         
-        std::cout << "\nRender loop ended\n";
-        std::cout << "Total frames rendered: " << frame_count << "\n";
-        
+        std::cout << "\n╔════════════════════════════════════════════════════════════╗\n";
+        std::cout << "║  Application shutting down...                              ║\n";
+        std::cout << "╚════════════════════════════════════════════════════════════╝\n";
+
         // Cleanup
         earth_map_instance.reset();
         glfwDestroyWindow(window);
         glfwTerminate();
-        
+
         std::cout << "\nExample completed successfully!\n";
         return 0;
         

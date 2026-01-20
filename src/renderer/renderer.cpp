@@ -152,22 +152,34 @@ public:
         // Fallback to basic globe if tile renderer not available
         if (!tile_renderer_ || tile_renderer_->GetStats().visible_tiles == 0) {
             glUseProgram(shader_program_);
-            
+
             // Set uniforms
             glm::mat4 model = glm::mat4(1.0f);
-            
-            glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uModel"), 
+
+            glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uModel"),
                               1, GL_FALSE, glm::value_ptr(model));
-            glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uView"), 
+            glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uView"),
                               1, GL_FALSE, glm::value_ptr(view_matrix));
-            glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uProjection"), 
+            glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uProjection"),
                               1, GL_FALSE, glm::value_ptr(projection_matrix));
-            
-            glUniform3f(glGetUniformLocation(shader_program_, "uLightPos"), 2.0f, 2.0f, 2.0f);
+
+            // Get actual camera position for lighting calculations
+            glm::vec3 view_pos(0.0f, 0.0f, 3.0f * 6371000.0f);  // Default position
+            if (camera_controller_) {
+                view_pos = camera_controller_->GetPosition();
+            }
+
+            // Position light far from Earth to simulate sun
+            // Place it in direction of camera but much farther away
+            glm::vec3 light_pos = glm::normalize(view_pos) * 1.5e11f;  // ~1 AU (sun distance)
+
+            glUniform3f(glGetUniformLocation(shader_program_, "uLightPos"),
+                       light_pos.x, light_pos.y, light_pos.z);
             glUniform3f(glGetUniformLocation(shader_program_, "uLightColor"), 1.0f, 1.0f, 1.0f);
-            glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"), 0.0f, 0.0f, 3.0f);
+            glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"),
+                       view_pos.x, view_pos.y, view_pos.z);
             glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 0.2f, 0.6f, 0.2f);
-            
+
             // Render globe
             glBindVertexArray(vao_);
             glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
@@ -439,11 +451,16 @@ private:
         
         // Unbind VAO
         glBindVertexArray(0);
-        
+
         // Enable depth testing
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
-        
+
+        // Enable backface culling for better performance
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glFrontFace(GL_CCW);  // Counter-clockwise winding is front face
+
         // Set polygon mode
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
