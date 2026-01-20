@@ -890,8 +890,16 @@ private:
         // Clamp to Web Mercator valid bounds (-85.0511 to 85.0511)
         const double min_lat = std::max(-85.0, static_cast<double>(lat - lat_range / 2.0f));
         const double max_lat = std::min(85.0, static_cast<double>(lat + lat_range / 2.0f));
-        const double min_lon = static_cast<double>(lon - lon_range / 2.0f);
-        const double max_lon = static_cast<double>(lon + lon_range / 2.0f);
+
+        // Calculate longitude bounds and clamp to [-180, 180] range
+        // Note: We clamp rather than wrap to avoid creating invalid bounds (min > max)
+        // when the view crosses the International Date Line
+        double min_lon = static_cast<double>(lon - lon_range / 2.0f);
+        double max_lon = static_cast<double>(lon + lon_range / 2.0f);
+
+        // Clamp to valid longitude range to ensure GeographicCoordinates validity
+        min_lon = std::max(-180.0, std::min(180.0, min_lon));
+        max_lon = std::max(-180.0, std::min(180.0, max_lon));
 
         spdlog::debug("Camera distance: {:.1f}, visible bounds: lat[ {:.2f}, {:.2f} ] lon[ {:.2f}, {:.2f} ]",
                     distance, min_lat, max_lat, min_lon, max_lon);

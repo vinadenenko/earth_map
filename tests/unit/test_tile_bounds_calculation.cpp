@@ -45,8 +45,15 @@ protected:
         GeographicBounds bounds;
         bounds.min_lat = std::max(-85.0f, lat - lat_range / 2.0f);
         bounds.max_lat = std::min(85.0f, lat + lat_range / 2.0f);
-        bounds.min_lon = lon - lon_range / 2.0f;
-        bounds.max_lon = lon + lon_range / 2.0f;
+
+        // Calculate longitude bounds and clamp to [-180, 180]
+        // Note: We clamp rather than wrap to avoid creating invalid bounds (min > max)
+        float min_lon = lon - lon_range / 2.0f;
+        float max_lon = lon + lon_range / 2.0f;
+
+        // Clamp to valid longitude range
+        bounds.min_lon = std::max(-180.0f, std::min(180.0f, min_lon));
+        bounds.max_lon = std::max(-180.0f, std::min(180.0f, max_lon));
 
         return bounds;
     }
