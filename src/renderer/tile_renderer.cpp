@@ -473,7 +473,7 @@ private:
             // Convert world position to geographic coordinates
             vec3 worldToGeo(vec3 worldPos) {
                 float lat = degrees(asin(clamp(worldPos.y, -1.0, 1.0)));
-                float lon = degrees(atan(worldPos.x, worldPos.z));
+                float lon = -degrees(atan(worldPos.x, worldPos.z));
                 return vec3(lon, lat, 0.0);
             }
 
