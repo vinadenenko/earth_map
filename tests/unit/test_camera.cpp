@@ -30,7 +30,7 @@ protected:
 TEST_F(CameraTest, Initialization) {
     EXPECT_TRUE(camera_->Initialize());
     EXPECT_EQ(camera_->GetProjectionType(), CameraProjectionType::PERSPECTIVE);
-    EXPECT_EQ(camera_->GetMovementMode(), MovementMode::FREE);
+    EXPECT_EQ(camera_->GetMovementMode(), MovementMode::ORBIT);  // Default to ORBIT mode
 }
 
 TEST_F(CameraTest, PositionControl) {
@@ -319,13 +319,13 @@ TEST_F(CameraTest, ResetFunctionality) {
     // Test camera reset
     camera_->SetPosition(glm::vec3(100.0f, 200.0f, 300.0f));
     camera_->SetOrientation(90.0f, 45.0f, 180.0f);
-    camera_->SetMovementMode(MovementMode::ORBIT);
-    
+    camera_->SetMovementMode(MovementMode::FREE);
+
     // Reset camera
     camera_->Reset();
-    
-    // After reset, should be in default state
-    EXPECT_EQ(camera_->GetMovementMode(), MovementMode::FREE);
+
+    // After reset, should be in default state (ORBIT mode)
+    EXPECT_EQ(camera_->GetMovementMode(), MovementMode::ORBIT);
     // Other default values depend on implementation
 }
 

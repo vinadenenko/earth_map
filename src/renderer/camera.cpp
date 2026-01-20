@@ -1,5 +1,6 @@
 #include <earth_map/renderer/camera.h>
 #include <earth_map/earth_map.h>
+#include <earth_map/constants.h>
 #include <earth_map/math/coordinate_system.h>
 #include <earth_map/math/geodetic_calculations.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -284,18 +285,18 @@ public:
     }
     
     void Reset() override {
-        // Set default position looking at the globe
-        position_ = glm::vec3(0.0f, 0.0f, 3.0f * 6371000.0f); // 3 Earth radii away
+        // Set default position looking at the globe (normalized units)
+        position_ = glm::vec3(0.0f, 0.0f, constants::camera::DEFAULT_CAMERA_DISTANCE_NORMALIZED);
         up_ = glm::vec3(0.0f, 1.0f, 0.0f);
 
         roll_ = 0.0f;
 
-        fov_y_ = 45.0f;
-        near_plane_ = 1000.0f;
-        far_plane_ = 10000000.0f;
+        fov_y_ = constants::camera::DEFAULT_FOV;
+        near_plane_ = constants::camera::DEFAULT_NEAR_PLANE_NORMALIZED;
+        far_plane_ = constants::camera::DEFAULT_FAR_PLANE_NORMALIZED;
 
         projection_type_ = CameraProjectionType::PERSPECTIVE;
-        movement_mode_ = MovementMode::FREE;
+        movement_mode_ = MovementMode::ORBIT;  // Default to ORBIT mode
 
         // Reset movement state
         movement_forward_ = movement_right_ = movement_up_ = 0.0f;
@@ -398,13 +399,13 @@ protected:
     float roll_ = 0.0f;
     
     // Projection parameters
-    float fov_y_ = 45.0f;
-    float near_plane_ = 1000.0f;
-    float far_plane_ = 10000000.0f;
+    float fov_y_ = constants::camera::DEFAULT_FOV;
+    float near_plane_ = constants::camera::DEFAULT_NEAR_PLANE_NORMALIZED;
+    float far_plane_ = constants::camera::DEFAULT_FAR_PLANE_NORMALIZED;
     
     // Camera settings
     CameraProjectionType projection_type_ = CameraProjectionType::PERSPECTIVE;
-    MovementMode movement_mode_ = MovementMode::FREE;
+    MovementMode movement_mode_ = MovementMode::ORBIT;
     CameraConstraints constraints_;
     
     // Movement state
@@ -427,24 +428,24 @@ protected:
     glm::mat4 view_matrix_ = glm::mat4(1.0f);
     
     void UpdateViewMatrix() {
-        // Calculate view direction from orientation (heading/pitch/roll)
-        // Convert angles to radians
-        float heading_rad = glm::radians(heading_);
-        float pitch_rad = glm::radians(pitch_);
+        glm::vec3 computed_target;
 
-        // Calculate forward vector from heading and pitch
-        // Heading: rotation around Y axis (yaw)
-        // Pitch: rotation around X axis (up/down)
-        glm::vec3 forward;
-        forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
-        forward.y = std::sin(pitch_rad);
-        forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
-        forward = glm::normalize(forward);
+        if (movement_mode_ == MovementMode::ORBIT) {
+            // ORBIT mode: Use stored fixed target
+            computed_target = target_;
+        } else {
+            // FREE mode: Compute target from orientation
+            float heading_rad = glm::radians(heading_);
+            float pitch_rad = glm::radians(pitch_);
 
-        // Calculate target point from position and forward direction
-        glm::vec3 computed_target = position_ + forward;
+            glm::vec3 forward;
+            forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
+            forward.y = std::sin(pitch_rad);
+            forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
 
-        // Use the computed target for the view matrix
+            computed_target = position_ + glm::normalize(forward);
+        }
+
         view_matrix_ = glm::lookAt(position_, computed_target, up_);
     }
     
@@ -589,9 +590,9 @@ protected:
             glm::vec3 offset = position_ - target_;
             float new_distance = glm::length(offset) * (1.0f - scroll_delta);
             
-            // Apply constraints
-            float min_distance = constraints_.min_altitude + 6371000.0f;
-            float max_distance = constraints_.max_altitude + 6371000.0f;
+            // Apply constraints (in normalized units)
+            float min_distance = constants::camera_constraints::MIN_DISTANCE_NORMALIZED;
+            float max_distance = constants::camera_constraints::MAX_DISTANCE_NORMALIZED;
             new_distance = std::clamp(new_distance, min_distance, max_distance);
             
             offset = glm::normalize(offset) * new_distance;

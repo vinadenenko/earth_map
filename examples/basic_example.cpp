@@ -12,6 +12,7 @@
 
 // Then include earth_map headers
 #include <earth_map/earth_map.h>
+#include <earth_map/constants.h>
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/platform/library_info.h>
 #include <spdlog/spdlog.h>
@@ -228,7 +229,9 @@ void scroll_callback(GLFWwindow* /*window*/, double xoffset, double yoffset) {
             float new_distance = distance * zoom_factor;
             
             // Clamp to reasonable range
-            new_distance = std::clamp(new_distance, 1000.0f, 10000000.0f);
+            new_distance = std::clamp(new_distance,
+                earth_map::constants::camera::DEFAULT_NEAR_PLANE_METERS,
+                earth_map::constants::camera::DEFAULT_FAR_PLANE_METERS);
             
             // Move camera along its forward vector
             glm::vec3 forward = glm::normalize(-current_pos);
@@ -386,7 +389,7 @@ int main() {
             std::cout << "║ View direction: (" << view_dir.x << ", " << view_dir.y << ", " << view_dir.z << ")\n";
 
             // Check if globe should be visible
-            float globe_radius = 6378137.0f;  // meters
+            float globe_radius = static_cast<float>(earth_map::constants::geodetic::EARTH_SEMI_MAJOR_AXIS);  // meters
             float distance_to_origin = glm::length(pos);
             float nearest_globe_point = distance_to_origin - globe_radius;
             float farthest_globe_point = distance_to_origin + globe_radius;
@@ -482,7 +485,7 @@ int main() {
                     float fps = frame_count / elapsed;
 
                     float distance_from_origin = glm::length(pos);
-                    float globe_radius = 6378137.0f;
+                    float globe_radius = static_cast<float>(earth_map::constants::geodetic::EARTH_SEMI_MAJOR_AXIS);
                     float distance_from_surface = distance_from_origin - globe_radius;
 
                     // Calculate view direction

@@ -2,6 +2,7 @@
 #include "earth_map/core/camera_controller.h"
 #include <earth_map/renderer/camera.h>
 #include <earth_map/earth_map.h>
+#include <earth_map/constants.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
@@ -22,14 +23,14 @@ public:
         
         // Set default constraints suitable for globe navigation
         CameraConstraints constraints;
-        constraints.min_altitude = 100.0f;           // 100m above surface
-        constraints.max_altitude = 10000000.0f;      // 10000km max altitude
-        constraints.min_pitch = -89.0f;               // Nearly straight down
-        constraints.max_pitch = 89.0f;                // Nearly straight up
+        constraints.min_altitude = constants::camera_constraints::MIN_ALTITUDE_METERS;
+        constraints.max_altitude = constants::camera_constraints::MAX_ALTITUDE_METERS;
+        constraints.min_pitch = constants::camera_constraints::MIN_PITCH;
+        constraints.max_pitch = constants::camera_constraints::MAX_PITCH;
         constraints.enable_ground_collision = true;
-        constraints.ground_clearance = 10.0f;         // 10m clearance
-        constraints.max_rotation_speed = 180.0f;       // 180°/second
-        constraints.max_movement_speed = 1000.0f;       // 1km/second
+        constraints.ground_clearance = constants::camera_constraints::GROUND_CLEARANCE_METERS;
+        constraints.max_rotation_speed = constants::camera_constraints::MAX_ROTATION_SPEED;
+        constraints.max_movement_speed = constants::camera_constraints::MAX_MOVEMENT_SPEED_METERS;
         
         camera_->SetConstraints(constraints);
         camera_->SetMovementMode(static_cast<::earth_map::MovementMode>(MovementMode::ORBIT));
@@ -146,17 +147,10 @@ public:
     void Update(float delta_time) override {
         camera_->Update(delta_time);
     }
-    
+
     void Reset() override {
-        // Reset to default globe view position
-        // Looking at Earth from a distance
+        // Let the base Camera::Reset() handle everything
         camera_->Reset();
-        
-        // Set default orbital position
-        camera_->SetGeographicPosition(0.0, 0.0, 6371000.0f * 3.0f); // 3 Earth radii
-        camera_->SetGeographicTarget(0.0, 0.0, 0.0);
-        camera_->SetOrientation(0.0, 0.0, 0.0);
-        camera_->SetMovementMode(static_cast<::earth_map::MovementMode>(MovementMode::ORBIT));
     }
 
 private:
