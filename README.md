@@ -75,6 +75,11 @@ Earth Map is a high-performance OpenGL-based 3D tile map renderer designed for G
    cd build/Debug
    ctest --output-on-failure
    ```
+   
+6. **Run Specific tests**
+    ```bash
+    ./build/Debug/earth_map_tests --gtest_filter="TileBoundsCalculationTest.*
+    ```
 
 ### Build Options
 
