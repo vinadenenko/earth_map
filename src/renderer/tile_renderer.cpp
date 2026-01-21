@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <map>
 #include <unordered_map>
 #include <climits>
 #include <cstddef>
@@ -173,11 +174,21 @@ public:
         if (log_counter % 60 == 0) {
             spdlog::warn("Candidate tiles: {}, Zoom: {}", candidate_tiles.size(), zoom_level);
             if (!candidate_tiles.empty()) {
-                // Show first few tiles
-                for (size_t i = 0; i < std::min(size_t(3), candidate_tiles.size()); ++i) {
-                    auto bounds = TileMathematics::GetTileBounds(candidate_tiles[i]);
-                    spdlog::warn("  Tile {}: ({},{},z{}) -> lon[{:.1f},{:.1f}], lat[{:.1f},{:.1f}]",
-                        i, candidate_tiles[i].x, candidate_tiles[i].y, candidate_tiles[i].zoom,
+                // Show representative tiles from different x-columns to verify longitude distribution
+                std::map<int32_t, size_t> x_column_first_index;
+                for (size_t i = 0; i < candidate_tiles.size(); ++i) {
+                    int32_t x = candidate_tiles[i].x;
+                    if (x_column_first_index.find(x) == x_column_first_index.end()) {
+                        x_column_first_index[x] = i;
+                    }
+                }
+
+                spdlog::warn("Representative tiles (one per x-column):");
+                for (const auto& [x_val, idx] : x_column_first_index) {
+                    auto bounds = TileMathematics::GetTileBounds(candidate_tiles[idx]);
+                    spdlog::warn("  Tile {} at x={}: ({},{},z{}) -> lon[{:.1f},{:.1f}], lat[{:.1f},{:.1f}]",
+                        idx, x_val,
+                        candidate_tiles[idx].x, candidate_tiles[idx].y, candidate_tiles[idx].zoom,
                         bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y);
                 }
             }
@@ -649,14 +660,15 @@ private:
                 const float cos_phi = std::cos(phi);
                 
                 // Position
-                const float x = radius * sin_theta * cos_phi;
+                // CRITICAL: Use sin(phi) for X and cos(phi) for Z to match shader's lon=0 → +Z convention
+                const float x = radius * sin_theta * sin_phi;
                 const float y = radius * cos_theta;
-                const float z = radius * sin_theta * sin_phi;
-                
+                const float z = radius * sin_theta * cos_phi;
+
                 // Normal (same as position for sphere)
-                const float nx = sin_theta * cos_phi;
+                const float nx = sin_theta * sin_phi;
                 const float ny = cos_theta;
-                const float nz = sin_theta * sin_phi;
+                const float nz = sin_theta * cos_phi;
                 
                 // Texture coordinates (for globe projection - mapping to world coordinates)
                 const float u = static_cast<float>(s) / segments;

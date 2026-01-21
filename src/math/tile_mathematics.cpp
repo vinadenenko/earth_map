@@ -7,6 +7,7 @@
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>
+#include <spdlog/spdlog.h>
 
 namespace earth_map {
 
@@ -95,22 +96,30 @@ TileCoordinates TileMathematics::GeographicToTile(const GeographicCoordinates& g
     if (!TileValidator::IsSupportedZoom(zoom)) {
         throw std::invalid_argument("Unsupported zoom level");
     }
-    
+
     const auto web_mercator = std::static_pointer_cast<WebMercatorProjection>(
         ProjectionRegistry::GetProjection(ProjectionType::WEB_MERCATOR)
     );
-    
+
     const ProjectedCoordinates proj = web_mercator->Project(geo);
-    const double normalized_x = (proj.x + WebMercatorProjection::WEB_MERCATOR_HALF_WORLD) / 
+    const double normalized_x = (proj.x + WebMercatorProjection::WEB_MERCATOR_HALF_WORLD) /
                                WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT;
-    const double normalized_y = (proj.y + WebMercatorProjection::WEB_MERCATOR_HALF_WORLD) / 
+    const double normalized_y = (proj.y + WebMercatorProjection::WEB_MERCATOR_HALF_WORLD) /
                                WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT;
-    
+
     const int32_t n = 1 << zoom;
     // Use proper rounding instead of floor for better accuracy
     const int32_t x = static_cast<int32_t>(std::round(normalized_x * n - 0.5));
     const int32_t y = static_cast<int32_t>(std::round(normalized_y * n - 0.5));
-    
+
+    // CRITICAL DEBUG: Log conversion for debugging
+    static int geo_debug_counter = 0;
+    if (++geo_debug_counter % 180 == 0) {
+        spdlog::info("GeographicToTile: lon={:.1f}, lat={:.1f} -> proj.x={:.0f}, normalized_x={:.3f} -> tile.x={} (zoom={})",
+            geo.longitude, geo.latitude, proj.x, normalized_x,
+            std::max(0, std::min(x, n - 1)), zoom);
+    }
+
     return TileCoordinates(std::max(0, std::min(x, n - 1)),
                           std::max(0, std::min(y, n - 1)),
                           zoom);
@@ -214,11 +223,21 @@ TileCoordinates TileMathematics::NormalizedToTile(const glm::dvec2& normalized, 
 
 std::vector<TileCoordinates> TileMathematics::GetTilesInBounds(const BoundingBox2D& bounds, int32_t zoom) {
     std::vector<TileCoordinates> tiles;
-    
+
     if (!bounds.IsValid() || !TileValidator::IsSupportedZoom(zoom)) {
         return tiles;
     }
-    
+
+    // CRITICAL DEBUG: Log the conversion process
+    static int debug_counter = 0;
+    bool should_log = (++debug_counter % 60 == 0);
+
+    if (should_log) {
+        spdlog::warn("=== GetTilesInBounds DEBUG ===");
+        spdlog::warn("Input bounds: lon[{:.1f},{:.1f}], lat[{:.1f},{:.1f}], zoom={}",
+            bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y, zoom);
+    }
+
     // Convert bounds corners to tile coordinates
     const TileCoordinates min_tile = GeographicToTile(
         GeographicCoordinates(bounds.min.y, bounds.min.x, 0.0), zoom
@@ -226,13 +245,23 @@ std::vector<TileCoordinates> TileMathematics::GetTilesInBounds(const BoundingBox
     const TileCoordinates max_tile = GeographicToTile(
         GeographicCoordinates(bounds.max.y, bounds.max.x, 0.0), zoom
     );
-    
+
+    if (should_log) {
+        spdlog::warn("min_tile: ({},{},z{}), max_tile: ({},{},z{})",
+            min_tile.x, min_tile.y, min_tile.zoom,
+            max_tile.x, max_tile.y, max_tile.zoom);
+    }
+
     // Clamp to valid range
     const int32_t n = 1 << zoom;
     const int32_t min_x = std::max(0, std::min(min_tile.x, max_tile.x));
     const int32_t max_x = std::min(n - 1, std::max(min_tile.x, max_tile.x));
     const int32_t min_y = std::max(0, std::min(min_tile.y, max_tile.y));
     const int32_t max_y = std::min(n - 1, std::max(min_tile.y, max_tile.y));
+
+    if (should_log) {
+        spdlog::warn("Tile range: x=[{},{}], y=[{},{}]", min_x, max_x, min_y, max_y);
+    }
 
     // TODO: If we decide to render all globe (without frustum) at zoom level say 18, then it becomes (156994 - 105149 + 1) * (158843 - 103300 +1)
     // And for some reason we will exit rendering at frame 0
