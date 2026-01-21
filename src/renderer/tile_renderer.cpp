@@ -865,13 +865,6 @@ private:
         // Use the camera position directly (in world coordinates)
         float distance = glm::length(camera_position);
 
-        // Calculate visible angle based on field of view
-        const float fov_rad = glm::radians(45.0f);
-        const float visible_radius = distance * std::tan(fov_rad / 2.0f);
-
-        // Convert visible radius to angular degrees
-        const float visible_angle_deg = glm::degrees(visible_radius / distance) * 2.0f;
-
         // CRITICAL FIX: Calculate where camera is LOOKING, not where it IS
         // Camera is positioned OUTSIDE globe looking TOWARDS origin (0,0,0)
         // The look direction is the negative of the position (pointing inward)
@@ -883,9 +876,50 @@ private:
         const float lat = glm::degrees(std::asin(std::clamp(look_direction.y, -1.0f, 1.0f)));
         const float lon = glm::degrees(std::atan2(look_direction.x, look_direction.z));
 
-        // Calculate bounds based on visible area around camera
-        const float lat_range = std::min(170.0f, visible_angle_deg * 1.5f);
-        const float lon_range = std::min(360.0f, visible_angle_deg * 1.5f);
+        // PROPER SPHERICAL VISIBILITY CALCULATION
+        // For a camera looking at a sphere from outside:
+        // - Globe radius R = 1.0 (normalized)
+        // - Camera distance D = distance
+        // - The horizon forms a cone around the look direction
+        const float globe_radius = 1.0f;
+
+        // Calculate the angular radius of the visible horizon from camera
+        // This is the half-angle of the cone that just touches the sphere
+        const float horizon_angle_rad = std::asin(globe_radius / distance);
+        const float horizon_angle_deg = glm::degrees(horizon_angle_rad);
+
+        // Calculate FOV contribution
+        const float fov_deg = 45.0f;  // Camera FOV
+        const float fov_half = fov_deg / 2.0f;
+
+        // The visible angular extent is the combination of:
+        // 1. The horizon angle (geometric visibility on sphere)
+        // 2. The FOV cone (what fits in the camera view)
+        // Use the larger of the two, plus a margin for safety
+        const float base_visible_angle = std::max(horizon_angle_deg, fov_half);
+
+        // For GIS applications, use generous coverage to ensure smooth experience
+        // At typical viewing distances (2-5 units), we want near-hemisphere coverage
+        float lat_range, lon_range;
+
+        if (distance <= 5.0f) {
+            // Close/medium view: Load full hemisphere plus margin
+            // This ensures tiles are always available as user rotates
+            lat_range = 160.0f;  // Nearly full hemisphere (±80° from center)
+            lon_range = 160.0f;
+            spdlog::debug("Using hemisphere coverage mode: {:.0f}° x {:.0f}°", lat_range, lon_range);
+        } else {
+            // Far view: Calculate based on actual visibility
+            const float margin_multiplier = 2.0f;  // 100% extra coverage for far views
+            const float visible_angle_with_margin = base_visible_angle * margin_multiplier;
+            lat_range = std::min(170.0f, visible_angle_with_margin * 2.0f);
+            lon_range = std::min(360.0f, visible_angle_with_margin * 2.0f);
+            spdlog::debug("Using calculated coverage: {:.0f}° x {:.0f}°", lat_range, lon_range);
+        }
+
+        spdlog::debug("Visibility calc: distance={:.2f}, horizon_angle={:.1f}°, "
+                     "fov_half={:.1f}°, base_visible={:.1f}°",
+                     distance, horizon_angle_deg, fov_half, base_visible_angle);
 
         // Clamp to Web Mercator valid bounds (-85.0511 to 85.0511)
         const double min_lat = std::max(-85.0, static_cast<double>(lat - lat_range / 2.0f));

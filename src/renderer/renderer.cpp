@@ -539,13 +539,12 @@ private:
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
 
-        // TEMPORARY: Disable backface culling to test winding order theory
-        // If globe looks perfect without culling, then winding order is inconsistent
-        spdlog::warn("BACKFACE CULLING DISABLED - Testing winding order theory");
-        glDisable(GL_CULL_FACE);
-        // glEnable(GL_CULL_FACE);
-        // glCullFace(GL_BACK);
-        // glFrontFace(GL_CCW);  // Counter-clockwise winding is front face
+        // Enable backface culling for better performance
+        // Icosahedron topology is now correct with consistent CCW winding
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glFrontFace(GL_CCW);  // Counter-clockwise winding is front face
+        spdlog::info("Backface culling enabled (CCW winding)");
 
         // Set polygon mode
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
