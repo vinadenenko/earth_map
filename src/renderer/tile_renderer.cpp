@@ -305,14 +305,7 @@ public:
         glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
         glUniform1f(time_loc, static_cast<float>(frame_counter_) * 0.016f);  // ~60fps timing
 
-        // Set lighting uniforms
-        const GLint light_loc = glGetUniformLocation(tile_shader_program_, "uLightPos");
-        const GLint light_color_loc = glGetUniformLocation(tile_shader_program_, "uLightColor");
-        const GLint view_pos_loc = glGetUniformLocation(tile_shader_program_, "uViewPos");
 
-        glUniform3f(light_loc, 2.0f, 2.0f, 2.0f);
-        glUniform3f(light_color_loc, 1.0f, 1.0f, 1.0f);
-        glUniform3f(view_pos_loc, 0.0f, 0.0f, 3.0f);
 
         // Set tile rendering uniforms (dynamic zoom)
         const GLint zoom_loc = glGetUniformLocation(tile_shader_program_, "uZoomLevel");
@@ -495,9 +488,6 @@ private:
             out vec4 FragColor;
 
             uniform sampler2D uTileTexture;
-            uniform vec3 uLightPos;
-            uniform vec3 uLightColor;
-            uniform vec3 uViewPos;
             uniform float uTime;
             uniform float uZoomLevel;      // Current zoom level
 
@@ -539,15 +529,6 @@ private:
             }
 
             void main() {
-                // Basic lighting
-                float ambientStrength = 0.25;
-                vec3 ambient = ambientStrength * uLightColor;
-
-                vec3 norm = normalize(Normal);
-                vec3 lightDir = normalize(uLightPos - FragPos);
-                float diff = max(dot(norm, lightDir), 0.0);
-                vec3 diffuse = diff * uLightColor;
-
                 // Convert world position to geographic coordinates
                 vec3 geo = worldToGeo(normalize(FragPos));
 
@@ -566,7 +547,6 @@ private:
                 ivec3 tileCoord = ivec3(tileInt, zoomInt);
                 vec4 uvResult = findTileUV(tileCoord, tileFrac);
 
-                vec3 result;
                 if (uvResult.z > 0.5) {
                     // Tile found - sample from atlas using coordinator's UV
                     vec4 texColor = texture(uTileTexture, uvResult.xy);
@@ -574,19 +554,16 @@ private:
                     float texBrightness = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
                     if (texBrightness > 0.05) {
                         // Valid texture data
-                        result = (ambient + diffuse) * texColor.rgb;
-                        FragColor = vec4(result, texColor.a);
+                        FragColor = texColor;
                     } else {
                         // Tile loaded but empty - placeholder
                         vec3 oceanColor = vec3(0.1, 0.3, 0.5);
-                        result = (ambient + diffuse) * oceanColor;
-                        FragColor = vec4(result, 1.0);
+                        FragColor = vec4(oceanColor, 1.0);
                     }
                 } else {
                     // Tile not loaded yet - show placeholder (darker blue)
                     vec3 oceanColor = vec3(0.05, 0.15 + 0.05 * sin(geo.x * 0.1), 0.25 + 0.05 * cos(geo.y * 0.1));
-                    result = (ambient + diffuse) * oceanColor;
-                    FragColor = vec4(result, 1.0);
+                    FragColor = vec4(oceanColor, 1.0);
                 }
             }
         )";

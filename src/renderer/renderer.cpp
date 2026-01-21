@@ -47,31 +47,10 @@ in vec2 TexCoord;
 
 out vec4 FragColor;
 
-uniform vec3 uLightPos;
-uniform vec3 uLightColor;
-uniform vec3 uViewPos;
 uniform vec3 uObjectColor;
 
 void main() {
-    // Ambient lighting
-    float ambientStrength = 0.1;
-    vec3 ambient = ambientStrength * uLightColor;
-    
-    // Diffuse lighting
-    vec3 norm = normalize(Normal);
-    vec3 lightDir = normalize(uLightPos - FragPos);
-    float diff = max(dot(norm, lightDir), 0.0);
-    vec3 diffuse = diff * uLightColor;
-    
-    // Specular lighting
-    float specularStrength = 0.5;
-    vec3 viewDir = normalize(uViewPos - FragPos);
-    vec3 reflectDir = reflect(-lightDir, norm);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
-    vec3 specular = specularStrength * spec * uLightColor;
-    
-    vec3 result = (ambient + diffuse + specular) * uObjectColor;
-    FragColor = vec4(result, 1.0);
+    FragColor = vec4(uObjectColor, 1.0);
 }
 )";
 
@@ -209,21 +188,6 @@ public:
             glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uProjection"),
                               1, GL_FALSE, glm::value_ptr(projection_matrix));
 
-            // Get actual camera position for lighting calculations
-            glm::vec3 view_pos(0.0f, 0.0f, constants::camera::DEFAULT_CAMERA_DISTANCE_METERS);  // Default position
-            if (camera_controller_) {
-                view_pos = camera_controller_->GetPosition();
-            }
-
-            // Position light far from Earth to simulate sun
-            // Place it in direction of camera but much farther away
-            glm::vec3 light_pos = glm::normalize(view_pos) * 1.5e11f;  // ~1 AU (sun distance)
-
-            glUniform3f(glGetUniformLocation(shader_program_, "uLightPos"),
-                       light_pos.x, light_pos.y, light_pos.z);
-            glUniform3f(glGetUniformLocation(shader_program_, "uLightColor"), 1.0f, 1.0f, 1.0f);
-            glUniform3f(glGetUniformLocation(shader_program_, "uViewPos"),
-                       view_pos.x, view_pos.y, view_pos.z);
             glUniform3f(glGetUniformLocation(shader_program_, "uObjectColor"), 0.2f, 0.6f, 0.2f);
 
             // Render globe
