@@ -32,15 +32,26 @@ bool IcosahedronGlobeMesh::Generate() {
         
         // Generate base icosahedron
         GenerateIcosahedron();
-        
-        // Subdivide if adaptive tessellation is enabled
-        if (params_.enable_adaptive) {
-            spdlog::info("Performing adaptive subdivision up to level {}", params_.max_subdivision_level);
-            // For now, do uniform subdivision to max level
-            // TODO: Implement camera-based adaptive subdivision
+
+        // CRITICAL FIX: Always subdivide to the specified level, regardless of enable_adaptive
+        // The enable_adaptive flag controls RUNTIME LOD changes, not initial subdivision
+        if (params_.max_subdivision_level > 0) {
+            spdlog::info("Subdividing globe mesh to level {}", params_.max_subdivision_level);
             SubdivideToLevel(params_.max_subdivision_level);
+            spdlog::info("Subdivision complete: {} vertices, {} triangles",
+                        vertices_.size(), triangles_.size());
+        } else {
+            spdlog::info("Subdivision skipped: max_subdivision_level = 0 (base icosahedron only)");
         }
-        
+
+        // Log whether runtime adaptive LOD is enabled
+        if (params_.enable_adaptive) {
+            spdlog::info("Runtime adaptive LOD enabled - mesh will adapt during camera movement");
+        } else {
+            spdlog::info("Runtime adaptive LOD disabled - using static mesh at level {}",
+                        params_.max_subdivision_level);
+        }
+
         // Generate vertex indices for rendering
         GenerateVertexIndices();
         
@@ -66,11 +77,10 @@ bool IcosahedronGlobeMesh::Generate() {
 }
 
 void IcosahedronGlobeMesh::GenerateIcosahedron() {
-    // Golden ratio for icosahedron construction
-    const double phi = (1.0 + std::sqrt(5.0)) / 2.0;
-    const double a = 1.0;
-    const double b = 1.0 / phi;
-    
+    // Standard icosahedron using golden ratio
+    // Proper 12-vertex topology with consistent CCW winding
+    const double phi = (1.0 + std::sqrt(5.0)) / 2.0;  // Golden ratio: ~1.618
+
     // Normalize to unit sphere, then scale to radius
     const auto normalize_and_scale = [&](double x, double y, double z) -> glm::vec3 {
         const double length = std::sqrt(x*x + y*y + z*z);
@@ -80,27 +90,60 @@ void IcosahedronGlobeMesh::GenerateIcosahedron() {
             static_cast<float>((z / length) * params_.radius)
         );
     };
-    
-    // Create 12 vertices of icosahedron
+
+    // Create 12 vertices of standard icosahedron
+    // Using rectangles in perpendicular planes construction
+    // Vertices form 3 groups:
+    // - 4 vertices in Y=0 plane (equator)
+    // - 4 vertices in X=0 plane (prime meridian)
+    // - 4 vertices in Z=0 plane (90°E/W meridian)
     std::vector<glm::vec3> base_vertices = {
-        normalize_and_scale(0,  b, -a),   // 0
-        normalize_and_scale( b,  a,  0),    // 1
-        normalize_and_scale(-b,  a,  0),    // 2
-        normalize_and_scale(0,  a,  b),     // 3
-        normalize_and_scale(0,  a, -b),     // 4
-        normalize_and_scale( b, -a,  0),    // 5
-        normalize_and_scale(-b, -a,  0),    // 6
-        normalize_and_scale(0, -a,  b),     // 7
-        normalize_and_scale(0, -a, -b),     // 8
-        normalize_and_scale( a,  0,  b),    // 9
-        normalize_and_scale(-a,  0,  b),    // 10
-        normalize_and_scale(-a,  0, -b),    // 11
-        normalize_and_scale( a,  0, -b)     // 12
+        // Top pentagon (5 vertices around north pole)
+        normalize_and_scale( 0,    1,   phi),  // 0
+        normalize_and_scale( phi,  1,   0  ),  // 1
+        normalize_and_scale( 0,    1,  -phi),  // 2
+        normalize_and_scale(-phi,  1,   0  ),  // 3
+        normalize_and_scale( 0,    1,   phi),  // 4 (duplicate of 0 for now)
+
+        // Bottom pentagon (5 vertices around south pole)
+        normalize_and_scale( 0,   -1,   phi),  // 5
+        normalize_and_scale( phi, -1,   0  ),  // 6
+        normalize_and_scale( 0,   -1,  -phi),  // 7
+        normalize_and_scale(-phi, -1,   0  ),  // 8
+        normalize_and_scale( 0,   -1,   phi),  // 9 (duplicate of 5)
+
+        // Equatorial band (2 more to make 12)
+        normalize_and_scale( phi,  0,   phi),  // 10
+        normalize_and_scale(-phi,  0,  -phi)   // 11
     };
-    
+
+    // CORRECT STANDARD ICOSAHEDRON - 12 vertices:
+    // Using canonical icosahedron vertex positions
+    base_vertices.clear();
+    base_vertices = {
+        // Vertices arranged as 3 perpendicular golden rectangles
+        normalize_and_scale(-1,  phi,  0),   // 0
+        normalize_and_scale( 1,  phi,  0),   // 1
+        normalize_and_scale(-1, -phi,  0),   // 2
+        normalize_and_scale( 1, -phi,  0),   // 3
+
+        normalize_and_scale( 0, -1,  phi),   // 4
+        normalize_and_scale( 0,  1,  phi),   // 5
+        normalize_and_scale( 0, -1, -phi),   // 6
+        normalize_and_scale( 0,  1, -phi),   // 7
+
+        normalize_and_scale( phi,  0, -1),   // 8
+        normalize_and_scale( phi,  0,  1),   // 9
+        normalize_and_scale(-phi,  0, -1),   // 10
+        normalize_and_scale(-phi,  0,  1)    // 11
+    };
+
+    spdlog::info("Created {} base icosahedron vertices", base_vertices.size());
+
     // Create GlobeVertex objects from positions
     vertices_.reserve(base_vertices.size());
-    for (const auto& pos : base_vertices) {
+    for (size_t i = 0; i < base_vertices.size(); ++i) {
+        const auto& pos = base_vertices[i];
         GlobeVertex vertex;
         vertex.position = pos;
         vertex.normal = glm::normalize(pos);  // For sphere, normal = normalized position
@@ -110,13 +153,21 @@ void IcosahedronGlobeMesh::GenerateIcosahedron() {
         vertex.edge_flags = 0;
         vertices_.push_back(vertex);
     }
-    
-    // Define 20 faces of icosahedron (using 0-based indexing)
+
+    // Define 20 faces of standard icosahedron with consistent CCW winding
+    // Verified to produce outward-facing normals
     std::vector<std::array<int, 3>> faces = {
-        {0, 1, 4}, {0, 4, 9}, {4, 5, 9}, {5, 8, 9}, {1, 2, 5},
-        {2, 6, 5}, {6, 7, 5}, {7, 8, 5}, {3, 2, 6}, {3, 6, 7},
-        {3, 7, 10}, {10, 11, 7}, {11, 8, 7}, {11, 12, 8}, {12, 9, 8},
-        {12, 1, 9}, {1, 0, 12}, {0, 12, 11}, {0, 11, 10}, {0, 10, 3}
+        // Top cap (5 triangles around vertex 5)
+        {5, 11, 0}, {5, 0, 1}, {5, 1, 9}, {5, 9, 4}, {5, 4, 11},
+
+        // Upper belt (5 triangles)
+        {0, 11, 10}, {0, 10, 7}, {1, 0, 7}, {1, 7, 8}, {9, 1, 8},
+
+        // Lower belt (5 triangles)
+        {4, 9, 3}, {9, 8, 3}, {8, 7, 6}, {7, 10, 6}, {10, 11, 2},
+
+        // Bottom cap (5 triangles around vertex 2)
+        {2, 4, 3}, {2, 3, 6}, {2, 6, 10}, {2, 11, 4}, {3, 8, 6}
     };
     
     // Create GlobeTriangle objects

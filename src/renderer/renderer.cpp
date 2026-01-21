@@ -132,6 +132,12 @@ public:
 
             SetupOpenGLState();
 
+            // Store expected counts for corruption detection
+            expected_globe_vertex_count_ = globe_mesh_->GetVertices().size();
+            expected_globe_index_count_ = globe_mesh_->GetVertexIndices().size();
+            spdlog::info("BASELINE: Stored expected mesh counts - vertices: {}, indices: {} (triangles: {})",
+                expected_globe_vertex_count_, expected_globe_index_count_, expected_globe_index_count_ / 3);
+
         // Set initial viewport
         glViewport(0, 0, config_.screen_width, config_.screen_height);
         spdlog::info("Viewport set to {}x{}", config_.screen_width, config_.screen_height);
@@ -174,6 +180,23 @@ public:
         
         // Fallback to basic globe if tile renderer not available
         if (!tile_renderer_ || tile_renderer_->GetStats().visible_tiles == 0) {
+            // Log why we're using fallback globe rendering
+            static bool logged_fallback_reason = false;
+            if (!logged_fallback_reason) {
+                if (!tile_renderer_) {
+                    spdlog::info("Using fallback globe rendering: tile_renderer not available");
+                } else {
+                    spdlog::info("Using fallback globe rendering: visible_tiles = 0");
+                }
+                logged_fallback_reason = true;
+            }
+
+            // Log tile count periodically
+            static int tile_log_count = 0;
+            if (tile_renderer_ && ++tile_log_count % 60 == 0) {
+                spdlog::debug("Visible tiles: {}", tile_renderer_->GetStats().visible_tiles);
+            }
+
             glUseProgram(shader_program_);
 
             // Set uniforms
@@ -205,8 +228,63 @@ public:
 
             // Render globe
             if (globe_mesh_) {
+                // === CORRUPTION DETECTION LOGGING ===
+                // Get current mesh state
+                std::size_t current_vertex_count = globe_mesh_->GetVertices().size();
+                std::size_t current_index_count = globe_mesh_->GetVertexIndices().size();
+
+                // Check for corruption
+                bool vertex_corrupted = (current_vertex_count != expected_globe_vertex_count_);
+                bool index_corrupted = (current_index_count != expected_globe_index_count_);
+
+                if (vertex_corrupted || index_corrupted) {
+                    spdlog::critical("=== MESH CORRUPTION DETECTED ===");
+                    spdlog::critical("Expected vertices: {}, Current: {} [{}]",
+                        expected_globe_vertex_count_, current_vertex_count,
+                        vertex_corrupted ? "CORRUPTED" : "OK");
+                    spdlog::critical("Expected indices: {}, Current: {} [{}]",
+                        expected_globe_index_count_, current_index_count,
+                        index_corrupted ? "CORRUPTED" : "OK");
+                    spdlog::critical("Expected triangles: {}, Current: {}",
+                        expected_globe_index_count_ / 3, current_index_count / 3);
+
+                    // Log camera state
+                    if (camera_controller_) {
+                        glm::vec3 cam_pos = camera_controller_->GetPosition();
+                        spdlog::critical("Camera position: ({:.3f}, {:.3f}, {:.3f}), distance: {:.3f}",
+                            cam_pos.x, cam_pos.y, cam_pos.z, glm::length(cam_pos));
+                    }
+                } else {
+                    // Log periodically even when not corrupted (every 60 frames)
+                    static int frame_count = 0;
+                    if (++frame_count % 60 == 0) {
+                        spdlog::info("Globe mesh OK: {} vertices, {} indices ({} triangles)",
+                            current_vertex_count, current_index_count, current_index_count / 3);
+                    }
+                }
+
+                // Check OpenGL state
+                GLint current_vao = 0;
+                glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &current_vao);
+                if (static_cast<GLuint>(current_vao) != 0) {
+                    spdlog::warn("VAO already bound before globe rendering: {}", current_vao);
+                }
+
                 glBindVertexArray(vao_);
-                glDrawElements(GL_TRIANGLES, globe_mesh_->GetVertexIndices().size(), GL_UNSIGNED_INT, 0);
+
+                // Verify VAO and EBO are correctly bound
+                GLint bound_vao = 0, bound_ebo = 0;
+                glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &bound_vao);
+                glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &bound_ebo);
+
+                if (static_cast<GLuint>(bound_vao) != vao_ || static_cast<GLuint>(bound_ebo) != ebo_) {
+                    spdlog::error("=== OPENGL STATE CORRUPTION ===");
+                    spdlog::error("Expected VAO: {}, Actual: {}", vao_, bound_vao);
+                    spdlog::error("Expected EBO: {}, Actual: {}", ebo_, bound_ebo);
+                }
+
+                // Draw with current count (will show corruption visually)
+                glDrawElements(GL_TRIANGLES, current_index_count, GL_UNSIGNED_INT, 0);
                 glBindVertexArray(0);
             }
         }
@@ -322,6 +400,10 @@ private:
     
     // Globe mesh (icosahedron-based)
     std::unique_ptr<GlobeMesh> globe_mesh_;
+
+    // Expected mesh counts for corruption detection
+    std::size_t expected_globe_vertex_count_ = 0;
+    std::size_t expected_globe_index_count_ = 0;
 
     std::unique_ptr<ShaderManager> shader_manager_;
     std::unique_ptr<TileRenderer> tile_renderer_;
@@ -457,10 +539,13 @@ private:
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
 
-        // Enable backface culling for better performance
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
-        glFrontFace(GL_CCW);  // Counter-clockwise winding is front face
+        // TEMPORARY: Disable backface culling to test winding order theory
+        // If globe looks perfect without culling, then winding order is inconsistent
+        spdlog::warn("BACKFACE CULLING DISABLED - Testing winding order theory");
+        glDisable(GL_CULL_FACE);
+        // glEnable(GL_CULL_FACE);
+        // glCullFace(GL_BACK);
+        // glFrontFace(GL_CCW);  // Counter-clockwise winding is front face
 
         // Set polygon mode
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
