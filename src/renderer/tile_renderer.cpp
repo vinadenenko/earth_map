@@ -149,13 +149,39 @@ public:
         // Calculate geographic bounds of visible area
         const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
             camera_position, view_matrix, projection_matrix);
-        
+
+        // CRITICAL DEBUG: Log bounds to detect inversion
+        static int log_counter = 0;
+        if (++log_counter % 60 == 0) {
+            spdlog::warn("=== TILE VISIBILITY DEBUG ===");
+            spdlog::warn("Camera position: ({:.2f}, {:.2f}, {:.2f})",
+                camera_position.x, camera_position.y, camera_position.z);
+            glm::vec3 look_dir = -glm::normalize(camera_position);
+            float look_lat = glm::degrees(std::asin(std::clamp(look_dir.y, -1.0f, 1.0f)));
+            float look_lon = glm::degrees(std::atan2(look_dir.x, look_dir.z));
+            spdlog::warn("Camera looks at: lon={:.1f}°, lat={:.1f}°", look_lon, look_lat);
+            spdlog::warn("Visible bounds: lon[{:.1f}, {:.1f}], lat[{:.1f}, {:.1f}]",
+                visible_bounds.min.x, visible_bounds.max.x,
+                visible_bounds.min.y, visible_bounds.max.y);
+        }
+
         // Get tiles in visible bounds at appropriate zoom
         const std::vector<TileCoordinates> candidate_tiles =
             tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
-        
+
         // Log tile count for debugging
-        // spdlog::info("Candidate tiles for zoom {}: {}", zoom_level, candidate_tiles.size());
+        if (log_counter % 60 == 0) {
+            spdlog::warn("Candidate tiles: {}, Zoom: {}", candidate_tiles.size(), zoom_level);
+            if (!candidate_tiles.empty()) {
+                // Show first few tiles
+                for (size_t i = 0; i < std::min(size_t(3), candidate_tiles.size()); ++i) {
+                    auto bounds = TileMathematics::GetTileBounds(candidate_tiles[i]);
+                    spdlog::warn("  Tile {}: ({},{},z{}) -> lon[{:.1f},{:.1f}], lat[{:.1f},{:.1f}]",
+                        i, candidate_tiles[i].x, candidate_tiles[i].y, candidate_tiles[i].zoom,
+                        bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y);
+                }
+            }
+        }
         
         // Filter tiles by frustum culling and limit with performance considerations
         std::size_t tiles_added = 0;
@@ -925,15 +951,26 @@ private:
         const double min_lat = std::max(-85.0, static_cast<double>(lat - lat_range / 2.0f));
         const double max_lat = std::min(85.0, static_cast<double>(lat + lat_range / 2.0f));
 
-        // Calculate longitude bounds and clamp to [-180, 180] range
-        // Note: We clamp rather than wrap to avoid creating invalid bounds (min > max)
-        // when the view crosses the International Date Line
+        // Calculate longitude bounds
         double min_lon = static_cast<double>(lon - lon_range / 2.0f);
         double max_lon = static_cast<double>(lon + lon_range / 2.0f);
 
-        // Clamp to valid longitude range to ensure GeographicCoordinates validity
-        min_lon = std::max(-180.0, std::min(180.0, min_lon));
-        max_lon = std::max(-180.0, std::min(180.0, max_lon));
+        // CRITICAL FIX: Handle date line wraparound
+        // If bounds exceed [-180, 180], we're crossing the date line
+        // Instead of clamping (which loses coverage), expand to full longitude range
+        bool crosses_dateline = (min_lon < -180.0 || max_lon > 180.0);
+
+        if (crosses_dateline) {
+            // View crosses date line - request full longitude range to ensure coverage
+            // This is acceptable at typical viewing distances where we see ~hemisphere
+            spdlog::debug("Date line crossing detected, using full longitude range");
+            min_lon = -180.0;
+            max_lon = 180.0;
+        } else {
+            // Normal case - just clamp to valid range
+            min_lon = std::max(-180.0, std::min(180.0, min_lon));
+            max_lon = std::max(-180.0, std::min(180.0, max_lon));
+        }
 
         spdlog::debug("Camera distance: {:.1f}, visible bounds: lat[ {:.2f}, {:.2f} ] lon[ {:.2f}, {:.2f} ]",
                     distance, min_lat, max_lat, min_lon, max_lon);
