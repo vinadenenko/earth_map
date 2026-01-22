@@ -46,6 +46,13 @@ public:
     SceneManager* GetSceneManager() override;
     CameraController* GetCameraController() override;
     bool LoadData(const std::string& file_path) override;
+
+    void EnableMiniMap(bool enabled) override;
+    bool IsMiniMapEnabled() const override;
+    void SetMiniMapSize(uint32_t width, uint32_t height) override;
+    std::pair<uint32_t, uint32_t> GetMiniMapSize() const override;
+    void SetMiniMapOffset(uint32_t offset_x, uint32_t offset_y) override;
+    std::pair<uint32_t, uint32_t> GetMiniMapOffset() const override;
     std::string GetPerformanceStats() const override;
 
 private:
@@ -56,6 +63,7 @@ private:
     std::unique_ptr<TileManager> tile_manager_; ///< Tile management
     std::unique_ptr<TileTextureCoordinator> texture_coordinator_; ///< Texture atlas coordinator (new lock-free architecture)
     bool initialized_ = false;                 ///< Initialization status
+    bool mini_map_enabled_ = false;            ///< Mini-map display enabled
     
     /**
      * @brief Initialize subsystems

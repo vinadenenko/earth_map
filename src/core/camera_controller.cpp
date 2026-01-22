@@ -102,6 +102,14 @@ public:
     void SetClippingPlanes(float near_plane, float far_plane) override {
         camera_->SetClippingPlanes(near_plane, far_plane);
     }
+
+    float GetNearPlane() const override {
+        return camera_->GetNearPlane();
+    }
+
+    float GetFarPlane() const override {
+        return camera_->GetFarPlane();
+    }
     
     glm::mat4 GetViewMatrix() const override {
         return camera_->GetViewMatrix();
@@ -111,11 +119,18 @@ public:
         return camera_->GetProjectionMatrix(aspect_ratio);
     }
     
-    Frustum GetFrustum(float aspect_ratio) const override {
-        return camera_->GetFrustum(aspect_ratio);
-    }
-    
-    void SetProjectionType(CameraProjectionType projection_type) override {
+     Frustum GetFrustum(float aspect_ratio) const override {
+         return camera_->GetFrustum(aspect_ratio);
+     }
+
+     glm::vec3 GetForwardVector() const override {
+         // Extract forward vector from view matrix (negative Z direction in view space)
+         glm::mat4 view = GetViewMatrix();
+         // The Z column of the view matrix gives the forward direction in world space
+         return glm::normalize(glm::vec3(-view[0][2], -view[1][2], -view[2][2]));
+     }
+
+     void SetProjectionType(CameraProjectionType projection_type) override {
         // Recreate camera with new projection type
         switch (projection_type) {
             case CameraProjectionType::PERSPECTIVE:

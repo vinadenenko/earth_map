@@ -54,6 +54,7 @@ void print_help() {
     std::cout << "║   A / D             : Move left / right (FREE mode)        ║\n";
     std::cout << "║   Q / E             : Move up / down (FREE mode)           ║\n";
     std::cout << "║   F                 : Toggle camera mode (FREE/ORBIT)      ║\n";
+    std::cout << "║   M                 : Toggle mini-map                       ║\n";
     std::cout << "║   R                 : Reset camera to default view         ║\n";
     std::cout << "║   O                 : Toggle debug overlay                 ║\n";
     std::cout << "║   H                 : Toggle this help text                ║\n";
@@ -100,6 +101,13 @@ void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int
                 show_overlay = !show_overlay;
                 std::cout << "→ Debug overlay: " << (show_overlay ? "ON" : "OFF") << "\n";
                 break;
+
+            case GLFW_KEY_M: {
+                bool enabled = g_earth_map_instance->IsMiniMapEnabled();
+                g_earth_map_instance->EnableMiniMap(!enabled);
+                std::cout << "→ Mini-map: " << (!enabled ? "ON" : "OFF") << "\n";
+                break;
+            }
             case GLFW_KEY_H:
                 show_help = !show_help;
                 if (show_help) {

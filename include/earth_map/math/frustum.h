@@ -99,7 +99,8 @@ struct Frustum {
     };
     
     std::array<Plane, COUNT> planes;  ///< Frustum clipping planes
-    
+    glm::mat4 view_projection_matrix_;  ///< Stored for corner calculations
+
     /**
      * @brief Default constructor
      */
@@ -110,7 +111,7 @@ struct Frustum {
      * 
      * @param view_projection Combined view and projection matrix
      */
-    explicit Frustum(const glm::mat4& view_projection) {
+    explicit Frustum(const glm::mat4& view_projection) : view_projection_matrix_(view_projection) {
         // Extract frustum planes from view-projection matrix
         // Each plane equation: normal · x + distance = 0
         
