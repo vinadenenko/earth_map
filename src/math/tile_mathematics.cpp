@@ -110,7 +110,9 @@ TileCoordinates TileMathematics::GeographicToTile(const GeographicCoordinates& g
     const int32_t n = 1 << zoom;
     // Use proper rounding instead of floor for better accuracy
     const int32_t x = static_cast<int32_t>(std::round(normalized_x * n - 0.5));
-    const int32_t y = static_cast<int32_t>(std::round(normalized_y * n - 0.5));
+    // OSM/XYZ convention: Y=0 at north pole (matches shader's (1.0 - ...) inversion)
+    // Web Mercator normalized_y: 0=south, 1=north, so invert: (1.0 - normalized_y)
+    const int32_t y = static_cast<int32_t>(std::round((1.0 - normalized_y) * n - 0.5));
 
     // CRITICAL DEBUG: Log conversion for debugging
     static int geo_debug_counter = 0;
@@ -137,9 +139,10 @@ GeographicCoordinates TileMathematics::TileToGeographic(const TileCoordinates& t
     const glm::dvec2 normalized = TileToNormalized(tile);
     // Use tile center for better round-trip precision
     const double tile_size = 1.0 / (1 << tile.zoom);
+    // normalized.y is north edge after OSM inversion, subtract to go south to center
     const glm::dvec2 normalized_center(
         normalized.x + tile_size * 0.5,
-        normalized.y + tile_size * 0.5
+        normalized.y - tile_size * 0.5
     );
     
     const glm::dvec2 proj_coords(
@@ -161,15 +164,17 @@ BoundingBox2D TileMathematics::GetTileBounds(const TileCoordinates& tile) {
     
     const glm::dvec2 normalized = TileToNormalized(tile);
     const double tile_size = 1.0 / (1 << tile.zoom);
-    
+
+    // normalized.y is north edge after OSM inversion
+    // South edge is at normalized.y - tile_size
     const ProjectedCoordinates proj_min(
         normalized.x * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD,
-        normalized.y * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD
+        (normalized.y - tile_size) * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD
     );
-    
+
     const ProjectedCoordinates proj_max(
         (normalized.x + tile_size) * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD,
-        (normalized.y + tile_size) * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD
+        normalized.y * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD
     );
     
     const GeographicCoordinates geo_min = web_mercator->Unproject(proj_min);
@@ -199,11 +204,12 @@ glm::dvec2 TileMathematics::TileToNormalized(const TileCoordinates& tile) {
     if (!TileValidator::IsValidTile(tile)) {
         return glm::dvec2(0.0, 0.0);
     }
-    
+
     const int32_t n = 1 << tile.zoom;
+    // OSM tile_y=0 is north (normalized_y=1.0), so invert: 1.0 - (tile_y / n)
     return glm::dvec2(
         static_cast<double>(tile.x) / n,
-        static_cast<double>(tile.y) / n
+        1.0 - static_cast<double>(tile.y) / n
     );
 }
 
