@@ -5,6 +5,7 @@
 
 #include <earth_map/renderer/globe_mesh.h>
 #include <earth_map/math/bounding_box.h>
+#include <earth_map/coordinates/coordinate_mapper.h>
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>
@@ -305,18 +306,14 @@ std::size_t IcosahedronGlobeMesh::CreateMidpointVertex(std::size_t v1, std::size
 }
 
 glm::vec2 IcosahedronGlobeMesh::PositionToGeographic(const glm::vec3& position) const {
-    // Convert Cartesian position to geographic coordinates
-    const double x = position.x;
-    const double y = position.y;
-    const double z = position.z;
-    
-    const double radius = std::sqrt(x*x + y*y + z*z);
-    const double lat_rad = std::asin(y / radius);
-    const double lon_rad = std::atan2(x, z);
-    
+    // Use centralized CoordinateMapper for cartesian-to-geographic conversion
+    using namespace coordinates;
+    Geographic geo = CoordinateMapper::CartesianToGeographic(position);
+
+    // Return as glm::vec2 (lon, lat) for compatibility with existing API
     return glm::vec2(
-        static_cast<float>(lon_rad * 180.0 / M_PI),
-        static_cast<float>(lat_rad * 180.0 / M_PI)
+        static_cast<float>(geo.longitude),
+        static_cast<float>(geo.latitude)
     );
 }
 
