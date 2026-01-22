@@ -213,6 +213,20 @@ public:
      * @param far_plane Far clipping distance (> near_plane)
      */
     virtual void SetClippingPlanes(float near_plane, float far_plane) = 0;
+
+    /**
+     * @brief Get near clipping plane distance
+     *
+     * @return float Near clipping distance
+     */
+    virtual float GetNearPlane() const = 0;
+
+    /**
+     * @brief Get far clipping plane distance
+     *
+     * @return float Far clipping distance
+     */
+    virtual float GetFarPlane() const = 0;
     
     /**
      * @brief Get view matrix

@@ -4,6 +4,7 @@
 #include <earth_map/platform/opengl_context.h>
 #include <earth_map/renderer/tile_renderer.h>
 #include <earth_map/renderer/globe_mesh.h>
+#include <earth_map/renderer/mini_map_renderer.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
@@ -51,6 +52,7 @@ uniform vec3 uLightPos;
 uniform vec3 uLightColor;
 uniform vec3 uViewPos;
 uniform vec3 uObjectColor;
+uniform float uAlpha = 1.0;
 
 void main() {
     // Ambient lighting
@@ -71,7 +73,43 @@ void main() {
     vec3 specular = specularStrength * spec * uLightColor;
     
     vec3 result = (ambient + diffuse + specular) * uObjectColor;
-    FragColor = vec4(result, 1.0);
+    FragColor = vec4(result, uAlpha);
+}
+)";
+
+const char* MINIMAP_VERTEX_SHADER = R"(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aTexCoord;
+
+uniform mat4 uProjection;
+uniform mat4 uModel;
+
+out vec2 TexCoord;
+
+void main() {
+    gl_Position = uProjection * uModel * vec4(aPos, 1.0);
+    TexCoord = aTexCoord;
+}
+)";
+
+const char* MINIMAP_FRAGMENT_SHADER = R"(
+#version 330 core
+in vec2 TexCoord;
+
+uniform sampler2D uTexture;
+uniform vec4 uColor;
+uniform bool uUseTexture;
+
+out vec4 FragColor;
+
+void main() {
+    if (uUseTexture) {
+        vec4 texColor = texture(uTexture, TexCoord);
+        FragColor = vec4(texColor.rgb * uColor.rgb, 1.0);  // Force opaque, ignore texture alpha
+    } else {
+        FragColor = uColor;
+    }
 }
 )";
 
@@ -148,7 +186,22 @@ public:
             spdlog::error("Failed to create or initialize tile renderer");
             return false;
         }
-        
+
+        // Initialize mini-map renderer with valid shader program
+        MiniMapRenderer::Config mini_map_config;
+        mini_map_config.width = 256;
+        mini_map_config.height = 256;
+        mini_map_config.offset_x = 10;
+        mini_map_config.offset_y = 10;
+        mini_map_config.show_grid = false;  // Disable messy grid lines
+        mini_map_config.grid_opacity = 0.3f;
+
+        mini_map_renderer_ = std::make_unique<MiniMapRenderer>(mini_map_config);
+        if (!mini_map_renderer_->Initialize(minimap_shader_program_)) {
+            spdlog::error("Failed to initialize mini-map renderer");
+            return false;
+        }
+
         // Set tile manager for tile renderer (will be available through scene manager)
         // This is simplified - in a full system, tile manager would be passed from higher level
             
@@ -335,6 +388,13 @@ public:
         spdlog::debug("Renderer::Render() - RenderScene");
         RenderScene(view, projection, frustum);
 
+        // Render mini-map overlay
+        if (mini_map_enabled_ && mini_map_renderer_ && camera_controller_) {
+            mini_map_renderer_->Render(static_cast<float>(config_.screen_width) / config_.screen_height); // Render mini-map to texture
+            mini_map_renderer_->Update(camera_controller_, config_.screen_width, config_.screen_height);
+            RenderMiniMapOverlay();
+        }
+
         spdlog::debug("Renderer::Render() - EndFrame");
         EndFrame();
         spdlog::debug("Renderer::Render() - complete");
@@ -352,25 +412,23 @@ public:
     }
     
     ShaderManager* GetShaderManager() override {
-        return shader_manager_.get();
+        return nullptr; // ShaderManager not implemented
     }
     
     CameraController* GetCameraController() const override {
         return camera_controller_;
     }
     
-    void SetCameraController(CameraController* camera_controller) override {
-        camera_controller_ = camera_controller;
-        
-        // Pass camera controller to tile renderer
-        if (tile_renderer_) {
-            // Note: This is a simplified approach
-            // In a full system, this would be handled through proper dependency injection
-            // TODO
-            spdlog::debug("Camera controller set in renderer");
-        }
-    }
-    
+     void SetCameraController(CameraController* camera_controller) override {
+         camera_controller_ = camera_controller;
+     }
+
+ 
+
+     void SetMiniMapEnabled(bool enabled) override {
+         mini_map_enabled_ = enabled;
+     }
+
     TileRenderer* GetTileRenderer() override {
         return tile_renderer_.get();
     }
@@ -387,6 +445,95 @@ public:
         return nullptr; // TODO: Implement
     }
 
+    void RenderMiniMapOverlay() {
+        if (!mini_map_renderer_) return;
+
+        // Switch to orthographic projection for 2D overlay
+        glDisable(GL_DEPTH_TEST);
+
+        // Set up orthographic projection for screen space
+        glm::mat4 ortho_proj = glm::ortho(0.0f, static_cast<float>(config_.screen_width),
+                                         0.0f, static_cast<float>(config_.screen_height),
+                                         -1.0f, 1.0f);
+
+        // Get mini-map config
+        const auto& mini_config = mini_map_renderer_->GetConfig();
+
+        // Calculate screen position (top-right corner)
+        float screen_x = config_.screen_width - mini_config.width - mini_config.offset_x;
+        float screen_y = config_.screen_height - mini_config.height - mini_config.offset_y;
+
+        // Save GL states
+        GLboolean depthTest = glIsEnabled(GL_DEPTH_TEST);
+        GLboolean blend = glIsEnabled(GL_BLEND);
+        GLint blendSrc, blendDst;
+        glGetIntegerv(GL_BLEND_SRC_RGB, &blendSrc);
+        glGetIntegerv(GL_BLEND_DST_RGB, &blendDst);
+
+        // Set full screen viewport and mini-map rendering states
+        glViewport(0, 0, config_.screen_width, config_.screen_height);
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // Render mini-map as textured quad
+        glUseProgram(minimap_shader_program_);
+
+        glUniformMatrix4fv(glGetUniformLocation(minimap_shader_program_, "uProjection"), 1, GL_FALSE, glm::value_ptr(ortho_proj));
+
+        // Position mini-map on screen
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(screen_x, screen_y, 0.0f));
+        model = glm::scale(model, glm::vec3(mini_config.width, mini_config.height, 1.0f));
+        glUniformMatrix4fv(glGetUniformLocation(minimap_shader_program_, "uModel"), 1, GL_FALSE, glm::value_ptr(model));
+
+        // Bind texture
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, mini_map_renderer_->GetTexture());
+        glUniform1i(glGetUniformLocation(minimap_shader_program_, "uTexture"), 0);
+
+        // White color for texture
+        glUniform4f(glGetUniformLocation(minimap_shader_program_, "uColor"), 1.0f, 1.0f, 1.0f, 1.0f);
+        glUniform1i(glGetUniformLocation(minimap_shader_program_, "uUseTexture"), 1);
+
+        // Create screen quad vertices (0-1 space) with flipped texture V coordinates
+        std::vector<float> quad_vertices = {
+            // positions        // tex coords
+            0.0f, 0.0f, 0.0f,   0.0f, 1.0f,  // bottom-left -> tex 0,1 (flipped)
+            1.0f, 0.0f, 0.0f,   1.0f, 1.0f,  // bottom-right -> tex 1,1 (flipped)
+            1.0f, 1.0f, 0.0f,   1.0f, 0.0f,  // top-right -> tex 1,0 (flipped)
+            0.0f, 1.0f, 0.0f,   0.0f, 0.0f   // top-left -> tex 0,0 (flipped)
+        };
+
+        // Create temporary VAO for screen quad
+        GLuint tempVAO, tempVBO;
+        glGenVertexArrays(1, &tempVAO);
+        glGenBuffers(1, &tempVBO);
+
+        glBindVertexArray(tempVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, tempVBO);
+        glBufferData(GL_ARRAY_BUFFER, quad_vertices.size() * sizeof(float), quad_vertices.data(), GL_STATIC_DRAW);
+
+        // Position attribute (location 0)
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+
+        // Texture coord attribute (location 1)
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+
+        // Render quad
+        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+        // Clean up
+        glDeleteBuffers(1, &tempVBO);
+        glDeleteVertexArrays(1, &tempVAO);
+
+        // Restore GL states
+        if (depthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+        if (blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+        glBlendFunc(blendSrc, blendDst);
+    }
+
 private:
     Configuration config_;
     bool initialized_ = false;
@@ -394,6 +541,7 @@ private:
     
     // OpenGL objects
     std::uint32_t shader_program_ = 0;
+    std::uint32_t minimap_shader_program_ = 0;
     std::uint32_t vao_ = 0;
     std::uint32_t vbo_ = 0;
     std::uint32_t ebo_ = 0;
@@ -405,9 +553,10 @@ private:
     std::size_t expected_globe_vertex_count_ = 0;
     std::size_t expected_globe_index_count_ = 0;
 
-    std::unique_ptr<ShaderManager> shader_manager_;
     std::unique_ptr<TileRenderer> tile_renderer_;
+    std::unique_ptr<MiniMapRenderer> mini_map_renderer_;
     CameraController* camera_controller_ = nullptr;
+    bool mini_map_enabled_ = false;
     
     bool LoadShaders() {
         // Compile vertex shader
@@ -441,7 +590,39 @@ private:
         // Clean up shaders
         glDeleteShader(vertex_shader);
         glDeleteShader(fragment_shader);
-        
+
+        // Compile mini-map vertex shader
+        std::uint32_t minimap_vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(minimap_vertex_shader, 1, &MINIMAP_VERTEX_SHADER, nullptr);
+        glCompileShader(minimap_vertex_shader);
+
+        if (!CheckShaderCompile(minimap_vertex_shader)) {
+            return false;
+        }
+
+        // Compile mini-map fragment shader
+        std::uint32_t minimap_fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(minimap_fragment_shader, 1, &MINIMAP_FRAGMENT_SHADER, nullptr);
+        glCompileShader(minimap_fragment_shader);
+
+        if (!CheckShaderCompile(minimap_fragment_shader)) {
+            return false;
+        }
+
+        // Link mini-map shader program
+        minimap_shader_program_ = glCreateProgram();
+        glAttachShader(minimap_shader_program_, minimap_vertex_shader);
+        glAttachShader(minimap_shader_program_, minimap_fragment_shader);
+        glLinkProgram(minimap_shader_program_);
+
+        if (!CheckProgramLink(minimap_shader_program_)) {
+            return false;
+        }
+
+        // Clean up mini-map shaders
+        glDeleteShader(minimap_vertex_shader);
+        glDeleteShader(minimap_fragment_shader);
+
         return true;
     }
     
@@ -566,6 +747,10 @@ private:
         if (shader_program_) {
             glDeleteProgram(shader_program_);
             shader_program_ = 0;
+        }
+        if (minimap_shader_program_) {
+            glDeleteProgram(minimap_shader_program_);
+            minimap_shader_program_ = 0;
         }
     }
 };

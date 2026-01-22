@@ -137,12 +137,59 @@ public:
      * @return true if loading succeeded, false otherwise
      */
     virtual bool LoadData(const std::string& file_path) = 0;
-    
+
     /**
-     * @brief Get current performance statistics
-     * 
-     * @return std::string JSON-formatted performance data
-     */
+      * @brief Enable or disable mini-map display
+      *
+      * Shows a small overview map in the top-right corner indicating
+      * camera position and view frustum on a global Earth texture.
+      *
+      * @param enabled true to enable mini-map, false to disable
+      */
+    virtual void EnableMiniMap(bool enabled) = 0;
+
+    /**
+      * @brief Check if mini-map is enabled
+      *
+      * @return true if mini-map is enabled, false otherwise
+      */
+    virtual bool IsMiniMapEnabled() const = 0;
+
+    /**
+      * @brief Set mini-map size
+      *
+      * @param width Mini-map width in pixels
+      * @param height Mini-map height in pixels
+      */
+    virtual void SetMiniMapSize(uint32_t width, uint32_t height) = 0;
+
+    /**
+      * @brief Get mini-map size
+      *
+      * @return std::pair<uint32_t, uint32_t> (width, height) in pixels
+      */
+    virtual std::pair<uint32_t, uint32_t> GetMiniMapSize() const = 0;
+
+    /**
+      * @brief Set mini-map offset from top-right corner
+      *
+      * @param offset_x X offset in pixels
+      * @param offset_y Y offset in pixels
+      */
+    virtual void SetMiniMapOffset(uint32_t offset_x, uint32_t offset_y) = 0;
+
+    /**
+      * @brief Get mini-map offset
+      *
+      * @return std::pair<uint32_t, uint32_t> (offset_x, offset_y) in pixels
+      */
+    virtual std::pair<uint32_t, uint32_t> GetMiniMapOffset() const = 0;
+
+    /**
+      * @brief Get current performance statistics
+      *
+      * @return std::string JSON-formatted performance data
+      */
     virtual std::string GetPerformanceStats() const = 0;
 
 protected:

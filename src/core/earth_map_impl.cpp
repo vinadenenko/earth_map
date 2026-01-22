@@ -101,6 +101,38 @@ bool EarthMapImpl::LoadData(const std::string& file_path) {
     return false;
 }
 
+void EarthMapImpl::EnableMiniMap(bool enabled) {
+    mini_map_enabled_ = enabled;
+    if (renderer_) {
+        renderer_->SetMiniMapEnabled(enabled);
+    }
+    spdlog::info("Mini-map display {}", enabled ? "enabled" : "disabled");
+}
+
+bool EarthMapImpl::IsMiniMapEnabled() const {
+    return mini_map_enabled_;
+}
+
+void EarthMapImpl::SetMiniMapSize(uint32_t width, uint32_t height) {
+    // TODO: Pass to mini-map renderer
+    spdlog::info("Mini-map size set to {}x{}", width, height);
+}
+
+std::pair<uint32_t, uint32_t> EarthMapImpl::GetMiniMapSize() const {
+    // TODO: Get from mini-map renderer
+    return {256, 256}; // Default
+}
+
+void EarthMapImpl::SetMiniMapOffset(uint32_t offset_x, uint32_t offset_y) {
+    // TODO: Pass to mini-map renderer
+    spdlog::info("Mini-map offset set to ({}, {})", offset_x, offset_y);
+}
+
+std::pair<uint32_t, uint32_t> EarthMapImpl::GetMiniMapOffset() const {
+    // TODO: Get from mini-map renderer
+    return {10, 10}; // Default
+}
+
 std::string EarthMapImpl::GetPerformanceStats() const {
     if (!initialized_ || !renderer_) {
         return R"({"fps": 0, "frame_time_ms": 0, "draw_calls": 0})";

@@ -183,6 +183,13 @@ public:
      */
     virtual void SetCameraController(CameraController* camera_controller) = 0;
 
+    /**
+      * @brief Enable or disable mini-map rendering
+      *
+      * @param enabled true to enable mini-map, false to disable
+      */
+    virtual void SetMiniMapEnabled(bool enabled) = 0;
+
 protected:
     /**
      * @brief Protected constructor to enforce factory pattern

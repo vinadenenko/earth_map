@@ -129,12 +129,26 @@ public:
     virtual float GetFieldOfView() const = 0;
     
     /**
-     * @brief Set near and far clipping planes
-     * 
-     * @param near_plane Near clipping distance
-     * @param far_plane Far clipping distance
-     */
+      * @brief Set near and far clipping planes
+      *
+      * @param near_plane Near clipping distance
+      * @param far_plane Far clipping distance
+      */
     virtual void SetClippingPlanes(float near_plane, float far_plane) = 0;
+
+     /**
+      * @brief Get near clipping plane distance
+      *
+      * @return float Near clipping distance
+      */
+     virtual float GetNearPlane() const = 0;
+
+     /**
+      * @brief Get far clipping plane distance
+      *
+      * @return float Far clipping distance
+      */
+     virtual float GetFarPlane() const = 0;
     
     /**
      * @brief Get view matrix
@@ -151,12 +165,19 @@ public:
      */
     virtual glm::mat4 GetProjectionMatrix(float aspect_ratio) const = 0;
     
-    /**
-     * @brief Get view frustum
-     * 
-     * @return Frustum Current camera frustum for culling
-     */
-    virtual Frustum GetFrustum(float aspect_ratio) const = 0;
+     /**
+      * @brief Get view frustum
+      *
+      * @return Frustum Current camera frustum for culling
+      */
+     virtual Frustum GetFrustum(float aspect_ratio) const = 0;
+
+     /**
+      * @brief Get camera forward vector
+      *
+      * @return glm::vec3 Normalized forward direction in world space
+      */
+     virtual glm::vec3 GetForwardVector() const = 0;
     
     /**
      * @brief Set projection type

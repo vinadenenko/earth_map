@@ -197,6 +197,14 @@ public:
         near_plane_ = std::max(near_plane, 0.001f);
         far_plane_ = std::max(far_plane, near_plane_ + 0.1f);
     }
+
+    float GetNearPlane() const override {
+        return near_plane_;
+    }
+
+    float GetFarPlane() const override {
+        return far_plane_;
+    }
     
     glm::mat4 GetViewMatrix() const override {
         return view_matrix_;
