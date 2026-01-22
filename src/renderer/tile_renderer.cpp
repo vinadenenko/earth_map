@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <map>
 #include <unordered_map>
 #include <climits>
 #include <cstddef>
@@ -149,13 +150,49 @@ public:
         // Calculate geographic bounds of visible area
         const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
             camera_position, view_matrix, projection_matrix);
-        
+
+        // CRITICAL DEBUG: Log bounds to detect inversion
+        static int log_counter = 0;
+        if (++log_counter % 60 == 0) {
+            spdlog::warn("=== TILE VISIBILITY DEBUG ===");
+            spdlog::warn("Camera position: ({:.2f}, {:.2f}, {:.2f})",
+                camera_position.x, camera_position.y, camera_position.z);
+            glm::vec3 look_dir = -glm::normalize(camera_position);
+            float look_lat = glm::degrees(std::asin(std::clamp(look_dir.y, -1.0f, 1.0f)));
+            float look_lon = glm::degrees(std::atan2(look_dir.x, look_dir.z));
+            spdlog::warn("Camera looks at: lon={:.1f}°, lat={:.1f}°", look_lon, look_lat);
+            spdlog::warn("Visible bounds: lon[{:.1f}, {:.1f}], lat[{:.1f}, {:.1f}]",
+                visible_bounds.min.x, visible_bounds.max.x,
+                visible_bounds.min.y, visible_bounds.max.y);
+        }
+
         // Get tiles in visible bounds at appropriate zoom
         const std::vector<TileCoordinates> candidate_tiles =
             tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
-        
+
         // Log tile count for debugging
-        // spdlog::info("Candidate tiles for zoom {}: {}", zoom_level, candidate_tiles.size());
+        if (log_counter % 60 == 0) {
+            spdlog::warn("Candidate tiles: {}, Zoom: {}", candidate_tiles.size(), zoom_level);
+            if (!candidate_tiles.empty()) {
+                // Show representative tiles from different x-columns to verify longitude distribution
+                std::map<int32_t, size_t> x_column_first_index;
+                for (size_t i = 0; i < candidate_tiles.size(); ++i) {
+                    int32_t x = candidate_tiles[i].x;
+                    if (x_column_first_index.find(x) == x_column_first_index.end()) {
+                        x_column_first_index[x] = i;
+                    }
+                }
+
+                spdlog::warn("Representative tiles (one per x-column):");
+                for (const auto& [x_val, idx] : x_column_first_index) {
+                    auto bounds = TileMathematics::GetTileBounds(candidate_tiles[idx]);
+                    spdlog::warn("  Tile {} at x={}: ({},{},z{}) -> lon[{:.1f},{:.1f}], lat[{:.1f},{:.1f}]",
+                        idx, x_val,
+                        candidate_tiles[idx].x, candidate_tiles[idx].y, candidate_tiles[idx].zoom,
+                        bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y);
+                }
+            }
+        }
         
         // Filter tiles by frustum culling and limit with performance considerations
         std::size_t tiles_added = 0;
@@ -623,14 +660,15 @@ private:
                 const float cos_phi = std::cos(phi);
                 
                 // Position
-                const float x = radius * sin_theta * cos_phi;
+                // CRITICAL: Use sin(phi) for X and cos(phi) for Z to match shader's lon=0 → +Z convention
+                const float x = radius * sin_theta * sin_phi;
                 const float y = radius * cos_theta;
-                const float z = radius * sin_theta * sin_phi;
-                
+                const float z = radius * sin_theta * cos_phi;
+
                 // Normal (same as position for sphere)
-                const float nx = sin_theta * cos_phi;
+                const float nx = sin_theta * sin_phi;
                 const float ny = cos_theta;
-                const float nz = sin_theta * sin_phi;
+                const float nz = sin_theta * cos_phi;
                 
                 // Texture coordinates (for globe projection - mapping to world coordinates)
                 const float u = static_cast<float>(s) / segments;
@@ -865,31 +903,86 @@ private:
         // Use the camera position directly (in world coordinates)
         float distance = glm::length(camera_position);
 
-        // Calculate visible angle based on field of view
-        const float fov_rad = glm::radians(45.0f);
-        const float visible_radius = distance * std::tan(fov_rad / 2.0f);
+        // CRITICAL FIX: Calculate where camera is LOOKING, not where it IS
+        // Camera is positioned OUTSIDE globe looking TOWARDS origin (0,0,0)
+        // The look direction is the negative of the position (pointing inward)
+        glm::vec3 look_direction = -glm::normalize(camera_position);
 
-        // Convert visible radius to angular degrees
-        const float visible_angle_deg = glm::degrees(visible_radius / distance) * 2.0f;
-
-        // Convert camera position to geographic coordinates (unit sphere conversion)
-        // Normalize position to unit sphere for geographic conversion
-        glm::vec3 normalized_pos = glm::normalize(camera_position);
-
-        // Convert to geographic: x,z form longitude plane, y is latitude
+        // Convert look direction to geographic coordinates
+        // This gives us the point on the sphere surface where camera is looking
         // lat = asin(y), lon = atan2(x, z)
-        const float lat = glm::degrees(std::asin(std::clamp(normalized_pos.y, -1.0f, 1.0f)));
-        const float lon = glm::degrees(std::atan2(normalized_pos.x, normalized_pos.z));
+        const float lat = glm::degrees(std::asin(std::clamp(look_direction.y, -1.0f, 1.0f)));
+        const float lon = glm::degrees(std::atan2(look_direction.x, look_direction.z));
 
-        // Calculate bounds based on visible area around camera
-        const float lat_range = std::min(170.0f, visible_angle_deg * 1.5f);
-        const float lon_range = std::min(360.0f, visible_angle_deg * 1.5f);
+        // PROPER SPHERICAL VISIBILITY CALCULATION
+        // For a camera looking at a sphere from outside:
+        // - Globe radius R = 1.0 (normalized)
+        // - Camera distance D = distance
+        // - The horizon forms a cone around the look direction
+        const float globe_radius = 1.0f;
+
+        // Calculate the angular radius of the visible horizon from camera
+        // This is the half-angle of the cone that just touches the sphere
+        const float horizon_angle_rad = std::asin(globe_radius / distance);
+        const float horizon_angle_deg = glm::degrees(horizon_angle_rad);
+
+        // Calculate FOV contribution
+        const float fov_deg = 45.0f;  // Camera FOV
+        const float fov_half = fov_deg / 2.0f;
+
+        // The visible angular extent is the combination of:
+        // 1. The horizon angle (geometric visibility on sphere)
+        // 2. The FOV cone (what fits in the camera view)
+        // Use the larger of the two, plus a margin for safety
+        const float base_visible_angle = std::max(horizon_angle_deg, fov_half);
+
+        // For GIS applications, use generous coverage to ensure smooth experience
+        // At typical viewing distances (2-5 units), we want near-hemisphere coverage
+        float lat_range, lon_range;
+
+        if (distance <= 5.0f) {
+            // Close/medium view: Load full hemisphere plus margin
+            // This ensures tiles are always available as user rotates
+            lat_range = 160.0f;  // Nearly full hemisphere (±80° from center)
+            lon_range = 160.0f;
+            spdlog::debug("Using hemisphere coverage mode: {:.0f}° x {:.0f}°", lat_range, lon_range);
+        } else {
+            // Far view: Calculate based on actual visibility
+            const float margin_multiplier = 2.0f;  // 100% extra coverage for far views
+            const float visible_angle_with_margin = base_visible_angle * margin_multiplier;
+            lat_range = std::min(170.0f, visible_angle_with_margin * 2.0f);
+            lon_range = std::min(360.0f, visible_angle_with_margin * 2.0f);
+            spdlog::debug("Using calculated coverage: {:.0f}° x {:.0f}°", lat_range, lon_range);
+        }
+
+        spdlog::debug("Visibility calc: distance={:.2f}, horizon_angle={:.1f}°, "
+                     "fov_half={:.1f}°, base_visible={:.1f}°",
+                     distance, horizon_angle_deg, fov_half, base_visible_angle);
 
         // Clamp to Web Mercator valid bounds (-85.0511 to 85.0511)
         const double min_lat = std::max(-85.0, static_cast<double>(lat - lat_range / 2.0f));
         const double max_lat = std::min(85.0, static_cast<double>(lat + lat_range / 2.0f));
-        const double min_lon = static_cast<double>(lon - lon_range / 2.0f);
-        const double max_lon = static_cast<double>(lon + lon_range / 2.0f);
+
+        // Calculate longitude bounds
+        double min_lon = static_cast<double>(lon - lon_range / 2.0f);
+        double max_lon = static_cast<double>(lon + lon_range / 2.0f);
+
+        // CRITICAL FIX: Handle date line wraparound
+        // If bounds exceed [-180, 180], we're crossing the date line
+        // Instead of clamping (which loses coverage), expand to full longitude range
+        bool crosses_dateline = (min_lon < -180.0 || max_lon > 180.0);
+
+        if (crosses_dateline) {
+            // View crosses date line - request full longitude range to ensure coverage
+            // This is acceptable at typical viewing distances where we see ~hemisphere
+            spdlog::debug("Date line crossing detected, using full longitude range");
+            min_lon = -180.0;
+            max_lon = 180.0;
+        } else {
+            // Normal case - just clamp to valid range
+            min_lon = std::max(-180.0, std::min(180.0, min_lon));
+            max_lon = std::max(-180.0, std::min(180.0, max_lon));
+        }
 
         spdlog::debug("Camera distance: {:.1f}, visible bounds: lat[ {:.2f}, {:.2f} ] lon[ {:.2f}, {:.2f} ]",
                     distance, min_lat, max_lat, min_lon, max_lon);
