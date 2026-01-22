@@ -273,11 +273,12 @@ GeographicBounds CoordinateMapper::CalculateVisibleGeographicBounds(
     glm::vec3 camera_pos = camera_world.position;
     float distance = glm::length(camera_pos);
 
-    // For orbital camera: look direction is toward origin
-    glm::vec3 look_dir = -glm::normalize(camera_pos);
+    // For orbital camera: camera looks toward origin
+    // The point we're viewing is on the near side of the sphere, in the direction of the camera from origin
+    glm::vec3 view_point = glm::normalize(camera_pos) * globe_radius;
 
-    // Convert look direction to geographic coordinates
-    Geographic center = CartesianToGeographic(look_dir * globe_radius);
+    // Convert to geographic coordinates
+    Geographic center = CartesianToGeographic(view_point);
 
     // Calculate visible angular extent based on distance and FOV
     // Horizon angle: angle from camera to tangent of sphere
