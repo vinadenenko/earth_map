@@ -16,6 +16,8 @@
 #include <string>
 #include <cstdint>
 
+#include <earth_map/data/tile_loader.h>
+
 namespace earth_map {
 
 // Forward declarations
@@ -51,6 +53,9 @@ struct Configuration {
     
     /** Enable performance monitoring */
     bool enable_performance_monitoring = true;
+
+    /** Tile provider for loading tiles */
+    std::shared_ptr<TileProvider> tile_provider;
 };
 
 /**

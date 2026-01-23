@@ -20,66 +20,117 @@
 namespace earth_map {
 
 /**
- * @brief Tile provider configuration
+ * @brief Authentication types for tile providers
  */
-struct TileProvider {
-    /** Provider name */
-    std::string name;
-    
-    /** Base URL template (use {x}, {y}, {z} placeholders) */
-    std::string url_template;
-    
-    /** Available subdomains for load balancing */
-    std::string subdomains;
-    
-    /** Minimum zoom level */
-    std::int32_t min_zoom = 0;
-    
-    /** Maximum zoom level */
-    std::int32_t max_zoom = 18;
-    
-    /** Image format */
-    std::string format = "png";
-    
-    /** Attribution text */
-    std::string attribution;
-    
-    /** User agent string */
-    std::string user_agent = "EarthMap/1.0";
-    
-    /** API key (if required) */
-    std::string api_key;
-    
-    /** Authentication type */
-    enum class AuthType {
-        NONE,       ///< No authentication
-        API_KEY,    ///< API key in URL
-        BEARER,     ///< Bearer token
-        BASIC       ///< Basic authentication
-    } auth_type = AuthType::NONE;
-    
-    /** Custom headers */
-    std::vector<std::pair<std::string, std::string>> custom_headers;
-    
-    /** Request timeout in seconds */
-    std::uint32_t timeout = 30;
-    
-    /** Maximum retry attempts */
-    std::uint32_t max_retries = 3;
-    
-    /** Retry delay in milliseconds */
-    std::uint32_t retry_delay = 1000;
-    
+enum class AuthType {
+    NONE,       ///< No authentication
+    API_KEY,    ///< API key in URL
+    BEARER,     ///< Bearer token
+    BASIC       ///< Basic authentication
+};
+
+/**
+ * @brief Abstract base class for tile providers
+ */
+class TileProvider {
+public:
+    TileProvider() = default;
+    virtual ~TileProvider() = default;
+
     /**
      * @brief Build URL for specific tile
      */
-    std::string BuildTileURL(const TileCoordinates& coords) const;
-    
+    virtual std::string BuildTileURL(const TileCoordinates& coords) const = 0;
+
     /**
      * @brief Get headers for tile request
      */
-    std::vector<std::pair<std::string, std::string>> GetHeaders() const;
+    virtual std::vector<std::pair<std::string, std::string>> GetHeaders() const { return {}; }
+
+    /**
+     * @brief Get attribution text
+     */
+    virtual std::string GetAttribution() const { return ""; }
+
+    /**
+     * @brief Get provider name
+     */
+    virtual std::string GetName() const { return ""; }
+
+    /**
+     * @brief Get minimum zoom level
+     */
+    virtual std::int32_t GetMinZoom() const { return 0; }
+
+    /**
+     * @brief Get maximum zoom level
+     */
+    virtual std::int32_t GetMaxZoom() const { return 18; }
+
+    /**
+     * @brief Get image format
+     */
+    virtual std::string GetFormat() const { return "png"; }
+
+    /**
+     * @brief Get user agent
+     */
+    virtual std::string GetUserAgent() const { return "EarthMap/1.0"; }
+
+    /**
+     * @brief Get timeout
+     */
+    virtual std::uint32_t GetTimeout() const { return 30; }
+
+    /**
+     * @brief Get max retries
+     */
+    virtual std::uint32_t GetMaxRetries() const { return 3; }
+
+    /**
+     * @brief Get retry delay
+     */
+    virtual std::uint32_t GetRetryDelay() const { return 1000; }
 };
+
+/**
+ * @brief Basic XYZ tile provider for simple URL templates
+ */
+class BasicXYZTileProvider : public TileProvider {
+public:
+    BasicXYZTileProvider(const std::string& name,
+                        const std::string& url_template,
+                        const std::string& subdomains = "",
+                        std::int32_t min_zoom = 0,
+                        std::int32_t max_zoom = 18,
+                        const std::string& format = "png",
+                        const std::vector<std::pair<std::string, std::string>>& custom_headers = {},
+                        AuthType auth_type = AuthType::NONE,
+                        const std::string& api_key = "",
+                        const std::string& user_agent = "EarthMap/1.0");
+
+    std::string BuildTileURL(const TileCoordinates& coords) const override;
+    std::vector<std::pair<std::string, std::string>> GetHeaders() const override;
+    std::string GetAttribution() const override;
+    std::int32_t GetMinZoom() const override;
+    std::int32_t GetMaxZoom() const override;
+    std::string GetFormat() const override;
+    std::string GetName() const override;
+
+private:
+    std::string name_;
+    std::string url_template_;
+    std::string subdomains_;
+    std::int32_t min_zoom_;
+    std::int32_t max_zoom_;
+    std::string format_;
+    std::vector<std::pair<std::string, std::string>> custom_headers_;
+    AuthType auth_type_;
+    std::string api_key_;
+    std::string user_agent_;
+};
+
+
 
 /**
  * @brief Load operation result
@@ -255,7 +306,7 @@ public:
      * @param provider Tile provider configuration
      * @return true if provider was added, false otherwise
      */
-    virtual bool AddProvider(const TileProvider& provider) = 0;
+    virtual bool AddProvider(std::shared_ptr<TileProvider> provider) = 0;
     
     /**
      * @brief Remove tile provider
@@ -410,35 +461,12 @@ std::unique_ptr<TileLoader> CreateTileLoader(const TileLoaderConfig& config = {}
  * @brief Predefined tile providers
  */
 namespace TileProviders {
-    /**
-     * @brief OpenStreetMap standard tiles
-     */
-    extern const TileProvider OpenStreetMap;
-    
-    /**
-     * @brief OpenStreetMap humanitarian tiles
-     */
-    extern const TileProvider OpenStreetMapHumanitarian;
-    
-    /**
-     * @brief Stamen terrain tiles
-     */
-    extern const TileProvider StamenTerrain;
-    
-    /**
-     * @brief Stamen watercolor tiles
-     */
-    extern const TileProvider StamenWatercolor;
-    
-    /**
-     * @brief CartoDB positron tiles
-     */
-    extern const TileProvider CartoDBPositron;
-    
-    /**
-     * @brief CartoDB dark matter tiles
-     */
-    extern const TileProvider CartoDBDarkMatter;
-}
+
+extern std::shared_ptr<TileProvider> OpenStreetMap;
+extern std::shared_ptr<TileProvider> OpenStreetMapHumanitarian;
+extern std::shared_ptr<TileProvider> StamenTerrain;
+extern std::shared_ptr<TileProvider> CartoDBPositron;
+
+} // namespace TileProviders
 
 } // namespace earth_map

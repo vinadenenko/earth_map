@@ -189,8 +189,7 @@ TEST_F(TileManagementTest, TileLoaderProviders) {
     // Test getting a provider
     const TileProvider* provider = loader->GetProvider("OpenStreetMap");
     ASSERT_NE(provider, nullptr);
-    EXPECT_EQ(provider->name, "OpenStreetMap");
-    EXPECT_FALSE(provider->url_template.empty());
+    EXPECT_EQ(provider->GetName(), "OpenStreetMap");
 }
 
 TEST_F(TileManagementTest, TileLoadSynchronous) {

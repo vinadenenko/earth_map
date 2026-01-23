@@ -184,6 +184,15 @@ bool EarthMapImpl::InitializeSubsystems() {
         auto tile_loader = std::shared_ptr<TileLoader>(CreateTileLoader().release());
         tile_loader->Initialize({});
 
+        // Set tile provider
+        if (config_.tile_provider) {
+            tile_loader->AddProvider(config_.tile_provider);
+            tile_loader->SetDefaultProvider(config_.tile_provider->GetName());
+        } else {
+            tile_loader->AddProvider(TileProviders::OpenStreetMap);
+            tile_loader->SetDefaultProvider("OpenStreetMap");
+        }
+
         texture_coordinator_ = std::make_unique<TileTextureCoordinator>(
             tile_cache,
             tile_loader,
