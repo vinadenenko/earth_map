@@ -49,7 +49,7 @@ public:
     bool Initialize(const TileLoaderConfig&) override { return true; }
     void SetTileCache(std::shared_ptr<TileCache>) override {}
 
-    bool AddProvider(const TileProvider&) override { return true; }
+    bool AddProvider(std::shared_ptr<TileProvider>) override { return true; }
     bool SetDefaultProvider(const std::string&) override { return true; }
     bool RemoveProvider(const std::string&) override { return false; }
     const TileProvider* GetProvider(const std::string&) const override { return nullptr; }
