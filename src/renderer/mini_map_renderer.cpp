@@ -1,6 +1,7 @@
 #include "earth_map/renderer/mini_map_renderer.h"
 #include "earth_map/core/camera_controller.h"
 #include "earth_map/constants.h"
+#include "earth_map/coordinates/coordinate_mapper.h"
 #include <algorithm>
 #include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
@@ -16,7 +17,8 @@
 namespace {
 
 // Helper function to compute ray-sphere intersection
-// Returns the intersection point closest to ray_origin, or vec3(0) if no intersection
+// Returns the farthest intersection point, or vec3(0) if no intersection
+// For visibility boundary calculation, farthest intersection represents far-side silhouette
 glm::vec3 RaySphereIntersection(const glm::vec3& ray_origin, const glm::vec3& ray_dir,
                                const glm::vec3& sphere_center, float sphere_radius) {
     glm::vec3 oc = ray_origin - sphere_center;
@@ -29,7 +31,8 @@ glm::vec3 RaySphereIntersection(const glm::vec3& ray_origin, const glm::vec3& ra
         return glm::vec3(0.0f); // No intersection
     }
 
-    float t = (-b - std::sqrt(discriminant)) / (2.0f * a);
+    // Use farthest intersection for visibility boundary (far-side silhouette)
+    float t = (-b + std::sqrt(discriminant)) / (2.0f * a);
     if (t < 0) {
         return glm::vec3(0.0f); // Intersection behind ray
     }
@@ -39,19 +42,22 @@ glm::vec3 RaySphereIntersection(const glm::vec3& ray_origin, const glm::vec3& ra
 
 // Convert world position to mini-map UV coordinates (equirectangular projection)
 glm::vec2 WorldToUV(const glm::vec3& world_pos) {
-    // Normalize to get point on unit sphere
+    // Use CoordinateMapper for consistent geographic conversion (matches main globe)
+    // Create World and Geographic objects directly with manual math matching CoordinateMapper
     glm::vec3 normalized = glm::normalize(world_pos);
 
-    // Latitude: asin(z), Longitude: atan2(y, x)
-    float lat = std::asin(normalized.z);
-    float lon = std::atan2(normalized.y, normalized.x);
+    // Use same conversion as CoordinateMapper::CartesianToGeographic
+    // lat = asin(y), lon = atan2(x, z) - Y is up, longitude 0° at +Z axis
+    double lat_rad = std::asin(std::clamp(normalized.y, -1.0f, 1.0f));
+    double lon_rad = std::atan2(normalized.x, normalized.z);
 
-    // Convert to UV (0-1 range)
-    float u = (lon / (2.0f * M_PI) + 1.0f) / 2.0f; // Lon from -pi to pi -> 0 to 1
-    float v = (lat / M_PI + 0.5f); // Lat from -pi/2 to pi/2 -> 0 to 1
+    double lat_deg = glm::degrees(lat_rad);
+    double lon_deg = glm::degrees(lon_rad);
 
-    // Flip V for texture coordinate system (assuming texture is loaded with V flipped)
-    v = 1.0f - v;
+    // Convert to UV (0-1 range) - longitude from -180 to 180, latitude from -90 to 90
+    // Earth texture has north at top (V=1), south at bottom (V=0)
+    float u = (lon_deg / 360.0f + 0.5f); // Lon -180 to 180 -> U 0 to 1
+    float v = (lat_deg / 180.0f + 0.5f);  // Lat -90 to 90 -> V 0 to 1 (north at top)
 
     return glm::vec2(u, v);
 }
@@ -286,17 +292,13 @@ void MiniMapRenderer::UpdateCameraPosition(CameraController* camera_controller) 
     // Get camera position (normalized coordinates, Earth center at origin, radius 1)
     glm::vec3 pos = camera_controller->GetPosition();
 
-    // Convert to lat/lon using spherical coordinates
-    double r = glm::length(pos);
-    if (r > 0.0) {
-        double lat = glm::degrees(std::asin(pos.z / r));
-        double lon = glm::degrees(std::atan2(pos.y, pos.x));
+    // Use CoordinateMapper for consistent geographic conversion (matches main globe)
+    using namespace coordinates;
+    World camera_world(pos);
+    Geographic camera_geo = CoordinateMapper::WorldToGeographic(camera_world, constants::rendering::NORMALIZED_GLOBE_RADIUS);
 
-        // Convert to pixel coordinates
-        camera_position_pixels_ = LatLonToPixel(lat, lon);
-    } else {
-        camera_position_pixels_ = glm::vec2(config_.width / 2.0f, config_.height / 2.0f);
-    }
+    // Convert to pixel coordinates
+    camera_position_pixels_ = LatLonToPixel(camera_geo.latitude, camera_geo.longitude);
 }
 
 
@@ -492,7 +494,9 @@ void MiniMapRenderer::RenderFrustum(float aspect_ratio) {
 glm::vec2 MiniMapRenderer::LatLonToPixel(float latitude, float longitude) const {
     // Convert lat/lon to equirectangular pixel coordinates
     float x = (longitude + 180.0f) * config_.width / 360.0f;
+    // Note: this is not ok, since we are flipping, but at least not we vertically aligned
     float y = (90.0f - latitude) * config_.height / 180.0f;
+    // float y = (latitude + 90.0f) * config_.height / 180.0f;
 
     // Clamp to valid range
     x = glm::clamp(x, 0.0f, static_cast<float>(config_.width));
