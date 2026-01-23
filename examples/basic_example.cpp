@@ -5,6 +5,7 @@
 #include <exception>
 #include <chrono>
 #include <thread>
+#include <iomanip>
 
 // Include GLEW before GLFW to avoid conflicts
 #include <GL/glew.h>
@@ -15,6 +16,8 @@
 #include <earth_map/constants.h>
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/platform/library_info.h>
+#include <earth_map/coordinates/coordinate_mapper.h>
+#include <earth_map/coordinates/coordinate_spaces.h>
 #include <spdlog/spdlog.h>
 #include <glm/glm.hpp>
 #include <algorithm>
@@ -172,6 +175,36 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mod
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
+            // Convert click to geographic coordinates on left mouse press
+            if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT) {
+                // Get screen dimensions for viewport
+                int width, height;
+                glfwGetWindowSize(window, &width, &height);
+                glm::ivec4 viewport(0, 0, width, height);
+
+                // Get camera matrices
+                float aspect_ratio = static_cast<float>(width) / height;
+                auto view_matrix = camera->GetViewMatrix();
+                auto proj_matrix = camera->GetProjectionMatrix(aspect_ratio);
+
+                // Get mouse position
+                double mouse_x, mouse_y;
+                glfwGetCursorPos(window, &mouse_x, &mouse_y);
+
+                // Convert screen coordinates (flip Y for OpenGL: GLFW Y=0 at top, OpenGL Y=0 at bottom)
+                earth_map::coordinates::Screen screen_point(mouse_x, height - mouse_y);
+                auto geo_coords = earth_map::coordinates::CoordinateMapper::ScreenToGeographic(
+                    screen_point, view_matrix, proj_matrix, viewport, 1.0f);
+
+                // Note we have a very huge distorsion in latitude (to poles)
+                if (geo_coords) {
+                    std::cout << "Clicked location: Lat " << std::fixed << std::setprecision(4)
+                              << geo_coords->latitude << "°, Lon " << geo_coords->longitude << "°" << std::endl;
+                } else {
+                    std::cout << "Click did not hit the globe" << std::endl;
+                }
+            }
+
             // Create InputEvent and forward to camera
             earth_map::InputEvent event;
 
@@ -192,8 +225,6 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mod
             camera->ProcessInput(event);
         }
     }
-
-    (void)window;
 }
 
 // Mouse motion callback
