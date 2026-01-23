@@ -95,7 +95,7 @@ file(GLOB_RECURSE EARTH_MAP_HEADERS
 file(GLOB_RECURSE SHADER_SOURCES "src/shaders/*.vert" "src/shaders/*.frag" "src/shaders/*.geom" "src/shaders/*.comp")
 
 # Create the main library
-add_library(earth_map ${EARTH_MAP_SOURCES} ${SHADER_SOURCES})
+add_library(earth_map ${EARTH_MAP_SOURCES} ${EARTH_MAP_HEADERS} ${SHADER_SOURCES})
 
 # Set library properties
 set_target_properties(earth_map PROPERTIES

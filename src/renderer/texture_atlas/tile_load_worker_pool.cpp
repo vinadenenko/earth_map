@@ -176,8 +176,12 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
             spdlog::warn("Loaded tile {} but data is null", coords.GetKey());
             return;
         }
-
         tile_data = *load_result.tile_data;
+
+        // TODO: hardcoded 'loaded', basically we are loaded, but it is weird
+        // Think about another loading indication
+        // E.g. separated from disk/network loading, because now we have 'bool success' (http status) and 'bool loaded'
+        tile_data.loaded = true;
 
         // Put in cache for future use
         if (cache_ && tile_data.loaded) {
