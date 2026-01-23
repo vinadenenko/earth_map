@@ -10,6 +10,7 @@
 #include <earth_map/math/tile_mathematics.h>
 #include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
 #include <earth_map/coordinates/coordinate_mapper.h>
+#include <earth_map/constants.h>
 #include <spdlog/spdlog.h>
 #include <GL/glew.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -158,10 +159,14 @@ public:
             spdlog::warn("=== TILE VISIBILITY DEBUG ===");
             spdlog::warn("Camera position: ({:.2f}, {:.2f}, {:.2f})",
                 camera_position.x, camera_position.y, camera_position.z);
-            glm::vec3 look_dir = -glm::normalize(camera_position);
-            float look_lat = glm::degrees(std::asin(std::clamp(look_dir.y, -1.0f, 1.0f)));
-            float look_lon = glm::degrees(std::atan2(look_dir.x, look_dir.z));
-            spdlog::warn("Camera looks at: lon={:.1f}°, lat={:.1f}°", look_lon, look_lat);
+
+            // Use CoordinateMapper for proper geographic conversion (single source of truth)
+            using namespace coordinates;
+            World camera_world(camera_position);
+            Geographic camera_geo = CoordinateMapper::WorldToGeographic(camera_world, constants::rendering::NORMALIZED_GLOBE_RADIUS);
+            spdlog::warn("Camera geographic position: lon={:.1f}°, lat={:.1f}°",
+                camera_geo.longitude, camera_geo.latitude);
+
             spdlog::warn("Visible bounds: lon[{:.1f}, {:.1f}], lat[{:.1f}, {:.1f}]",
                 visible_bounds.min.x, visible_bounds.max.x,
                 visible_bounds.min.y, visible_bounds.max.y);
