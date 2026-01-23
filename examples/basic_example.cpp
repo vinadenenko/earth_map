@@ -291,6 +291,17 @@ int main() {
         config.screen_width = window_width;
         config.screen_height = window_height;
         config.enable_performance_monitoring = true;
+
+        // Example usage of custom XYZ tile provider
+        auto googleProvider = std::make_shared<earth_map::BasicXYZTileProvider>(
+            "GoogleMaps",
+            "https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=YOUR_API_KEY",
+            "0123",  // Subdomains for load balancing
+            0,       // Min zoom
+            21,      // Max zoom
+            "png"    // Format
+            );
+        config.tile_provider = googleProvider;
         
         auto earth_map_instance = earth_map::EarthMap::Create(config);
         if (!earth_map_instance) {

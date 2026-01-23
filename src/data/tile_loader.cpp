@@ -24,140 +24,37 @@ namespace earth_map {
 
 // Predefined tile providers
 namespace TileProviders {
-    
-const TileProvider OpenStreetMap = {
-    .name = "OpenStreetMap",
-    .url_template = "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    .subdomains = "",
-    .min_zoom = 0,
-    .max_zoom = 19,
-    .format = "png",
-    .attribution = "© OpenStreetMap contributors",
-    .user_agent = "EarthMap/1.0",
-    .api_key = "",
-    .custom_headers = {}
-};
 
-const TileProvider OpenStreetMapHumanitarian = {
-    .name = "OpenStreetMapHumanitarian",
-    .url_template = "https://tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
-    .subdomains = "abc",
-    .min_zoom = 0,
-    .max_zoom = 19,
-    .format = "png",
-    .attribution = "© OpenStreetMap contributors, Tiles style by Humanitarian OpenStreetMap Team",
-    .user_agent = "EarthMap/1.0",
-    .api_key = "",
-    .custom_headers = {}
-};
+std::shared_ptr<TileProvider> CreateOpenStreetMap() {
+    return std::make_shared<BasicXYZTileProvider>(
+        "OpenStreetMap", "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    );
+}
 
-const TileProvider StamenTerrain = {
-    .name = "StamenTerrain",
-    .url_template = "https://stamen-tiles-{s}.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png",
-    .subdomains = "abcd",
-    .min_zoom = 0,
-    .max_zoom = 18,
-    .format = "png",
-    .attribution = "Map tiles by Stamen Design, under CC BY 3.0. Data by OpenStreetMap, under ODbL",
-    .user_agent = "EarthMap/1.0",
-    .api_key = "",
-    .custom_headers = {}
-};
+std::shared_ptr<TileProvider> CreateOpenStreetMapHumanitarian() {
+    return std::make_shared<BasicXYZTileProvider>(
+        "OpenStreetMapHumanitarian", "https://tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", "abc"
+    );
+}
 
-const TileProvider StamenWatercolor = {
-    .name = "StamenWatercolor",
-    .url_template = "https://stamen-tiles-{s}.a.ssl.fastly.net/watercolor/{z}/{x}/{y}.jpg",
-    .subdomains = "abcd",
-    .min_zoom = 0,
-    .max_zoom = 18,
-    .format = "jpg",
-    .attribution = "Map tiles by Stamen Design, under CC BY 3.0. Data by OpenStreetMap, under CC BY SA",
-    .user_agent = "EarthMap/1.0",
-    .api_key = "",
-    .custom_headers = {}
-};
+std::shared_ptr<TileProvider> CreateStamenTerrain() {
+    return std::make_shared<BasicXYZTileProvider>(
+        "StamenTerrain", "https://stamen-tiles-{s}.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png", "abcd", 0, 18
+    );
+}
 
-const TileProvider CartoDBPositron = {
-    .name = "CartoDBPositron",
-    .url_template = "https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png",
-    .subdomains = "abcd",
-    .min_zoom = 0,
-    .max_zoom = 18,
-    .format = "png",
-    .attribution = "© OpenStreetMap contributors © CARTO",
-    .user_agent = "EarthMap/1.0",
-    .api_key = "",
-    .custom_headers = {}
-};
+std::shared_ptr<TileProvider> CreateCartoDBPositron() {
+    return std::make_shared<BasicXYZTileProvider>(
+        "CartoDBPositron", "https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png", "abcd", 0, 18
+    );
+}
 
-const TileProvider CartoDBDarkMatter = {
-    .name = "CartoDBDarkMatter",
-    .url_template = "https://cartodb-basemaps-{s}.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png",
-    .subdomains = "abcd",
-    .min_zoom = 0,
-    .max_zoom = 18,
-    .format = "png",
-    .attribution = "© OpenStreetMap contributors © CARTO",
-    .user_agent = "EarthMap/1.0",
-    .api_key = "",
-    .custom_headers = {}
-};
+std::shared_ptr<TileProvider> OpenStreetMap = CreateOpenStreetMap();
+std::shared_ptr<TileProvider> OpenStreetMapHumanitarian = CreateOpenStreetMapHumanitarian();
+std::shared_ptr<TileProvider> StamenTerrain = CreateStamenTerrain();
+std::shared_ptr<TileProvider> CartoDBPositron = CreateCartoDBPositron();
 
 } // namespace TileProviders
-
-// TileProvider implementation
-std::string TileProvider::BuildTileURL(const TileCoordinates& coords) const {
-    std::string url = url_template;
-    
-    // Replace placeholders
-    url = std::regex_replace(url, std::regex("\\{x\\}"), std::to_string(coords.x));
-    url = std::regex_replace(url, std::regex("\\{y\\}"), std::to_string(coords.y));
-    url = std::regex_replace(url, std::regex("\\{z\\}"), std::to_string(coords.zoom));
-    
-    // Replace subdomain placeholder
-    if (!subdomains.empty()) {
-        char subdomain = TileMathematics::GetTileSubdomain(coords, subdomains);
-        url = std::regex_replace(url, std::regex("\\{s\\}"), std::string(1, subdomain));
-    }
-    
-    // Add API key if needed
-    if (auth_type == AuthType::API_KEY && !api_key.empty()) {
-        url += "?api_key=" + api_key;
-    }
-    
-    return url;
-}
-
-std::vector<std::pair<std::string, std::string>> TileProvider::GetHeaders() const {
-    std::vector<std::pair<std::string, std::string>> headers;
-    
-    if (!user_agent.empty()) {
-        headers.emplace_back("User-Agent", user_agent);
-    }
-    
-    // Add authentication headers
-    switch (auth_type) {
-        case AuthType::BEARER:
-            if (!api_key.empty()) {
-                headers.emplace_back("Authorization", "Bearer " + api_key);
-            }
-            break;
-        case AuthType::BASIC:
-            if (!api_key.empty()) {
-                headers.emplace_back("Authorization", "Basic " + api_key);
-            }
-            break;
-        case AuthType::API_KEY:
-        case AuthType::NONE:
-        default:
-            break;
-    }
-    
-    // Add custom headers
-    headers.insert(headers.end(), custom_headers.begin(), custom_headers.end());
-    
-    return headers;
-}
 
 /**
  * @brief Download task for thread pool
@@ -273,8 +170,8 @@ public:
     
     bool Initialize(const TileLoaderConfig& config) override;
     void SetTileCache(std::shared_ptr<TileCache> cache) override;
-    
-    bool AddProvider(const TileProvider& provider) override;
+
+    bool AddProvider(std::shared_ptr<TileProvider> provider) override;
     bool RemoveProvider(const std::string& name) override;
     const TileProvider* GetProvider(const std::string& name) const override;
     std::vector<std::string> GetProviderNames() const override;
@@ -312,7 +209,7 @@ public:
 private:
     TileLoaderConfig config_;
     std::shared_ptr<TileCache> tile_cache_;
-    std::map<std::string, TileProvider> providers_;
+    std::unordered_map<std::string, std::shared_ptr<TileProvider>> providers_;
     std::string default_provider_{"OpenStreetMap"};
     TileLoaderStats stats_;
     ThreadPool thread_pool_;
@@ -368,19 +265,25 @@ void BasicTileLoader::SetTileCache(std::shared_ptr<TileCache> cache) {
     tile_cache_ = cache;
 }
 
-bool BasicTileLoader::AddProvider(const TileProvider& provider) {
-    if (provider.name.empty()) {
+bool BasicTileLoader::AddProvider(std::shared_ptr<TileProvider> provider) {
+    if (!provider) {
+        spdlog::warn("Attempted to add null provider");
+        return false;
+    }
+    
+    std::string name = provider->GetName();
+    if (name.empty()) {
         spdlog::warn("Attempted to add provider with empty name");
         return false;
     }
     
-    providers_[provider.name] = provider;
+    providers_[name] = std::move(provider);
     
     if (default_provider_.empty()) {
-        default_provider_ = provider.name;
+        default_provider_ = name;
     }
     
-    spdlog::info("Added tile provider: {}", provider.name);
+    spdlog::info("Added tile provider: {}", name);
     return true;
 }
 
@@ -403,7 +306,7 @@ bool BasicTileLoader::RemoveProvider(const std::string& name) {
 
 const TileProvider* BasicTileLoader::GetProvider(const std::string& name) const {
     auto it = providers_.find(name.empty() ? default_provider_ : name);
-    return (it != providers_.end()) ? &it->second : nullptr;
+    return (it != providers_.end()) ? it->second.get() : nullptr;
 }
 
 std::vector<std::string> BasicTileLoader::GetProviderNames() const {
@@ -624,9 +527,9 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     }
     
     // Validate coordinates
-    if (!TileValidator::IsValidTile(coordinates) || 
-        coordinates.zoom < provider->min_zoom || 
-        coordinates.zoom > provider->max_zoom) {
+    if (!TileValidator::IsValidTile(coordinates) ||
+        coordinates.zoom < provider->GetMinZoom() ||
+        coordinates.zoom > provider->GetMaxZoom()) {
         result.error_message = "Invalid tile coordinates";
         UpdateStats(result);
         return result;
@@ -639,8 +542,8 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     // Download tile
     std::vector<std::uint8_t> data;
     std::uint32_t status_code;
-    
-    for (std::uint32_t attempt = 0; attempt <= provider->max_retries; ++attempt) {
+
+    for (std::uint32_t attempt = 0; attempt <= provider->GetMaxRetries(); ++attempt) {
         result.retry_count = attempt;
         
         if (DownloadTile(url, headers, data, status_code)) {
@@ -648,15 +551,15 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
             result.status_code = status_code;
             break;
         }
-        
-        if (attempt < provider->max_retries) {
-            spdlog::warn("Tile download failed, retrying ({}/{}): {}/{}/{}", 
-                        attempt + 1, provider->max_retries,
+
+        if (attempt < provider->GetMaxRetries()) {
+            spdlog::warn("Tile download failed, retrying ({}/{}): {}/{}/{}",
+                        attempt + 1, provider->GetMaxRetries(),
                         coordinates.x, coordinates.y, coordinates.zoom);
             
             // Wait before retry
             std::this_thread::sleep_for(
-                std::chrono::milliseconds(provider->retry_delay));
+                std::chrono::milliseconds(provider->GetRetryDelay()));
         }
     }
     
@@ -674,7 +577,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     tile_data->metadata.file_size = data.size();
     tile_data->metadata.last_modified = std::chrono::system_clock::now();
     tile_data->metadata.last_access = std::chrono::system_clock::now();
-    tile_data->metadata.content_type = "image/" + provider->format;
+    tile_data->metadata.content_type = "image/" + provider->GetFormat();
     tile_data->metadata.checksum = 0; // TODO: Calculate actual checksum
     tile_data->data = std::move(data);
     
@@ -805,5 +708,97 @@ void BasicTileLoader::UpdateStats(const TileLoadResult& result) {
         stats_.failed_requests++;
     }
 }
+
+// BasicXYZTileProvider implementation
+BasicXYZTileProvider::BasicXYZTileProvider(const std::string& name,
+                                           const std::string& url_template,
+                                           const std::string& subdomains,
+                                           std::int32_t min_zoom,
+                                           std::int32_t max_zoom,
+                                           const std::string& format,
+                                           const std::vector<std::pair<std::string, std::string>>& custom_headers,
+                                           AuthType auth_type,
+                                           const std::string& api_key,
+                                           const std::string& user_agent)
+    : name_(name)
+    , url_template_(url_template)
+    , subdomains_(subdomains)
+    , min_zoom_(min_zoom)
+    , max_zoom_(max_zoom)
+    , format_(format)
+    , custom_headers_(custom_headers)
+    , auth_type_(auth_type)
+    , api_key_(api_key)
+    , user_agent_(user_agent) {}
+
+std::string BasicXYZTileProvider::BuildTileURL(const TileCoordinates& coords) const {
+    std::string url = url_template_;
+
+    // Replace placeholders
+    url = std::regex_replace(url, std::regex("\\{x\\}"), std::to_string(coords.x));
+    url = std::regex_replace(url, std::regex("\\{y\\}"), std::to_string(coords.y));
+    url = std::regex_replace(url, std::regex("\\{z\\}"), std::to_string(coords.zoom));
+
+    // Replace subdomain placeholder
+    if (!subdomains_.empty()) {
+        char subdomain = TileMathematics::GetTileSubdomain(coords, subdomains_);
+        url = std::regex_replace(url, std::regex("\\{s\\}"), std::string(1, subdomain));
+    }
+
+    return url;
+}
+
+std::vector<std::pair<std::string, std::string>> BasicXYZTileProvider::GetHeaders() const {
+    std::vector<std::pair<std::string, std::string>> headers;
+
+    if (!user_agent_.empty()) {
+        headers.emplace_back("User-Agent", user_agent_);
+    }
+
+    // Add authentication headers
+    switch (auth_type_) {
+        case AuthType::BEARER:
+            if (!api_key_.empty()) {
+                headers.emplace_back("Authorization", "Bearer " + api_key_);
+            }
+            break;
+        case AuthType::BASIC:
+            if (!api_key_.empty()) {
+                headers.emplace_back("Authorization", "Basic " + api_key_);
+            }
+            break;
+        case AuthType::API_KEY:
+        case AuthType::NONE:
+        default:
+            break;
+    }
+
+    // Add custom headers
+    headers.insert(headers.end(), custom_headers_.begin(), custom_headers_.end());
+
+    return headers;
+}
+
+std::string BasicXYZTileProvider::GetAttribution() const {
+    return "";  // No default attribution
+}
+
+std::int32_t BasicXYZTileProvider::GetMinZoom() const {
+    return min_zoom_;
+}
+
+std::int32_t BasicXYZTileProvider::GetMaxZoom() const {
+    return max_zoom_;
+}
+
+std::string BasicXYZTileProvider::GetFormat() const {
+    return format_;
+}
+
+std::string BasicXYZTileProvider::GetName() const {
+    return name_;
+}
+
+
 
 } // namespace earth_map
