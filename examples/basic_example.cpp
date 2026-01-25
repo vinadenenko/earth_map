@@ -177,13 +177,13 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mod
         if (camera) {
             // Convert click to geographic coordinates on left mouse press
             if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT) {
-                // Get screen dimensions for viewport
-                int width, height;
-                glfwGetWindowSize(window, &width, &height);
-                glm::ivec4 viewport(0, 0, width, height);
+                // Use actual OpenGL viewport (handles retina/HiDPI correctly)
+                GLint gl_viewport[4];
+                glGetIntegerv(GL_VIEWPORT, gl_viewport);
+                glm::ivec4 viewport(gl_viewport[0], gl_viewport[1], gl_viewport[2], gl_viewport[3]);
 
                 // Get camera matrices
-                float aspect_ratio = static_cast<float>(width) / height;
+                float aspect_ratio = static_cast<float>(gl_viewport[2]) / gl_viewport[3];
                 auto view_matrix = camera->GetViewMatrix();
                 auto proj_matrix = camera->GetProjectionMatrix(aspect_ratio);
 
@@ -191,8 +191,17 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mod
                 double mouse_x, mouse_y;
                 glfwGetCursorPos(window, &mouse_x, &mouse_y);
 
+                // Scale mouse coordinates for retina/HiDPI displays
+                int window_width, window_height;
+                glfwGetWindowSize(window, &window_width, &window_height);
+                double scale_x = static_cast<double>(gl_viewport[2]) / window_width;
+                double scale_y = static_cast<double>(gl_viewport[3]) / window_height;
+
                 // Convert screen coordinates (flip Y for OpenGL: GLFW Y=0 at top, OpenGL Y=0 at bottom)
-                earth_map::coordinates::Screen screen_point(mouse_x, height - mouse_y);
+                earth_map::coordinates::Screen screen_point(
+                    mouse_x * scale_x,
+                    (window_height - mouse_y) * scale_y
+                );
                 auto geo_coords = earth_map::coordinates::CoordinateMapper::ScreenToGeographic(
                     screen_point, view_matrix, proj_matrix, viewport, 1.0f);
 

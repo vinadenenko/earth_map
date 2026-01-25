@@ -1,7 +1,8 @@
 #include <earth_map/renderer/camera.h>
 #include <earth_map/earth_map.h>
 #include <earth_map/constants.h>
-#include <earth_map/math/coordinate_system.h>
+#include <earth_map/coordinates/coordinate_mapper.h>
+#include <earth_map/coordinates/coordinate_spaces.h>
 #include <earth_map/math/geodetic_calculations.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -77,10 +78,9 @@ struct CameraAnimation {
  */
 class CameraImpl : public Camera {
 public:
-    explicit CameraImpl(const Configuration& config) 
+    explicit CameraImpl(const Configuration& config)
         : config_(config) {
         spdlog::info("Creating camera implementation");
-        coordinate_system_ = std::make_unique<CoordinateSystem>();
         Reset();
     }
     
@@ -113,8 +113,10 @@ public:
     }
     
     void SetGeographicPosition(double longitude, double latitude, double altitude) override {
-        auto coords = coordinate_system_->GeographicToECEF({latitude, longitude, altitude});
-        position_ = coords;
+        using namespace earth_map::coordinates;
+        Geographic geo(latitude, longitude, altitude);
+        World world = CoordinateMapper::GeographicToWorld(geo);
+        position_ = world.position;
         UpdateViewMatrix();
     }
     
@@ -128,8 +130,10 @@ public:
     }
     
     void SetGeographicTarget(double longitude, double latitude, double altitude) override {
-        auto coords = coordinate_system_->GeographicToECEF({latitude, longitude, altitude});
-        SetTarget(coords); // Use SetTarget to also update orientation
+        using namespace earth_map::coordinates;
+        Geographic geo(latitude, longitude, altitude);
+        World world = CoordinateMapper::GeographicToWorld(geo);
+        SetTarget(world.position); // Use SetTarget to also update orientation
     }
     
     void SetTarget(const glm::vec3& target) override {
@@ -322,10 +326,12 @@ public:
     }
     
     void AnimateToGeographic(double longitude, double latitude, double altitude, float duration) override {
-        auto coords = coordinate_system_->GeographicToECEF({latitude, longitude, altitude});
-        
+        using namespace earth_map::coordinates;
+        Geographic geo(latitude, longitude, altitude);
+        World world = CoordinateMapper::GeographicToWorld(geo);
+
         animation_.start_position = position_;
-        animation_.target_position = coords;
+        animation_.target_position = world.position;
         animation_.start_orientation = glm::vec3(heading_, pitch_, roll_);
         animation_.duration = duration;
         animation_.elapsed = 0.0f;
@@ -399,8 +405,7 @@ public:
 protected:
     Configuration config_;
     bool initialized_ = false;
-    std::unique_ptr<CoordinateSystem> coordinate_system_;
-    
+
     // Camera position and orientation
     glm::vec3 position_{0.0f};
     glm::vec3 target_{0.0f};

@@ -8,8 +8,18 @@
 #include <algorithm>
 #include <stdexcept>
 #include <spdlog/spdlog.h>
+#include <glm/glm.hpp>
 
 namespace earth_map {
+
+// Helper constants and functions (moved from coordinate_system.h)
+namespace {
+    constexpr double WGS84_SEMI_MAJOR_AXIS = 6378137.0;
+
+    inline double DegreesToRadians(double degrees) {
+        return glm::radians(degrees);
+    }
+}
 
 // QuadtreeKey implementation
 
@@ -92,7 +102,7 @@ bool QuadtreeKey::IsValid() const {
 
 // TileMathematics implementation
 
-TileCoordinates TileMathematics::GeographicToTile(const GeographicCoordinates& geo, int32_t zoom) {
+TileCoordinates TileMathematics::GeographicToTile(const Geographic& geo, int32_t zoom) {
     if (!TileValidator::IsSupportedZoom(zoom)) {
         throw std::invalid_argument("Unsupported zoom level");
     }
@@ -101,7 +111,7 @@ TileCoordinates TileMathematics::GeographicToTile(const GeographicCoordinates& g
         ProjectionRegistry::GetProjection(ProjectionType::WEB_MERCATOR)
     );
 
-    const ProjectedCoordinates proj = web_mercator->Project(geo);
+    const Projected proj = web_mercator->Project(geo);
     const double normalized_x = (proj.x + WebMercatorProjection::WEB_MERCATOR_HALF_WORLD) /
                                WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT;
     const double normalized_y = (proj.y + WebMercatorProjection::WEB_MERCATOR_HALF_WORLD) /
@@ -127,15 +137,15 @@ TileCoordinates TileMathematics::GeographicToTile(const GeographicCoordinates& g
                           zoom);
 }
 
-GeographicCoordinates TileMathematics::TileToGeographic(const TileCoordinates& tile) {
+Geographic TileMathematics::TileToGeographic(const TileCoordinates& tile) {
     if (!TileValidator::IsValidTile(tile)) {
         throw std::invalid_argument("Invalid tile coordinates");
     }
-    
+
     const auto web_mercator = std::static_pointer_cast<WebMercatorProjection>(
         ProjectionRegistry::GetProjection(ProjectionType::WEB_MERCATOR)
     );
-    
+
     const glm::dvec2 normalized = TileToNormalized(tile);
     // Use tile center for better round-trip precision
     const double tile_size = 1.0 / (1 << tile.zoom);
@@ -144,13 +154,13 @@ GeographicCoordinates TileMathematics::TileToGeographic(const TileCoordinates& t
         normalized.x + tile_size * 0.5,
         normalized.y - tile_size * 0.5
     );
-    
+
     const glm::dvec2 proj_coords(
         normalized_center.x * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD,
         normalized_center.y * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD
     );
-    
-    return web_mercator->Unproject(ProjectedCoordinates(proj_coords.x, proj_coords.y));
+
+    return web_mercator->Unproject(Projected(proj_coords.x, proj_coords.y));
 }
 
 BoundingBox2D TileMathematics::GetTileBounds(const TileCoordinates& tile) {
@@ -167,18 +177,18 @@ BoundingBox2D TileMathematics::GetTileBounds(const TileCoordinates& tile) {
 
     // normalized.y is north edge after OSM inversion
     // South edge is at normalized.y - tile_size
-    const ProjectedCoordinates proj_min(
+    const Projected proj_min(
         normalized.x * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD,
         (normalized.y - tile_size) * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD
     );
 
-    const ProjectedCoordinates proj_max(
+    const Projected proj_max(
         (normalized.x + tile_size) * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD,
         normalized.y * WebMercatorProjection::WEB_MERCATOR_ORIGIN_SHIFT - WebMercatorProjection::WEB_MERCATOR_HALF_WORLD
     );
-    
-    const GeographicCoordinates geo_min = web_mercator->Unproject(proj_min);
-    const GeographicCoordinates geo_max = web_mercator->Unproject(proj_max);
+
+    const Geographic geo_min = web_mercator->Unproject(proj_min);
+    const Geographic geo_max = web_mercator->Unproject(proj_max);
     
     return BoundingBox2D(
         glm::dvec2(geo_min.longitude, geo_min.latitude),
@@ -246,10 +256,10 @@ std::vector<TileCoordinates> TileMathematics::GetTilesInBounds(const BoundingBox
 
     // Convert bounds corners to tile coordinates
     const TileCoordinates min_tile = GeographicToTile(
-        GeographicCoordinates(bounds.min.y, bounds.min.x, 0.0), zoom
+        Geographic(bounds.min.y, bounds.min.x, 0.0), zoom
     );
     const TileCoordinates max_tile = GeographicToTile(
-        GeographicCoordinates(bounds.max.y, bounds.max.x, 0.0), zoom
+        Geographic(bounds.max.y, bounds.max.x, 0.0), zoom
     );
 
     if (should_log) {
@@ -395,11 +405,12 @@ double TileMathematics::CalculateGroundResolution(int32_t zoom, double latitude)
         return 0.0;
     }
     
-    const double lat_rad = CoordinateSystem::DegreesToRadians(latitude);
+    const double lat_rad = DegreesToRadians(latitude);
     const double cos_lat = std::cos(lat_rad);
-    
+
     // Web Mercator ground resolution: 2π * R * cos(lat) / (256 * 2^zoom)
-    return (2.0 * M_PI * WGS84Ellipsoid::SEMI_MAJOR_AXIS * cos_lat) / 
+    constexpr double PI = 3.14159265358979323846;
+    return (2.0 * PI * WGS84_SEMI_MAJOR_AXIS * cos_lat) /
            (256.0 * (1 << zoom));
 }
 
@@ -457,7 +468,8 @@ double TileMathematics::GetGroundResolution(int32_t zoom) {
     
     // Return ground resolution at equator for simplicity
     // This is the resolution when latitude = 0 (cos(lat) = 1)
-    return (2.0 * M_PI * WGS84Ellipsoid::SEMI_MAJOR_AXIS) / 
+    constexpr double PI = 3.14159265358979323846;
+    return (2.0 * PI * WGS84_SEMI_MAJOR_AXIS) / 
            (256.0 * (1 << zoom));
 }
 

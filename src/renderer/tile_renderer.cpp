@@ -5,7 +5,6 @@
 
 #include <earth_map/renderer/tile_renderer.h>
 #include <earth_map/renderer/globe_mesh.h>
-#include <earth_map/math/coordinate_system.h>
 #include <earth_map/math/projection.h>
 #include <earth_map/math/tile_mathematics.h>
 #include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>

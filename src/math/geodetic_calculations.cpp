@@ -7,23 +7,50 @@
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>
+#include <glm/glm.hpp>
 
 namespace earth_map {
 
+// Helper functions and constants
+namespace {
+    // WGS84 ellipsoid constants
+    constexpr double WGS84_SEMI_MAJOR_AXIS = 6378137.0;  // meters
+    constexpr double WGS84_SEMI_MINOR_AXIS = 6356752.314245;  // meters
+    constexpr double WGS84_FLATTENING = 1.0 / 298.257223563;
+
+    inline double DegreesToRadians(double degrees) {
+        return glm::radians(degrees);
+    }
+
+    inline double RadiansToDegrees(double radians) {
+        return glm::degrees(radians);
+    }
+
+    // Normalize angle to [0, 2π)
+    inline double NormalizeAngleRadians(double angle_rad) {
+        constexpr double TWO_PI = 2.0 * M_PI;
+        double normalized = std::fmod(angle_rad, TWO_PI);
+        if (normalized < 0.0) {
+            normalized += TWO_PI;
+        }
+        return normalized;
+    }
+}
+
 // GeodeticCalculator implementation
 
-double GeodeticCalculator::GeodeticCalculator::HaversineDistance(const GeographicCoordinates& point1,
-                                             const GeographicCoordinates& point2) {
+double GeodeticCalculator::GeodeticCalculator::HaversineDistance(const Geographic& point1,
+                                             const Geographic& point2) {
     const DistanceResult result = GeodeticCalculator::HaversineDistanceAndBearing(point1, point2);
     return result.distance;
 }
 
-DistanceResult GeodeticCalculator::GeodeticCalculator::HaversineDistanceAndBearing(const GeographicCoordinates& point1,
-                                                              const GeographicCoordinates& point2) {
-    const double lat1_rad = point1.LatitudeRadians();
-    const double lat2_rad = point2.LatitudeRadians();
+DistanceResult GeodeticCalculator::GeodeticCalculator::HaversineDistanceAndBearing(const Geographic& point1,
+                                                              const Geographic& point2) {
+    const double lat1_rad = DegreesToRadians(point1.latitude);
+    const double lat2_rad = DegreesToRadians(point2.latitude);
     const double delta_lat = lat2_rad - lat1_rad;
-    const double delta_lon = point2.LongitudeRadians() - point1.LongitudeRadians();
+    const double delta_lon = DegreesToRadians(point2.longitude) - DegreesToRadians(point1.longitude);
     
     const double sin_delta_lat_2 = std::sin(delta_lat / 2.0);
     const double sin_delta_lon_2 = std::sin(delta_lon / 2.0);
@@ -33,7 +60,7 @@ DistanceResult GeodeticCalculator::GeodeticCalculator::HaversineDistanceAndBeari
                      sin_delta_lon_2 * sin_delta_lon_2;
     
     const double c = 2.0 * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
-    const double distance = WGS84Ellipsoid::SEMI_MAJOR_AXIS * c;
+    const double distance = WGS84_SEMI_MAJOR_AXIS * c;
     
     // Calculate initial bearing
     const double y = std::sin(delta_lon) * std::cos(lat2_rad);
@@ -41,8 +68,8 @@ DistanceResult GeodeticCalculator::GeodeticCalculator::HaversineDistanceAndBeari
                      std::sin(lat1_rad) * std::cos(lat2_rad) * std::cos(delta_lon);
     
     double initial_bearing = std::atan2(y, x);
-    initial_bearing = CoordinateSystem::NormalizeAngleRadians(initial_bearing);
-    const double initial_bearing_deg = CoordinateSystem::RadiansToDegrees(initial_bearing);
+    initial_bearing = NormalizeAngleRadians(initial_bearing);
+    const double initial_bearing_deg = RadiansToDegrees(initial_bearing);
     
     // Calculate final bearing
     const double y_final = std::sin(delta_lon) * std::cos(lat1_rad);
@@ -50,28 +77,28 @@ DistanceResult GeodeticCalculator::GeodeticCalculator::HaversineDistanceAndBeari
                           std::sin(lat2_rad) * std::cos(lat1_rad) * std::cos(delta_lon);
     
     double final_bearing = std::atan2(y_final, x_final) + M_PI;
-    final_bearing = CoordinateSystem::NormalizeAngleRadians(final_bearing);
-    const double final_bearing_deg = CoordinateSystem::RadiansToDegrees(final_bearing);
+    final_bearing = NormalizeAngleRadians(final_bearing);
+    const double final_bearing_deg = RadiansToDegrees(final_bearing);
     
     return DistanceResult(distance, initial_bearing_deg, final_bearing_deg);
 }
 
-double GeodeticCalculator::VincentyDistance(const GeographicCoordinates& point1,
-                                           const GeographicCoordinates& point2) {
+double GeodeticCalculator::VincentyDistance(const Geographic& point1,
+                                           const Geographic& point2) {
     const DistanceResult result = VincentyDistanceAndBearing(point1, point2);
     return result.distance;
 }
 
-DistanceResult GeodeticCalculator::VincentyDistanceAndBearing(const GeographicCoordinates& point1,
-                                                             const GeographicCoordinates& point2) {
-    const double a = WGS84Ellipsoid::SEMI_MAJOR_AXIS;
-    const double b = WGS84Ellipsoid::SEMI_MINOR_AXIS;
-    const double f = WGS84Ellipsoid::FLATTENING;
+DistanceResult GeodeticCalculator::VincentyDistanceAndBearing(const Geographic& point1,
+                                                             const Geographic& point2) {
+    const double a = WGS84_SEMI_MAJOR_AXIS;
+    const double b = WGS84_SEMI_MINOR_AXIS;
+    const double f = WGS84_FLATTENING;
     
-    const double lat1_rad = point1.LatitudeRadians();
-    const double lat2_rad = point2.LatitudeRadians();
-    const double lon1_rad = point1.LongitudeRadians();
-    const double lon2_rad = point2.LongitudeRadians();
+    const double lat1_rad = DegreesToRadians(point1.latitude);
+    const double lat2_rad = DegreesToRadians(point2.latitude);
+    const double lon1_rad = DegreesToRadians(point1.longitude);
+    const double lon2_rad = DegreesToRadians(point2.longitude);
     
     const double U1 = std::atan((1.0 - f) * std::tan(lat1_rad));
     const double U2 = std::atan((1.0 - f) * std::tan(lat2_rad));
@@ -143,75 +170,75 @@ DistanceResult GeodeticCalculator::VincentyDistanceAndBearing(const GeographicCo
     const double lambda_rad = lambda;
     double initial_bearing = std::atan2(cos_U2 * std::sin(lambda_rad),
                                        cos_U1 * sin_U2 - sin_U1 * cos_U2 * std::cos(lambda_rad));
-    initial_bearing = CoordinateSystem::NormalizeAngleRadians(initial_bearing);
-    const double initial_bearing_deg = CoordinateSystem::RadiansToDegrees(initial_bearing);
+    initial_bearing = NormalizeAngleRadians(initial_bearing);
+    const double initial_bearing_deg = RadiansToDegrees(initial_bearing);
     
     // Calculate final bearing
     double final_bearing = std::atan2(cos_U1 * std::sin(lambda_rad),
                                      -sin_U1 * cos_U2 + cos_U1 * sin_U2 * std::cos(lambda_rad));
-    final_bearing = CoordinateSystem::NormalizeAngleRadians(final_bearing);
-    const double final_bearing_deg = CoordinateSystem::RadiansToDegrees(final_bearing);
+    final_bearing = NormalizeAngleRadians(final_bearing);
+    const double final_bearing_deg = RadiansToDegrees(final_bearing);
     
     return DistanceResult(distance, initial_bearing_deg, final_bearing_deg);
 }
 
-double GeodeticCalculator::InitialBearing(const GeographicCoordinates& point1,
-                                         const GeographicCoordinates& point2) {
+double GeodeticCalculator::InitialBearing(const Geographic& point1,
+                                         const Geographic& point2) {
     const DistanceResult result = GeodeticCalculator::HaversineDistanceAndBearing(point1, point2);
     return result.initial_bearing;
 }
 
-double GeodeticCalculator::FinalBearing(const GeographicCoordinates& point1,
-                                       const GeographicCoordinates& point2) {
+double GeodeticCalculator::FinalBearing(const Geographic& point1,
+                                       const Geographic& point2) {
     const DistanceResult result = GeodeticCalculator::HaversineDistanceAndBearing(point1, point2);
     return result.final_bearing;
 }
 
-GeographicCoordinates GeodeticCalculator::GeodeticCalculator::DestinationPoint(const GeographicCoordinates& start,
+Geographic GeodeticCalculator::GeodeticCalculator::DestinationPoint(const Geographic& start,
                                                          double bearing,
                                                          double distance) {
-    const double a = WGS84Ellipsoid::SEMI_MAJOR_AXIS;
+    const double a = WGS84_SEMI_MAJOR_AXIS;
     const double angular_distance = distance / a;
     
-    const double lat1_rad = start.LatitudeRadians();
-    const double bearing_rad = CoordinateSystem::DegreesToRadians(bearing);
+    const double lat1_rad = DegreesToRadians(start.latitude);
+    const double bearing_rad = DegreesToRadians(bearing);
     
     const double lat2_rad = std::asin(std::sin(lat1_rad) * std::cos(angular_distance) +
                                        std::cos(lat1_rad) * std::sin(angular_distance) * std::cos(bearing_rad));
     
-    const double lon2_rad = start.LongitudeRadians() +
+    const double lon2_rad = DegreesToRadians(start.longitude) +
                            std::atan2(std::sin(bearing_rad) * std::sin(angular_distance) * std::cos(lat1_rad),
                                      std::cos(angular_distance) - std::sin(lat1_rad) * std::sin(lat2_rad));
     
-    return GeographicCoordinates(
-        CoordinateSystem::RadiansToDegrees(lat2_rad),
-        CoordinateSystem::RadiansToDegrees(lon2_rad),
+    return Geographic(
+        RadiansToDegrees(lat2_rad),
+        RadiansToDegrees(lon2_rad),
         start.altitude
     );
 }
 
-GeographicCoordinates GeodeticCalculator::IntersectionPoint(const GeographicCoordinates& point1,
+Geographic GeodeticCalculator::IntersectionPoint(const Geographic& point1,
                                                             double bearing1,
-                                                            const GeographicCoordinates& point2,
+                                                            const Geographic& point2,
                                                             double bearing2) {
-    const double bearing1_rad = CoordinateSystem::DegreesToRadians(bearing1);
-    const double bearing2_rad = CoordinateSystem::DegreesToRadians(bearing2);
+    const double bearing1_rad = DegreesToRadians(bearing1);
+    const double bearing2_rad = DegreesToRadians(bearing2);
     
     (void)bearing1_rad; // Suppress unused variable warning
     (void)bearing2_rad; // Suppress unused variable warning
     
     // This is a simplified implementation - a full implementation would be more complex
     // For now, return midpoint as approximation
-    return GeographicCoordinates(
+    return Geographic(
         (point1.latitude + point2.latitude) / 2.0,
         (point1.longitude + point2.longitude) / 2.0,
         (point1.altitude + point2.altitude) / 2.0
     );
 }
 
-double GeodeticCalculator::CrossTrackDistance(const GeographicCoordinates& point,
-                                             const GeographicCoordinates& path_start,
-                                             const GeographicCoordinates& path_end) {
+double GeodeticCalculator::CrossTrackDistance(const Geographic& point,
+                                             const Geographic& path_start,
+                                             const Geographic& path_end) {
     const double distance_start_to_point = GeodeticCalculator::HaversineDistance(path_start, point);
     const double initial_bearing = InitialBearing(path_start, path_end);
     const double bearing_to_point = InitialBearing(path_start, point);
@@ -221,9 +248,9 @@ double GeodeticCalculator::CrossTrackDistance(const GeographicCoordinates& point
     return std::abs(distance_start_to_point * delta_bearing);
 }
 
-double GeodeticCalculator::AlongTrackDistance(const GeographicCoordinates& point,
-                                              const GeographicCoordinates& path_start,
-                                              const GeographicCoordinates& path_end) {
+double GeodeticCalculator::AlongTrackDistance(const Geographic& point,
+                                              const Geographic& path_start,
+                                              const Geographic& path_end) {
     const double distance_start_to_point = GeodeticCalculator::HaversineDistance(path_start, point);
     const double initial_bearing = InitialBearing(path_start, path_end);
     const double bearing_to_point = InitialBearing(path_start, point);
@@ -235,11 +262,11 @@ double GeodeticCalculator::AlongTrackDistance(const GeographicCoordinates& point
 
 // GeographicBounds implementation
 
-BoundingBox2D GeographicBounds::FromCenterRadius(const GeographicCoordinates& center, double radius) {
-    const GeographicCoordinates north = GeodeticCalculator::GeodeticCalculator::DestinationPoint(center, 0.0, radius);
-    const GeographicCoordinates south = GeodeticCalculator::GeodeticCalculator::DestinationPoint(center, 180.0, radius);
-    const GeographicCoordinates east = GeodeticCalculator::GeodeticCalculator::DestinationPoint(center, 90.0, radius);
-    const GeographicCoordinates west = GeodeticCalculator::GeodeticCalculator::DestinationPoint(center, 270.0, radius);
+BoundingBox2D GeographicBounds::FromCenterRadius(const Geographic& center, double radius) {
+    const Geographic north = GeodeticCalculator::GeodeticCalculator::DestinationPoint(center, 0.0, radius);
+    const Geographic south = GeodeticCalculator::GeodeticCalculator::DestinationPoint(center, 180.0, radius);
+    const Geographic east = GeodeticCalculator::GeodeticCalculator::DestinationPoint(center, 90.0, radius);
+    const Geographic west = GeodeticCalculator::GeodeticCalculator::DestinationPoint(center, 270.0, radius);
     
     return BoundingBox2D(
         glm::dvec2(west.longitude, south.latitude),
@@ -247,7 +274,7 @@ BoundingBox2D GeographicBounds::FromCenterRadius(const GeographicCoordinates& ce
     );
 }
 
-BoundingBox2D GeographicBounds::FromPoints(const std::vector<GeographicCoordinates>& points) {
+BoundingBox2D GeographicBounds::FromPoints(const std::vector<Geographic>& points) {
     if (points.empty()) {
         return BoundingBox2D();
     }
@@ -271,11 +298,11 @@ BoundingBox2D GeographicBounds::FromPoints(const std::vector<GeographicCoordinat
 }
 
 BoundingBox2D GeographicBounds::Expand(const BoundingBox2D& bounds, double distance) {
-    const GeographicCoordinates center(bounds.GetCenter().y, bounds.GetCenter().x, 0.0);
-    const GeographicCoordinates north = GeodeticCalculator::DestinationPoint(center, 0.0, distance);
-    const GeographicCoordinates south = GeodeticCalculator::DestinationPoint(center, 180.0, distance);
-    const GeographicCoordinates east = GeodeticCalculator::DestinationPoint(center, 90.0, distance);
-    const GeographicCoordinates west = GeodeticCalculator::DestinationPoint(center, 270.0, distance);
+    const Geographic center(bounds.GetCenter().y, bounds.GetCenter().x, 0.0);
+    const Geographic north = GeodeticCalculator::DestinationPoint(center, 0.0, distance);
+    const Geographic south = GeodeticCalculator::DestinationPoint(center, 180.0, distance);
+    const Geographic east = GeodeticCalculator::DestinationPoint(center, 90.0, distance);
+    const Geographic west = GeodeticCalculator::DestinationPoint(center, 270.0, distance);
     
     return BoundingBox2D(
         glm::dvec2(std::min(static_cast<double>(bounds.min.x), west.longitude), std::min(static_cast<double>(bounds.min.y), south.latitude)),
@@ -285,17 +312,17 @@ BoundingBox2D GeographicBounds::Expand(const BoundingBox2D& bounds, double dista
 
 double GeographicBounds::CalculateArea(const BoundingBox2D& bounds) {
     // Simplified area calculation using rectangular approximation
-    const GeographicCoordinates sw(bounds.min.y, bounds.min.x, 0.0);
-    const GeographicCoordinates ne(bounds.max.y, bounds.max.x, 0.0);
+    const Geographic sw(bounds.min.y, bounds.min.x, 0.0);
+    const Geographic ne(bounds.max.y, bounds.max.x, 0.0);
     
     const double width_meters = GeodeticCalculator::HaversineDistance(
-        GeographicCoordinates(sw.latitude, sw.longitude, 0.0),
-        GeographicCoordinates(sw.latitude, ne.longitude, 0.0)
+        Geographic(sw.latitude, sw.longitude, 0.0),
+        Geographic(sw.latitude, ne.longitude, 0.0)
     );
     
     const double height_meters = GeodeticCalculator::HaversineDistance(
-        GeographicCoordinates(sw.latitude, sw.longitude, 0.0),
-        GeographicCoordinates(ne.latitude, sw.longitude, 0.0)
+        Geographic(sw.latitude, sw.longitude, 0.0),
+        Geographic(ne.latitude, sw.longitude, 0.0)
     );
     
     return width_meters * height_meters;
@@ -316,11 +343,11 @@ BoundingBox2D GeographicBounds::Merge(const BoundingBox2D& bounds1, const Boundi
 
 BoundingBox2D GeographicBounds::ToProjected(const BoundingBox2D& geo_bounds,
                                             const Projection& projection) {
-    const GeographicCoordinates sw(geo_bounds.min.y, geo_bounds.min.x, 0.0);
-    const GeographicCoordinates ne(geo_bounds.max.y, geo_bounds.max.x, 0.0);
+    const Geographic sw(geo_bounds.min.y, geo_bounds.min.x, 0.0);
+    const Geographic ne(geo_bounds.max.y, geo_bounds.max.x, 0.0);
     
-    const ProjectedCoordinates sw_proj = projection.Project(sw);
-    const ProjectedCoordinates ne_proj = projection.Project(ne);
+    const Projected sw_proj = projection.Project(sw);
+    const Projected ne_proj = projection.Project(ne);
     
     return BoundingBox2D(
         glm::dvec2(sw_proj.x, sw_proj.y),
@@ -330,11 +357,11 @@ BoundingBox2D GeographicBounds::ToProjected(const BoundingBox2D& geo_bounds,
 
 BoundingBox2D GeographicBounds::FromProjected(const BoundingBox2D& proj_bounds,
                                              const Projection& projection) {
-    const ProjectedCoordinates sw(proj_bounds.min.x, proj_bounds.min.y);
-    const ProjectedCoordinates ne(proj_bounds.max.x, proj_bounds.max.y);
+    const Projected sw(proj_bounds.min.x, proj_bounds.min.y);
+    const Projected ne(proj_bounds.max.x, proj_bounds.max.y);
     
-    const GeographicCoordinates sw_geo = projection.Unproject(sw);
-    const GeographicCoordinates ne_geo = projection.Unproject(ne);
+    const Geographic sw_geo = projection.Unproject(sw);
+    const Geographic ne_geo = projection.Unproject(ne);
     
     return BoundingBox2D(
         glm::dvec2(sw_geo.longitude, sw_geo.latitude),
@@ -344,14 +371,14 @@ BoundingBox2D GeographicBounds::FromProjected(const BoundingBox2D& proj_bounds,
 
 // GeodeticPath implementation (simplified versions for now)
 
-std::vector<GeographicCoordinates> GeodeticPath::Simplify(const std::vector<GeographicCoordinates>& points,
+std::vector<Geographic> GeodeticPath::Simplify(const std::vector<Geographic>& points,
                                                            double /*tolerance*/) {
     // Simplified implementation - just return original points
     // Full Douglas-Peucker algorithm would be implemented here
     return points;
 }
 
-double GeodeticPath::CalculateLength(const std::vector<GeographicCoordinates>& points) {
+double GeodeticPath::CalculateLength(const std::vector<Geographic>& points) {
     if (points.size() < 2) return 0.0;
     
     double total_length = 0.0;
@@ -361,9 +388,9 @@ double GeodeticPath::CalculateLength(const std::vector<GeographicCoordinates>& p
     return total_length;
 }
 
-GeographicCoordinates GeodeticPath::Interpolate(const std::vector<GeographicCoordinates>& points,
+Geographic GeodeticPath::Interpolate(const std::vector<Geographic>& points,
                                                 double distance) {
-    if (points.empty()) return GeographicCoordinates();
+    if (points.empty()) return Geographic();
     if (points.size() == 1) return points[0];
     
     double accumulated_distance = 0.0;
@@ -374,7 +401,7 @@ GeographicCoordinates GeodeticPath::Interpolate(const std::vector<GeographicCoor
             const double ratio = remaining_distance / segment_length;
             
             // Linear interpolation (simplified - should use geodetic interpolation)
-            return GeographicCoordinates(
+            return Geographic(
                 points[i-1].latitude + ratio * (points[i].latitude - points[i-1].latitude),
                 points[i-1].longitude + ratio * (points[i].longitude - points[i-1].longitude),
                 points[i-1].altitude + ratio * (points[i].altitude - points[i-1].altitude)
@@ -386,9 +413,9 @@ GeographicCoordinates GeodeticPath::Interpolate(const std::vector<GeographicCoor
     return points.back();
 }
 
-std::vector<GeographicCoordinates> GeodeticPath::Sample(const std::vector<GeographicCoordinates>& points,
+std::vector<Geographic> GeodeticPath::Sample(const std::vector<Geographic>& points,
                                                           double interval) {
-    std::vector<GeographicCoordinates> sampled_points;
+    std::vector<Geographic> sampled_points;
     const double total_length = CalculateLength(points);
     
     for (double distance = 0.0; distance <= total_length; distance += interval) {
@@ -398,7 +425,7 @@ std::vector<GeographicCoordinates> GeodeticPath::Sample(const std::vector<Geogra
     return sampled_points;
 }
 
-double GeodeticPath::CalculateArea(const std::vector<GeographicCoordinates>& points) {
+double GeodeticPath::CalculateArea(const std::vector<Geographic>& points) {
     if (points.size() < 3) return 0.0;
     
     // Simplified area calculation using shoelace formula
@@ -415,8 +442,8 @@ double GeodeticPath::CalculateArea(const std::vector<GeographicCoordinates>& poi
     return std::abs(area) * 111320.0 * 111320.0;  // Convert to square meters (approximate)
 }
 
-GeographicCoordinates GeodeticPath::CalculateCentroid(const std::vector<GeographicCoordinates>& points) {
-    if (points.empty()) return GeographicCoordinates();
+Geographic GeodeticPath::CalculateCentroid(const std::vector<Geographic>& points) {
+    if (points.empty()) return Geographic();
     
     double sum_lat = 0.0;
     double sum_lon = 0.0;
@@ -428,15 +455,15 @@ GeographicCoordinates GeodeticPath::CalculateCentroid(const std::vector<Geograph
         sum_alt += point.altitude;
     }
     
-    return GeographicCoordinates(
+    return Geographic(
         sum_lat / points.size(),
         sum_lon / points.size(),
         sum_alt / points.size()
     );
 }
 
-bool GeodeticPath::PointInPolygon(const GeographicCoordinates& point,
-                                  const std::vector<GeographicCoordinates>& polygon) {
+bool GeodeticPath::PointInPolygon(const Geographic& point,
+                                  const std::vector<Geographic>& polygon) {
     if (polygon.size() < 3) return false;
     
     // Ray casting algorithm (simplified 2D version)
@@ -456,8 +483,8 @@ bool GeodeticPath::PointInPolygon(const GeographicCoordinates& point,
 
 // TerrainCalculator implementation (simplified versions)
 
-double TerrainCalculator::CalculateSlope(const GeographicCoordinates& point1,
-                                         const GeographicCoordinates& point2) {
+double TerrainCalculator::CalculateSlope(const Geographic& point1,
+                                         const Geographic& point2) {
     const double horizontal_distance = GeodeticCalculator::HaversineDistance(point1, point2);
     const double vertical_distance = point2.altitude - point1.altitude;
     
@@ -466,8 +493,8 @@ double TerrainCalculator::CalculateSlope(const GeographicCoordinates& point1,
     return std::abs(std::atan(vertical_distance / horizontal_distance) * 180.0 / M_PI);
 }
 
-double TerrainCalculator::CalculateAspect(const GeographicCoordinates& /*center*/,
-                                          const std::array<GeographicCoordinates, 8>& neighbors) {
+double TerrainCalculator::CalculateAspect(const Geographic& /*center*/,
+                                          const std::array<Geographic, 8>& neighbors) {
     // Simplified aspect calculation
     // Full implementation would use Horn's method
     const double dx = GeodeticCalculator::HaversineDistance(neighbors[1], neighbors[3]);
@@ -480,8 +507,8 @@ double TerrainCalculator::CalculateAspect(const GeographicCoordinates& /*center*
     return aspect;
 }
 
-bool TerrainCalculator::LineOfSight(const GeographicCoordinates& observer,
-                                    const GeographicCoordinates& target,
+bool TerrainCalculator::LineOfSight(const Geographic& observer,
+                                    const Geographic& target,
                                     const std::vector<double>& /*terrain_heights*/) {
     // Simplified line of sight check
     // Full implementation would check intermediate terrain heights
@@ -492,10 +519,10 @@ bool TerrainCalculator::LineOfSight(const GeographicCoordinates& observer,
     return angle > -0.1;  // Simple threshold check
 }
 
-std::vector<GeographicCoordinates> TerrainCalculator::CalculateViewshed(const GeographicCoordinates& observer,
+std::vector<Geographic> TerrainCalculator::CalculateViewshed(const Geographic& observer,
                                                                           const BoundingBox2D& bounds,
                                                                           double max_distance) {
-    std::vector<GeographicCoordinates> visible_points;
+    std::vector<Geographic> visible_points;
     
     // Simplified viewshed calculation
     // Full implementation would sample the area and check line of sight
@@ -505,7 +532,7 @@ std::vector<GeographicCoordinates> TerrainCalculator::CalculateViewshed(const Ge
     
     for (int i = 0; i <= samples; ++i) {
         for (int j = 0; j <= samples; ++j) {
-            const GeographicCoordinates test_point(
+            const Geographic test_point(
                 bounds.min.y + i * lat_step,
                 bounds.min.x + j * lon_step,
                 0.0

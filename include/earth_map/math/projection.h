@@ -3,12 +3,12 @@
 /**
  * @file projection.h
  * @brief Map projection system and utilities
- * 
+ *
  * Defines projection interfaces and implementations for various
  * coordinate systems including Web Mercator and Equirectangular.
  */
 
-#include "coordinate_system.h"
+#include "../coordinates/coordinate_spaces.h"
 #include "bounding_box.h"
 #include <glm/glm.hpp>
 #include <memory>
@@ -17,6 +17,11 @@
 #include <vector>
 
 namespace earth_map {
+
+// Import coordinate types from coordinates namespace
+using coordinates::Geographic;
+using coordinates::Projected;
+using coordinates::ProjectedBounds;
 
 /**
  * @brief Projection types supported by the system
@@ -27,46 +32,7 @@ enum class ProjectionType {
     EQUIRECTANGULAR = 4087 ///< Equirectangular (EPSG:4087)
 };
 
-/**
- * @brief Projected coordinates (x, y in meters or normalized units)
- */
-struct ProjectedCoordinates {
-    double x;  ///< X coordinate (usually easting or normalized x)
-    double y;  ///< Y coordinate (usually northing or normalized y)
-    
-    /**
-     * @brief Default constructor
-     */
-    constexpr ProjectedCoordinates() : x(0.0), y(0.0) {}
-    
-    /**
-     * @brief Construct from x, y coordinates
-     * 
-     * @param x_coord X coordinate
-     * @param y_coord Y coordinate
-     */
-    constexpr ProjectedCoordinates(double x_coord, double y_coord)
-        : x(x_coord), y(y_coord) {}
-    
-    /**
-     * @brief Convert to GLM vector
-     * 
-     * @return glm::dvec2 GLM vector representation
-     */
-    constexpr glm::dvec2 ToVector() const {
-        return glm::dvec2(x, y);
-    }
-    
-    /**
-     * @brief Construct from GLM vector
-     * 
-     * @param vec GLM vector
-     * @return ProjectedCoordinates Projected coordinates
-     */
-    static ProjectedCoordinates FromVector(const glm::dvec2& vec) {
-        return ProjectedCoordinates(vec.x, vec.y);
-    }
-};
+// Note: ProjectedCoordinates removed - use coordinates::Projected instead
 
 /**
  * @brief Base interface for map projections
@@ -98,42 +64,42 @@ public:
     
     /**
      * @brief Project geographic coordinates to projected coordinates
-     * 
+     *
      * @param geo Geographic coordinates
-     * @return ProjectedCoordinates Projected coordinates
+     * @return Projected Projected coordinates
      */
-    virtual ProjectedCoordinates Project(const GeographicCoordinates& geo) const = 0;
-    
+    virtual Projected Project(const Geographic& geo) const = 0;
+
     /**
      * @brief Unproject projected coordinates to geographic coordinates
-     * 
+     *
      * @param proj Projected coordinates
-     * @return GeographicCoordinates Geographic coordinates
+     * @return Geographic Geographic coordinates
      */
-    virtual GeographicCoordinates Unproject(const ProjectedCoordinates& proj) const = 0;
-    
+    virtual Geographic Unproject(const Projected& proj) const = 0;
+
     /**
      * @brief Check if geographic coordinates are within projection bounds
-     * 
+     *
      * @param geo Geographic coordinates
      * @return true if within valid projection range, false otherwise
      */
-    virtual bool IsValidLocation(const GeographicCoordinates& geo) const = 0;
-    
+    virtual bool IsValidLocation(const Geographic& geo) const = 0;
+
     /**
      * @brief Get the projected bounds of the entire Earth
-     * 
-     * @return BoundingBox2D Projected bounds
+     *
+     * @return ProjectedBounds Projected bounds
      */
-    virtual BoundingBox2D GetProjectedBounds() const = 0;
-    
+    virtual ProjectedBounds GetProjectedBounds() const = 0;
+
     /**
      * @brief Calculate the approximate scale at a given location
-     * 
+     *
      * @param geo Geographic coordinates
      * @return double Meters per projected unit
      */
-    virtual double GetScale(const GeographicCoordinates& geo) const = 0;
+    virtual double GetScale(const Geographic& geo) const = 0;
 };
 
 /**
@@ -152,27 +118,27 @@ public:
     std::string GetName() const override { return "Web Mercator"; }
     int GetEPSGCode() const override { return 3857; }
     
-    ProjectedCoordinates Project(const GeographicCoordinates& geo) const override;
-    GeographicCoordinates Unproject(const ProjectedCoordinates& proj) const override;
-    bool IsValidLocation(const GeographicCoordinates& geo) const override;
-    BoundingBox2D GetProjectedBounds() const override;
-    double GetScale(const GeographicCoordinates& geo) const override;
-    
+    Projected Project(const Geographic& geo) const override;
+    Geographic Unproject(const Projected& proj) const override;
+    bool IsValidLocation(const Geographic& geo) const override;
+    ProjectedBounds GetProjectedBounds() const override;
+    double GetScale(const Geographic& geo) const override;
+
     /**
      * @brief Convert geographic coordinates to normalized Web Mercator coordinates [0, 1]
-     * 
+     *
      * @param geo Geographic coordinates
      * @return glm::dvec2 Normalized coordinates
      */
-    glm::dvec2 ToNormalized(const GeographicCoordinates& geo) const;
-    
+    glm::dvec2 ToNormalized(const Geographic& geo) const;
+
     /**
      * @brief Convert normalized Web Mercator coordinates to geographic coordinates
-     * 
+     *
      * @param normalized Normalized coordinates [0, 1]
-     * @return GeographicCoordinates Geographic coordinates
+     * @return Geographic Geographic coordinates
      */
-    GeographicCoordinates FromNormalized(const glm::dvec2& normalized) const;
+    Geographic FromNormalized(const glm::dvec2& normalized) const;
 };
 
 /**
@@ -183,12 +149,12 @@ public:
     ProjectionType GetType() const override { return ProjectionType::WGS84; }
     std::string GetName() const override { return "WGS84 Geographic"; }
     int GetEPSGCode() const override { return 4326; }
-    
-    ProjectedCoordinates Project(const GeographicCoordinates& geo) const override;
-    GeographicCoordinates Unproject(const ProjectedCoordinates& proj) const override;
-    bool IsValidLocation(const GeographicCoordinates& geo) const override;
-    BoundingBox2D GetProjectedBounds() const override;
-    double GetScale(const GeographicCoordinates& geo) const override;
+
+    Projected Project(const Geographic& geo) const override;
+    Geographic Unproject(const Projected& proj) const override;
+    bool IsValidLocation(const Geographic& geo) const override;
+    ProjectedBounds GetProjectedBounds() const override;
+    double GetScale(const Geographic& geo) const override;
 };
 
 /**
@@ -199,12 +165,12 @@ public:
     ProjectionType GetType() const override { return ProjectionType::EQUIRECTANGULAR; }
     std::string GetName() const override { return "Equirectangular"; }
     int GetEPSGCode() const override { return 4087; }
-    
-    ProjectedCoordinates Project(const GeographicCoordinates& geo) const override;
-    GeographicCoordinates Unproject(const ProjectedCoordinates& proj) const override;
-    bool IsValidLocation(const GeographicCoordinates& geo) const override;
-    BoundingBox2D GetProjectedBounds() const override;
-    double GetScale(const GeographicCoordinates& geo) const override;
+
+    Projected Project(const Geographic& geo) const override;
+    Geographic Unproject(const Projected& proj) const override;
+    bool IsValidLocation(const Geographic& geo) const override;
+    ProjectedBounds GetProjectedBounds() const override;
+    double GetScale(const Geographic& geo) const override;
 };
 
 /**
@@ -264,39 +230,39 @@ class ProjectionTransformer {
 public:
     /**
      * @brief Transform coordinates between projections
-     * 
+     *
      * @param source_coords Source projected coordinates
      * @param source_proj Source projection
      * @param target_proj Target projection
-     * @return ProjectedCoordinates Transformed coordinates
+     * @return Projected Transformed coordinates
      */
-    static ProjectedCoordinates Transform(const ProjectedCoordinates& source_coords,
-                                         const Projection& source_proj,
-                                         const Projection& target_proj);
-    
+    static Projected Transform(const Projected& source_coords,
+                              const Projection& source_proj,
+                              const Projection& target_proj);
+
     /**
      * @brief Transform geographic coordinates directly between projections
-     * 
+     *
      * @param geo Geographic coordinates
      * @param source_proj Source projection
      * @param target_proj Target projection
-     * @return ProjectedCoordinates Transformed coordinates
+     * @return Projected Transformed coordinates
      */
-    static ProjectedCoordinates TransformGeographic(const GeographicCoordinates& geo,
-                                                   const Projection& source_proj,
-                                                   const Projection& target_proj);
-    
+    static Projected TransformGeographic(const Geographic& geo,
+                                        const Projection& source_proj,
+                                        const Projection& target_proj);
+
     /**
      * @brief Create a transformation matrix between projections
-     * 
+     *
      * @param source_proj Source projection
      * @param target_proj Target projection
      * @param reference_geo Reference geographic location for scale calculation
      * @return glm::dmat3 2D transformation matrix
      */
     static glm::dmat3 CreateTransformationMatrix(const Projection& source_proj,
-                                                 const Projection& target_proj,
-                                                 const GeographicCoordinates& reference_geo);
+                                                const Projection& target_proj,
+                                                const Geographic& reference_geo);
 };
 
 } // namespace earth_map

@@ -5,7 +5,7 @@
 
 #include "../../include/earth_map/coordinates/coordinate_mapper.h"
 #include "../../include/earth_map/math/projection.h"
-#include "../../include/earth_map/math/coordinate_system.h"
+#include "../../include/earth_map/math/tile_mathematics.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <algorithm>
@@ -54,17 +54,13 @@ Projected CoordinateMapper::GeographicToProjected(const Geographic& geo) noexcep
     }
 
     try {
-        // Use existing WebMercatorProjection which has its own validation
+        // Use new type-safe projection system
         auto web_mercator = std::static_pointer_cast<WebMercatorProjection>(
             ProjectionRegistry::GetProjection(ProjectionType::WEB_MERCATOR)
         );
 
-        GeographicCoordinates legacy_geo(geo.latitude, geo.longitude, geo.altitude);
-
-        // Project() will throw if coordinates are invalid for Web Mercator
-        ProjectedCoordinates proj_coords = web_mercator->Project(legacy_geo);
-
-        return Projected(proj_coords.x, proj_coords.y);
+        // Direct conversion - no legacy type adapters needed
+        return web_mercator->Project(geo);
     }
     catch (const std::invalid_argument&) {
         // Out of Web Mercator bounds - return invalid
@@ -80,14 +76,17 @@ Geographic CoordinateMapper::ProjectedToGeographic(const Projected& proj) noexce
         return Geographic();
     }
 
-    auto web_mercator = std::static_pointer_cast<WebMercatorProjection>(
-        ProjectionRegistry::GetProjection(ProjectionType::WEB_MERCATOR)
-    );
+    try {
+        auto web_mercator = std::static_pointer_cast<WebMercatorProjection>(
+            ProjectionRegistry::GetProjection(ProjectionType::WEB_MERCATOR)
+        );
 
-    ProjectedCoordinates proj_coords(proj.x, proj.y);
-    GeographicCoordinates legacy_geo = web_mercator->Unproject(proj_coords);
-
-    return Geographic(legacy_geo.latitude, legacy_geo.longitude, legacy_geo.altitude);
+        // Direct conversion - no legacy type adapters needed
+        return web_mercator->Unproject(proj);
+    }
+    catch (const std::exception&) {
+        return Geographic();
+    }
 }
 
 // ============================================================================
@@ -99,9 +98,7 @@ TileCoordinates CoordinateMapper::GeographicToTile(const Geographic& geo, int32_
         return TileCoordinates();
     }
 
-    // Use existing TileMathematics
-    GeographicCoordinates legacy_geo(geo.latitude, geo.longitude, geo.altitude);
-    return TileMathematics::GeographicToTile(legacy_geo, zoom);
+    return TileMathematics::GeographicToTile(geo, zoom);
 }
 
 GeographicBounds CoordinateMapper::TileToGeographic(const TileCoordinates& tile) {
@@ -220,9 +217,10 @@ std::optional<Screen> CoordinateMapper::WorldToScreen(
 
     // Transform to screen coordinates
     // NDC: [-1, 1] → Screen: [0, width/height]
-    // Note: Y is flipped (NDC +Y is up, Screen +Y is down)
+    // Screen Y: 0 at bottom, viewport[3] at top (OpenGL convention after GLFW Y-flip)
+    // NDC Y: -1 at bottom, +1 at top
     double screen_x = (ndc.x * 0.5 + 0.5) * viewport[2] + viewport[0];
-    double screen_y = (1.0 - (ndc.y * 0.5 + 0.5)) * viewport[3] + viewport[1];
+    double screen_y = (ndc.y * 0.5 + 0.5) * viewport[3] + viewport[1];
 
     return Screen(screen_x, screen_y);
 }
@@ -233,28 +231,36 @@ std::pair<World, glm::vec3> CoordinateMapper::ScreenToWorldRay(
     const glm::mat4& proj_matrix,
     const glm::ivec4& viewport) noexcept {
 
-    // Convert screen to NDC
-    // Screen Y is top-down, NDC Y is bottom-up
-    float ndc_x = (2.0f * static_cast<float>(screen.x - viewport[0])) / viewport[2] - 1.0f;
-    float ndc_y = 1.0f - (2.0f * static_cast<float>(screen.y - viewport[1])) / viewport[3];
-
     // Compute inverse matrices
     glm::mat4 inv_proj = glm::inverse(proj_matrix);
     glm::mat4 inv_view = glm::inverse(view_matrix);
 
-    // Ray in clip space (near plane)
-    glm::vec4 ray_clip(ndc_x, ndc_y, -1.0f, 1.0f);
-
-    // Ray in view space
-    glm::vec4 ray_view = inv_proj * ray_clip;
-    ray_view = glm::vec4(ray_view.x, ray_view.y, -1.0f, 0.0f);  // Direction
-
-    // Ray in world space
-    glm::vec4 ray_world_4 = inv_view * ray_view;
-    glm::vec3 ray_dir = glm::normalize(glm::vec3(ray_world_4));
-
     // Camera position in world space
     glm::vec3 camera_pos = glm::vec3(inv_view[3]);
+
+    // Convert screen to NDC
+    // Screen Y: 0 at bottom, viewport[3] at top (after GLFW→OpenGL Y-flip)
+    // NDC Y: -1 at bottom, +1 at top
+    // Correct linear mapping: ndc_y = 2 * (screen.y / height) - 1
+    float ndc_x = (2.0f * static_cast<float>(screen.x - viewport[0])) / viewport[2] - 1.0f;
+    float ndc_y = (2.0f * static_cast<float>(screen.y - viewport[1])) / viewport[3] - 1.0f;
+
+    // Unproject near plane point (NDC z = -1 maps to near plane)
+    glm::vec4 near_clip(ndc_x, ndc_y, -1.0f, 1.0f);
+    glm::vec4 near_view = inv_proj * near_clip;
+    near_view /= near_view.w;  // Perspective divide
+    glm::vec4 near_world_4 = inv_view * near_view;
+    glm::vec3 near_world = glm::vec3(near_world_4) / near_world_4.w;
+
+    // Unproject far plane point (NDC z = 1 maps to far plane)
+    glm::vec4 far_clip(ndc_x, ndc_y, 1.0f, 1.0f);
+    glm::vec4 far_view = inv_proj * far_clip;
+    far_view /= far_view.w;  // Perspective divide
+    glm::vec4 far_world_4 = inv_view * far_view;
+    glm::vec3 far_world = glm::vec3(far_world_4) / far_world_4.w;
+
+    // Ray direction from near to far
+    glm::vec3 ray_dir = glm::normalize(far_world - near_world);
 
     return {World(camera_pos), ray_dir};
 }
@@ -386,16 +392,29 @@ bool CoordinateMapper::RaySphereIntersection(
         return false;  // No intersection
     }
 
-    // Two possible intersection points - take the closer one (smaller t)
+    // Two possible intersection points
     float sqrt_discriminant = std::sqrt(discriminant);
     float t1 = (-b - sqrt_discriminant) / (2.0f * a);
     float t2 = (-b + sqrt_discriminant) / (2.0f * a);
 
-    // Use the closer intersection that is in front of the ray (t > 0)
-    float t = (t1 > 0.0f) ? t1 : t2;
+    // Choose the appropriate intersection point:
+    // - If camera is outside sphere: use the closer positive t (entry point)
+    // - If camera is inside sphere: use the farther positive t (exit point)
+    // - For globe viewing, we typically want the front-facing intersection
 
-    if (t < 0.0f) {
-        return false;  // Sphere is behind ray origin
+    float t;
+    if (t1 > 0.0f && t2 > 0.0f) {
+        // Both intersections in front of camera - use closer one (front face)
+        t = t1;
+    } else if (t1 > 0.0f) {
+        // Only t1 is positive
+        t = t1;
+    } else if (t2 > 0.0f) {
+        // Only t2 is positive (camera might be inside sphere)
+        t = t2;
+    } else {
+        // Both behind camera
+        return false;
     }
 
     intersection_point = ray_origin + t * ray_dir;

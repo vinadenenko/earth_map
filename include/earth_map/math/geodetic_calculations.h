@@ -8,7 +8,6 @@
  * geodetic utilities for geographic coordinates.
  */
 
-#include "coordinate_system.h"
 #include "bounding_box.h"
 #include "projection.h"
 #include <glm/glm.hpp>
@@ -17,6 +16,9 @@
 #include <array>
 
 namespace earth_map {
+
+// Import coordinate types from coordinates namespace
+using coordinates::Geographic;
 
 /**
  * @brief Distance calculation results
@@ -55,8 +57,8 @@ public:
      * @param point2 Second geographic point
      * @return double Distance in meters
      */
-    static double HaversineDistance(const GeographicCoordinates& point1,
-                                   const GeographicCoordinates& point2);
+    static double HaversineDistance(const Geographic& point1,
+                                   const Geographic& point2);
     
     /**
      * @brief Calculate distance and bearings using Haversine formula
@@ -65,8 +67,8 @@ public:
      * @param point2 Second geographic point
      * @return DistanceResult Distance and bearing information
      */
-    static DistanceResult HaversineDistanceAndBearing(const GeographicCoordinates& point1,
-                                                       const GeographicCoordinates& point2);
+    static DistanceResult HaversineDistanceAndBearing(const Geographic& point1,
+                                                       const Geographic& point2);
     
     /**
      * @brief Calculate distance using Vincenty's formula (more accurate)
@@ -75,8 +77,8 @@ public:
      * @param point2 Second geographic point
      * @return double Distance in meters
      */
-    static double VincentyDistance(const GeographicCoordinates& point1,
-                                   const GeographicCoordinates& point2);
+    static double VincentyDistance(const Geographic& point1,
+                                   const Geographic& point2);
     
     /**
      * @brief Calculate distance and bearings using Vincenty's formula
@@ -85,8 +87,8 @@ public:
      * @param point2 Second geographic point
      * @return DistanceResult Distance and bearing information
      */
-    static DistanceResult VincentyDistanceAndBearing(const GeographicCoordinates& point1,
-                                                    const GeographicCoordinates& point2);
+    static DistanceResult VincentyDistanceAndBearing(const Geographic& point1,
+                                                    const Geographic& point2);
     
     /**
      * @brief Calculate initial bearing between two points
@@ -95,8 +97,8 @@ public:
      * @param point2 Second geographic point
      * @return double Initial bearing in degrees [0, 360)
      */
-    static double InitialBearing(const GeographicCoordinates& point1,
-                                const GeographicCoordinates& point2);
+    static double InitialBearing(const Geographic& point1,
+                                const Geographic& point2);
     
     /**
      * @brief Calculate final bearing between two points
@@ -105,8 +107,8 @@ public:
      * @param point2 Second geographic point
      * @return double Final bearing in degrees [0, 360)
      */
-    static double FinalBearing(const GeographicCoordinates& point1,
-                              const GeographicCoordinates& point2);
+    static double FinalBearing(const Geographic& point1,
+                              const Geographic& point2);
     
     /**
      * @brief Calculate destination point given start point, bearing, and distance
@@ -114,9 +116,9 @@ public:
      * @param start Starting point
      * @param bearing Bearing in degrees [0, 360)
      * @param distance Distance in meters
-     * @return GeographicCoordinates Destination point
+     * @return Geographic Destination point
      */
-    static GeographicCoordinates DestinationPoint(const GeographicCoordinates& start,
+    static Geographic DestinationPoint(const Geographic& start,
                                                   double bearing,
                                                   double distance);
     
@@ -127,11 +129,11 @@ public:
      * @param bearing1 First path bearing in degrees
      * @param point2 Second path start point
      * @param bearing2 Second path bearing in degrees
-     * @return GeographicCoordinates Intersection point
+     * @return Geographic Intersection point
      */
-    static GeographicCoordinates IntersectionPoint(const GeographicCoordinates& point1,
+    static Geographic IntersectionPoint(const Geographic& point1,
                                                    double bearing1,
-                                                   const GeographicCoordinates& point2,
+                                                   const Geographic& point2,
                                                    double bearing2);
     
     /**
@@ -142,9 +144,9 @@ public:
      * @param path_end End point of path
      * @return double Cross-track distance in meters
      */
-    static double CrossTrackDistance(const GeographicCoordinates& point,
-                                    const GeographicCoordinates& path_start,
-                                    const GeographicCoordinates& path_end);
+    static double CrossTrackDistance(const Geographic& point,
+                                    const Geographic& path_start,
+                                    const Geographic& path_end);
     
     /**
      * @brief Calculate along-track distance (distance along path to nearest point)
@@ -154,9 +156,9 @@ public:
      * @param path_end End point of path
      * @return double Along-track distance in meters
      */
-    static double AlongTrackDistance(const GeographicCoordinates& point,
-                                     const GeographicCoordinates& path_start,
-                                     const GeographicCoordinates& path_end);
+    static double AlongTrackDistance(const Geographic& point,
+                                     const Geographic& path_start,
+                                     const Geographic& path_end);
 };
 
 /**
@@ -171,7 +173,7 @@ public:
      * @param radius Radius in meters
      * @return BoundingBox2D Geographic bounding box
      */
-    static BoundingBox2D FromCenterRadius(const GeographicCoordinates& center, double radius);
+    static BoundingBox2D FromCenterRadius(const Geographic& center, double radius);
     
     /**
      * @brief Create bounding box from multiple points
@@ -179,7 +181,7 @@ public:
      * @param points Vector of geographic points
      * @return BoundingBox2D Geographic bounding box
      */
-    static BoundingBox2D FromPoints(const std::vector<GeographicCoordinates>& points);
+    static BoundingBox2D FromPoints(const std::vector<Geographic>& points);
     
     /**
      * @brief Expand bounding box by a given distance
@@ -247,9 +249,9 @@ public:
      * 
      * @param points Original path points
      * @param tolerance Tolerance in meters
-     * @return std::vector<GeographicCoordinates> Simplified path
+     * @return std::vector<Geographic> Simplified path
      */
-    static std::vector<GeographicCoordinates> Simplify(const std::vector<GeographicCoordinates>& points,
+    static std::vector<Geographic> Simplify(const std::vector<Geographic>& points,
                                                       double tolerance);
     
     /**
@@ -258,16 +260,16 @@ public:
      * @param points Path points
      * @return double Total length in meters
      */
-    static double CalculateLength(const std::vector<GeographicCoordinates>& points);
+    static double CalculateLength(const std::vector<Geographic>& points);
     
     /**
      * @brief Interpolate point along a path at given distance
      * 
      * @param points Path points
      * @param distance Distance along path in meters
-     * @return GeographicCoordinates Interpolated point
+     * @return Geographic Interpolated point
      */
-    static GeographicCoordinates Interpolate(const std::vector<GeographicCoordinates>& points,
+    static Geographic Interpolate(const std::vector<Geographic>& points,
                                             double distance);
     
     /**
@@ -275,9 +277,9 @@ public:
      * 
      * @param points Path points
      * @param interval Sampling interval in meters
-     * @return std::vector<GeographicCoordinates> Sampled points
+     * @return std::vector<Geographic> Sampled points
      */
-    static std::vector<GeographicCoordinates> Sample(const std::vector<GeographicCoordinates>& points,
+    static std::vector<Geographic> Sample(const std::vector<Geographic>& points,
                                                      double interval);
     
     /**
@@ -286,15 +288,15 @@ public:
      * @param points Polygon points (should be closed)
      * @return double Signed area in square meters (positive = counter-clockwise)
      */
-    static double CalculateArea(const std::vector<GeographicCoordinates>& points);
+    static double CalculateArea(const std::vector<Geographic>& points);
     
     /**
      * @brief Calculate centroid of a polygon
      * 
      * @param points Polygon points (should be closed)
-     * @return GeographicCoordinates Centroid point
+     * @return Geographic Centroid point
      */
-    static GeographicCoordinates CalculateCentroid(const std::vector<GeographicCoordinates>& points);
+    static Geographic CalculateCentroid(const std::vector<Geographic>& points);
     
     /**
      * @brief Check if a point is inside a polygon
@@ -303,8 +305,8 @@ public:
      * @param polygon Polygon points (should be closed)
      * @return bool True if point is inside polygon, false otherwise
      */
-    static bool PointInPolygon(const GeographicCoordinates& point,
-                                const std::vector<GeographicCoordinates>& polygon);
+    static bool PointInPolygon(const Geographic& point,
+                                const std::vector<Geographic>& polygon);
 };
 
 /**
@@ -319,8 +321,8 @@ public:
      * @param point2 Second point
      * @return double Slope in degrees
      */
-    static double CalculateSlope(const GeographicCoordinates& point1,
-                                const GeographicCoordinates& point2);
+    static double CalculateSlope(const Geographic& point1,
+                                const Geographic& point2);
     
     /**
      * @brief Calculate aspect (direction of steepest descent) at a point
@@ -329,8 +331,8 @@ public:
      * @param neighbors Eight neighboring points
      * @return double Aspect in degrees [0, 360)
      */
-    static double CalculateAspect(const GeographicCoordinates& center,
-                                 const std::array<GeographicCoordinates, 8>& neighbors);
+    static double CalculateAspect(const Geographic& center,
+                                 const std::array<Geographic, 8>& neighbors);
     
     /**
      * @brief Calculate line of sight between two points
@@ -340,8 +342,8 @@ public:
      * @param terrain_heights Terrain heights along the path (optional)
      * @return bool True if line of sight is clear, false otherwise
      */
-    static bool LineOfSight(const GeographicCoordinates& observer,
-                           const GeographicCoordinates& target,
+    static bool LineOfSight(const Geographic& observer,
+                           const Geographic& target,
                            const std::vector<double>& terrain_heights = {});
     
     /**
@@ -350,9 +352,9 @@ public:
      * @param observer Observer point
      * @param bounds Area to analyze
      * @param max_distance Maximum viewing distance in meters
-     * @return std::vector<GeographicCoordinates> Visible points
+     * @return std::vector<Geographic> Visible points
      */
-    static std::vector<GeographicCoordinates> CalculateViewshed(const GeographicCoordinates& observer,
+    static std::vector<Geographic> CalculateViewshed(const Geographic& observer,
                                                                 const BoundingBox2D& bounds,
                                                                 double max_distance);
 };
