@@ -40,7 +40,7 @@ std::string FormatCacheFilename(const SRTMCoordinates& coords) {
         << std::abs(coords.latitude)
         << (coords.longitude >= 0 ? 'E' : 'W')
         << std::abs(coords.longitude)
-        << ".srtm";
+        << ".hgt";
     return oss.str();
 }
 

@@ -44,8 +44,14 @@ float SRTMTileData::InterpolateElevation(double lat_fraction,
     const double y = (1.0 - lat_fraction) * (metadata_.samples_per_side - 1);
 
     // Get integer and fractional parts
-    const int x0 = static_cast<int>(std::floor(x));
-    const int y0 = static_cast<int>(std::floor(y));
+    int x0 = static_cast<int>(std::floor(x));
+    int y0 = static_cast<int>(std::floor(y));
+
+    // Clamp indices to ensure x0+1 and y0+1 are within bounds
+    const int max_index = static_cast<int>(metadata_.samples_per_side) - 2;
+    x0 = std::clamp(x0, 0, max_index);
+    y0 = std::clamp(y0, 0, max_index);
+
     const double dx = x - x0;
     const double dy = y - y0;
 
