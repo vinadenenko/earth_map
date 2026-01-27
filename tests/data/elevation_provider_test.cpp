@@ -26,6 +26,7 @@ protected:
         // Create temporary test directories
         test_data_directory_ = "./test_elevation_provider_data";
         test_cache_directory_ = "./test_elevation_provider_cache";
+        test_fixtures_directory_ = "./tests/fixtures/srtm";
 
         std::filesystem::create_directories(test_data_directory_);
         std::filesystem::create_directories(test_cache_directory_);
@@ -38,6 +39,9 @@ protected:
         }
         if (std::filesystem::exists(test_cache_directory_)) {
             std::filesystem::remove_all(test_cache_directory_);
+        }
+        if (std::filesystem::exists(test_fixtures_directory_)) {
+            std::filesystem::remove_all(test_fixtures_directory_);
         }
     }
 
@@ -90,6 +94,7 @@ protected:
 
     std::string test_data_directory_;
     std::string test_cache_directory_;
+    std::string test_fixtures_directory_;
 };
 
 TEST_F(ElevationProviderTest, CreateProvider) {
@@ -773,6 +778,35 @@ TEST_F(ElevationProviderTest, SinglePointQueryCompletesInTime) {
 
     auto result = future.get();
     EXPECT_TRUE(result.valid);
+}
+
+TEST_F(ElevationProviderTest, RealDataMtEverest) {
+    // Use real SRTM file from fixtures
+    SRTMLoaderConfig config;
+    config.source = SRTMSource::LOCAL_DISK;
+    config.local_directory = test_fixtures_directory_;
+
+    auto provider = ElevationProvider::Create(config, {});
+    ASSERT_NE(provider, nullptr);
+
+    // Copy file from src to binary dir
+    {
+        std::filesystem::path source = "../../tests/data/fixtures/srtm/N27E086.hgt";
+        std::filesystem::path destination = test_fixtures_directory_ + "/N27E086.hgt";
+        ASSERT_TRUE(std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing));
+    }
+
+    // Query Mt. Everest summit
+    auto result = provider->GetElevation(27.9881, 86.9250);
+
+    spdlog::info("Mt. Everest height in real HGT file: {}", result.elevation_meters);
+
+    ASSERT_TRUE(result.valid);
+    EXPECT_NEAR(result.elevation_meters, 8848.0f, 50.0f);  // ±50m tolerance
+
+    // Query nearby points for gradient sanity check
+    auto base_camp = provider->GetElevation(28.0, 86.85);
+    EXPECT_LT(base_camp.elevation_meters, result.elevation_meters);  // Lower than summit
 }
 
 } // anonymous namespace
