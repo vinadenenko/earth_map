@@ -130,7 +130,21 @@ public:
         texture_coordinator_ = coordinator;
         spdlog::info("Tile renderer: texture coordinator set");
     }
-    
+
+    void SetGlobeMesh(GlobeMesh* globe_mesh) override {
+        if (!globe_mesh) {
+            spdlog::error("Tile renderer: cannot set null globe mesh");
+            return;
+        }
+
+        globe_mesh_ = globe_mesh;
+        mesh_uploaded_to_gpu_ = false;  // Mark for re-upload
+
+        spdlog::info("Tile renderer: globe mesh set ({} vertices, {} triangles)",
+                     globe_mesh_->GetVertices().size(),
+                     globe_mesh_->GetTriangles().size());
+    }
+
     void UpdateVisibleTiles(const glm::mat4& view_matrix,
                         const glm::mat4& projection_matrix,
                         const glm::vec3& camera_position,
@@ -283,9 +297,26 @@ public:
     
     void RenderTiles(const glm::mat4& view_matrix,
                      const glm::mat4& projection_matrix) override {
-        if (!initialized_ || visible_tiles_.empty()) {
+        if (!initialized_) {
             return;
         }
+
+        // CRITICAL: Must have globe mesh to render on
+        if (!globe_mesh_) {
+            spdlog::warn("Tile renderer: no globe mesh set, cannot render tiles");
+            return;
+        }
+
+        // Upload mesh to GPU if not yet done or if mesh changed
+        if (!mesh_uploaded_to_gpu_) {
+            if (!UploadMeshToGPU()) {
+                spdlog::error("Tile renderer: failed to upload mesh to GPU");
+                return;
+            }
+        }
+
+        // If no visible tiles, render with base color
+        // (Don't skip rendering - globe should always be visible)
 
         // Save current OpenGL state
         GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
@@ -444,7 +475,9 @@ private:
     TileRenderConfig config_;
     TileManager* tile_manager_ = nullptr;
     TileTextureCoordinator* texture_coordinator_ = nullptr;
+    GlobeMesh* globe_mesh_ = nullptr;  // External globe mesh to render on
     bool initialized_ = false;
+    bool mesh_uploaded_to_gpu_ = false;  // Track if mesh data is on GPU
     std::uint64_t frame_counter_ = 0;
     std::vector<TileRenderState> visible_tiles_;
     TileRenderStats stats_;
@@ -582,15 +615,15 @@ private:
                         result = (ambient + diffuse) * texColor.rgb;
                         FragColor = vec4(result, texColor.a);
                     } else {
-                        // Tile loaded but empty - placeholder
-                        vec3 oceanColor = vec3(0.1, 0.3, 0.5);
-                        result = (ambient + diffuse) * oceanColor;
+                        // Tile loaded but empty - use neutral base color
+                        vec3 baseColor = vec3(0.85, 0.82, 0.75);
+                        result = (ambient + diffuse) * baseColor;
                         FragColor = vec4(result, 1.0);
                     }
                 } else {
-                    // Tile not loaded yet - show placeholder (darker blue)
-                    vec3 oceanColor = vec3(0.05, 0.15 + 0.05 * sin(geo.x * 0.1), 0.25 + 0.05 * cos(geo.y * 0.1));
-                    result = (ambient + diffuse) * oceanColor;
+                    // Tile not loaded yet - use neutral base color
+                    vec3 baseColor = vec3(0.85, 0.82, 0.75);
+                    result = (ambient + diffuse) * baseColor;
                     FragColor = vec4(result, 1.0);
                 }
             }
@@ -640,91 +673,91 @@ private:
         // Clean up shaders
         glDeleteShader(vertex_shader);
         glDeleteShader(fragment_shader);
-        
-        return CreateGlobeMesh();
+
+        // Note: Globe mesh will be uploaded to GPU when SetGlobeMesh() is called
+        // and rendering begins (lazy initialization)
+        spdlog::info("Tile renderer OpenGL state initialized (mesh will be uploaded when provided)");
+
+        return true;
     }
     
-    bool CreateGlobeMesh() {
-        // Generate simple sphere mesh for texturing
-        const float radius = 1.0f;
-        const int segments = 64;  // Higher resolution for better tile mapping
-        const int rings = 32;
-        
-        std::vector<float> vertices;
-        std::vector<unsigned int> indices;
-        
-        // Generate vertices with texture coordinates
-        for (int r = 0; r <= rings; ++r) {
-            const float theta = static_cast<float>(r) * glm::pi<float>() / rings;
-            const float sin_theta = std::sin(theta);
-            const float cos_theta = std::cos(theta);
-            
-            for (int s = 0; s <= segments; ++s) {
-                const float phi = static_cast<float>(s) * 2.0f * glm::pi<float>() / segments;
-                const float sin_phi = std::sin(phi);
-                const float cos_phi = std::cos(phi);
-                
-                // Position
-                // CRITICAL: Use sin(phi) for X and cos(phi) for Z to match shader's lon=0 → +Z convention
-                const float x = radius * sin_theta * sin_phi;
-                const float y = radius * cos_theta;
-                const float z = radius * sin_theta * cos_phi;
+    bool UploadMeshToGPU() {
+        // Upload the provided icosahedron mesh to GPU
+        // This replaces the old sphere generation - we now use the actual displaced globe mesh
 
-                // Normal (same as position for sphere)
-                const float nx = sin_theta * sin_phi;
-                const float ny = cos_theta;
-                const float nz = sin_theta * cos_phi;
-                
-                // Texture coordinates (for globe projection - mapping to world coordinates)
-                const float u = static_cast<float>(s) / segments;
-                const float v = static_cast<float>(r) / rings;
-                
-                // Add vertex (position + normal + texcoord)
-                vertices.insert(vertices.end(), {x, y, z, nx, ny, nz, u, v});
-            }
+        if (!globe_mesh_) {
+            spdlog::error("UploadMeshToGPU: no globe mesh available");
+            return false;
         }
-        
-        // Generate indices
-        for (int r = 0; r < rings; ++r) {
-            for (int s = 0; s < segments; ++s) {
-                const int current = r * (segments + 1) + s;
-                const int next = current + segments + 1;
-                
-                // First triangle
-                indices.insert(indices.end(), {
-                    static_cast<unsigned int>(current), 
-                    static_cast<unsigned int>(next), 
-                    static_cast<unsigned int>(current + 1)
-                });
-                // Second triangle
-                indices.insert(indices.end(), {
-                    static_cast<unsigned int>(next), 
-                    static_cast<unsigned int>(next + 1), 
-                    static_cast<unsigned int>(current + 1)
-                });
-            }
+
+        const auto& mesh_vertices = globe_mesh_->GetVertices();
+        const auto& mesh_indices = globe_mesh_->GetVertexIndices();
+
+        if (mesh_vertices.empty() || mesh_indices.empty()) {
+            spdlog::error("UploadMeshToGPU: globe mesh has no geometry");
+            return false;
         }
-        
+
+        spdlog::info("Uploading globe mesh to GPU: {} vertices, {} indices",
+                     mesh_vertices.size(), mesh_indices.size());
+
+        // Convert GlobeVertex to flat array for OpenGL
+        // Format: position(3) + normal(3) + texcoord(2) = 8 floats per vertex
+        std::vector<float> vertices;
+        vertices.reserve(mesh_vertices.size() * 8);
+
+        for (const auto& vertex : mesh_vertices) {
+            // Position
+            vertices.push_back(vertex.position.x);
+            vertices.push_back(vertex.position.y);
+            vertices.push_back(vertex.position.z);
+            // Normal
+            vertices.push_back(vertex.normal.x);
+            vertices.push_back(vertex.normal.y);
+            vertices.push_back(vertex.normal.z);
+            // Texture coordinates
+            vertices.push_back(vertex.texcoord.x);
+            vertices.push_back(vertex.texcoord.y);
+        }
+
         // Store indices for rendering
-        globe_indices_ = indices;
-        
+        globe_indices_.clear();
+        globe_indices_.reserve(mesh_indices.size());
+        for (const auto& index : mesh_indices) {
+            globe_indices_.push_back(static_cast<unsigned int>(index));
+        }
+
+        // Clean up old GPU resources if they exist
+        if (globe_vao_ != 0) {
+            glDeleteVertexArrays(1, &globe_vao_);
+            globe_vao_ = 0;
+        }
+        if (globe_vbo_ != 0) {
+            glDeleteBuffers(1, &globe_vbo_);
+            globe_vbo_ = 0;
+        }
+        if (globe_ebo_ != 0) {
+            glDeleteBuffers(1, &globe_ebo_);
+            globe_ebo_ = 0;
+        }
+
         // Create OpenGL objects
         glGenVertexArrays(1, &globe_vao_);
         glGenBuffers(1, &globe_vbo_);
         glGenBuffers(1, &globe_ebo_);
-        
+
         // Bind VAO
         glBindVertexArray(globe_vao_);
-        
+
         // Bind and fill VBO
         glBindBuffer(GL_ARRAY_BUFFER, globe_vbo_);
-        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), 
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float),
                     vertices.data(), GL_STATIC_DRAW);
-        
+
         // Bind and fill EBO
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, globe_ebo_);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), 
-                    indices.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, globe_indices_.size() * sizeof(unsigned int),
+                    globe_indices_.data(), GL_STATIC_DRAW);
         
         // Set vertex attributes
         // Position (location = 0)
@@ -741,10 +774,12 @@ private:
         
         // Unbind VAO
         glBindVertexArray(0);
-        
-        spdlog::info("Created globe mesh: {} vertices, {} indices", 
-                    vertices.size() / 8, indices.size());
-        
+
+        mesh_uploaded_to_gpu_ = true;
+
+        spdlog::info("Globe mesh uploaded to GPU: {} vertices, {} indices",
+                    vertices.size() / 8, globe_indices_.size());
+
         return true;
     }
     

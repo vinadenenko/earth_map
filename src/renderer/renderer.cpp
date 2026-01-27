@@ -221,6 +221,11 @@ public:
             return false;
         }
 
+        // CRITICAL: Set the icosahedron mesh on tile renderer
+        // Tile renderer MUST use this mesh, not generate its own
+        tile_renderer_->SetGlobeMesh(globe_mesh_.get());
+        spdlog::info("Icosahedron mesh provided to tile renderer");
+
         // Initialize mini-map renderer with valid shader program
         MiniMapRenderer::Config mini_map_config;
         mini_map_config.width = 256;
@@ -255,17 +260,24 @@ public:
         if (!initialized_) {
             return;
         }
-        
-        // Update tile renderer with current view
+
+        // SINGLE RENDERING PATH: Always use tile renderer
+        // Tile renderer now uses the icosahedron mesh (with elevation displacement)
+        // Missing tiles are handled by base color in shader (no fallback mesh needed)
         if (tile_renderer_) {
             tile_renderer_->BeginFrame();
             tile_renderer_->UpdateVisibleTiles(view_matrix, projection_matrix,
                                                  camera_controller_->GetPosition(), frustum);
             tile_renderer_->RenderTiles(view_matrix, projection_matrix);
             tile_renderer_->EndFrame();
+        } else {
+            // Only if tile renderer completely unavailable (should never happen)
+            spdlog::error("Tile renderer not available - nothing to render");
         }
-        
-        // Fallback to basic globe if tile renderer not available
+
+        // OLD: Fallback rendering removed - tile renderer handles everything now
+        // No more dual-mesh system!
+        /*
         if (!tile_renderer_ || tile_renderer_->GetStats().visible_tiles == 0) {
             // Log why we're using fallback globe rendering
             static bool logged_fallback_reason = false;
@@ -375,6 +387,8 @@ public:
                 glBindVertexArray(0);
             }
         }
+        */
+        // END OF OLD FALLBACK CODE
     }
 
     
