@@ -260,7 +260,7 @@ TEST_F(ElevationProviderTest, PreloadRegionSingleTile) {
     ASSERT_NE(provider, nullptr);
 
     // Preload region covering single tile
-    GeographicBounds bounds({37.0, 38.0}, {-122.0, -121.0});
+    GeographicBounds bounds({37.0, -122.0}, {38.0, -121.0});
     const size_t loaded = provider->PreloadRegion(bounds);
 
     EXPECT_EQ(loaded, 1u);
@@ -281,7 +281,7 @@ TEST_F(ElevationProviderTest, PreloadRegionMultipleTiles) {
     ASSERT_NE(provider, nullptr);
 
     // Preload region covering 2x2 tiles
-    GeographicBounds bounds({37.0, 39.0}, {-122.0, -120.0});
+    GeographicBounds bounds({37.0, -122.0}, {38.0, -121.0});
     const size_t loaded = provider->PreloadRegion(bounds);
 
     EXPECT_EQ(loaded, 4u);
@@ -292,7 +292,7 @@ TEST_F(ElevationProviderTest, PreloadRegionInvalidBounds) {
     ASSERT_NE(provider, nullptr);
 
     // Invalid bounds (min > max)
-    GeographicBounds bounds({50.0, 40.0}, {-120.0, -130.0});
+    GeographicBounds bounds({40.0, -130.0}, {50.0, -120.0});
     const size_t loaded = provider->PreloadRegion(bounds);
 
     EXPECT_EQ(loaded, 0u);
@@ -309,7 +309,7 @@ TEST_F(ElevationProviderTest, IsAvailableCached) {
     EXPECT_FALSE(provider->IsAvailable(37.5, -121.5));
 
     // Load tile via preload
-    GeographicBounds bounds({37.0, 38.0}, {-122.0, -121.0});
+    GeographicBounds bounds({37.0, -122.0}, {38.0, -121.0});
     const size_t loaded = provider->PreloadRegion(bounds);
     EXPECT_EQ(loaded, 1u);
 
@@ -375,7 +375,7 @@ TEST_F(ElevationProviderTest, ClearCache) {
     ASSERT_NE(provider, nullptr);
 
     // Load tile via preload
-    GeographicBounds bounds({37.0, 38.0}, {-122.0, -121.0});
+    GeographicBounds bounds({37.0, -122.0}, {38.0, -121.0});
     const size_t loaded = provider->PreloadRegion(bounds);
     EXPECT_EQ(loaded, 1u);
     EXPECT_TRUE(provider->IsAvailable(37.5, -121.5));
@@ -448,16 +448,16 @@ TEST_F(ElevationProviderTest, GeographicToTileFractionConversion) {
 }
 
 TEST_F(ElevationProviderTest, GeographicBoundsValidation) {
-    GeographicBounds valid({37.0, 38.0}, {-122.0, -121.0});
+    GeographicBounds valid({37.0, -122.0}, {38.0, -121.0});
     EXPECT_TRUE(valid.IsValid());
 
-    GeographicBounds invalid_lat({38.0, 37.0}, {-122.0, -121.0});
+    GeographicBounds invalid_lat({38.0, -122.0}, {37.0, -121.0});
     EXPECT_FALSE(invalid_lat.IsValid());
 
-    GeographicBounds invalid_lon({37.0, 38.0}, {-121.0, -122.0});
+    GeographicBounds invalid_lon({37.0, -121.0}, {38.0, -122.0});
     EXPECT_FALSE(invalid_lon.IsValid());
 
-    GeographicBounds out_of_range({100.0, 110.0}, {0.0, 10.0});
+    GeographicBounds out_of_range({100.0, -180.0}, {110.0, 180.0});
     EXPECT_FALSE(out_of_range.IsValid());
 }
 
@@ -637,7 +637,7 @@ TEST_F(ElevationProviderTest, ConcurrentPreload) {
 
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&]() {
-            GeographicBounds bounds({37.0, 39.0}, {-122.0, -120.0});
+            GeographicBounds bounds({37.0, -122.0}, {39.0, -120.0});
             size_t loaded = provider->PreloadRegion(bounds);
             total_loaded += loaded;
         });
@@ -684,7 +684,7 @@ TEST_F(ElevationProviderTest, ConcurrentIsAvailable) {
     ASSERT_NE(provider, nullptr);
 
     // Preload tile
-    GeographicBounds bounds({37.0, 38.0}, {-122.0, -121.0});
+    GeographicBounds bounds({37.0, -122.0}, {38.0, -121.0});
     provider->PreloadRegion(bounds);
 
     // Launch multiple threads checking availability
@@ -719,7 +719,7 @@ TEST_F(ElevationProviderTest, ConcurrentClearCache) {
     ASSERT_NE(provider, nullptr);
 
     // Preload tile
-    GeographicBounds bounds({37.0, 38.0}, {-122.0, -121.0});
+    GeographicBounds bounds({37.0, -122.0}, {38.0, -121.0});
     provider->PreloadRegion(bounds);
 
     // Launch threads that query and clear cache simultaneously
