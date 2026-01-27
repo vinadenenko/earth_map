@@ -3,6 +3,7 @@
 
 #include <earth_map/renderer/elevation_manager.h>
 #include <earth_map/coordinates/coordinate_spaces.h>
+#include <earth_map/constants.h>
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -31,6 +32,11 @@ public:
     }
 
     void ApplyElevationToMesh(std::vector<GlobeVertex>& vertices, double radius) override {
+        // NOTE: 'radius' parameter is the rendering mesh radius (normalized, typically 1.0)
+        // It is kept for API compatibility but not used in calculations.
+        // Elevation conversion uses Earth's physical radius from constants.
+        (void)radius;  // Explicitly mark as unused
+
         if (!config_.enabled) {
             return;
         }
@@ -79,9 +85,11 @@ public:
             // Apply vertical exaggeration
             float displacement = elevation * config_.exaggeration_factor;
 
-            // Normalize displacement (convert meters to globe units)
-            // Globe radius is in meters, displacement is in meters
-            float normalized_displacement = static_cast<float>(displacement / radius);
+            // Convert displacement from meters to normalized rendering units
+            // NOTE: The 'radius' parameter is the rendering mesh radius (typically 1.0)
+            // For unit conversion, we must use Earth's PHYSICAL radius in meters
+            float normalized_displacement = static_cast<float>(
+                displacement / constants::geodetic::EARTH_MEAN_RADIUS);
 
             // Displace vertex along its normal vector
             // Normal is unit vector pointing outward from globe center

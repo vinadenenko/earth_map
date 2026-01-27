@@ -588,7 +588,7 @@ bool IcosahedronGlobeMesh::Validate() const {
     
     // Check vertex data
     for (const auto& vertex : vertices_) {
-        if (glm::length(vertex.position) < params_.radius * 0.9f || 
+        if (glm::length(vertex.position) < params_.radius * 0.9f ||
             glm::length(vertex.position) > params_.radius * 1.1f) {
             spdlog::error("Mesh validation failed: vertex position out of range");
             return false;

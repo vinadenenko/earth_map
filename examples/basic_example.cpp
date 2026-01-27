@@ -342,7 +342,12 @@ int main() {
             "png"    // Format
             );
         config.tile_provider = googleProvider;
-        
+
+        // Using SRTM data
+        config.elevation_config.enabled = true;
+        config.elevation_config.exaggeration_factor = 5.5f;  // Exaggerate for visibility
+        config.srtm_loader_config.local_directory = "./srtm_data";
+
         auto earth_map_instance = earth_map::EarthMap::Create(config);
         if (!earth_map_instance) {
             std::cerr << "Failed to create Earth Map instance\n";

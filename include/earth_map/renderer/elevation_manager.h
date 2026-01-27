@@ -47,9 +47,11 @@ public:
     virtual bool Initialize(const ElevationConfig& config) = 0;
 
     /// Apply elevation data to globe mesh vertices (CPU-side displacement)
-    /// Displaces each vertex along its normal vector based on elevation data
+    /// Displaces each vertex along its normal vector based on elevation data.
+    /// Elevation values (in meters) are converted to normalized rendering units
+    /// using Earth's physical radius constant (not the mesh radius parameter).
     /// @param vertices Mesh vertices to modify in-place
-    /// @param radius Base globe radius in meters
+    /// @param radius Rendering mesh radius (normalized units, kept for API compatibility)
     virtual void ApplyElevationToMesh(std::vector<GlobeVertex>& vertices,
                                       double radius) = 0;
 
