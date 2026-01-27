@@ -41,15 +41,7 @@ protected:
             data[i * 2 + 1] = static_cast<uint8_t>(elevation & 0xFF);
         }
 
-        // Format filename
-        std::ostringstream oss;
-        oss << (coords.latitude >= 0 ? 'N' : 'S')
-            << std::abs(coords.latitude)
-            << (coords.longitude >= 0 ? 'E' : 'W')
-            << std::abs(coords.longitude)
-            << ".hgt";
-
-        const std::string filepath = test_directory_ + "/" + oss.str();
+        const std::string filepath = test_directory_ + "/" + FormatSRTMFilename(coords);
 
         std::ofstream file(filepath, std::ios::binary);
         file.write(reinterpret_cast<const char*>(data.data()), data.size());
