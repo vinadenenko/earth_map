@@ -171,7 +171,7 @@ if(EARTH_MAP_BUILD_TESTS)
     enable_testing()
     
     # Test sources
-    file(GLOB_RECURSE TEST_SOURCES "tests/unit/*.cpp" "tests/integration/*.cpp")
+    file(GLOB_RECURSE TEST_SOURCES "tests/unit/*.cpp" "tests/integration/*.cpp" "tests/data/*.cpp")
     
     # Create test executable
     add_executable(earth_map_tests ${TEST_SOURCES})
