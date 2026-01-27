@@ -16,6 +16,10 @@ Build always with this steps ONLY (first step could be skipped if this is your f
 3. cmake --build --preset conan-debug
 
 # Workflow
+  1. Always investigate existing code before adding new types. Don't violate DRY.
+  2. Search for existing definitions using Grep/Glob to avoid duplication
+  3. Understand the existing architecture before extending it
+  
 The most important thing: before doing any code change, think about it in terms of logic.
 Analyze system from logical point of view. Investigate the issues in terms of system design.
 Does this method need to have such signature?
