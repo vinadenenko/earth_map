@@ -97,17 +97,6 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb,
     return total_size;
 }
 
-/// Format SRTM filename from coordinates
-std::string FormatFilename(const SRTMCoordinates& coords) {
-    std::ostringstream oss;
-    oss << (coords.latitude >= 0 ? 'N' : 'S')
-        << std::abs(coords.latitude)
-        << (coords.longitude >= 0 ? 'E' : 'W')
-        << std::abs(coords.longitude)
-        << ".hgt";
-    return oss.str();
-}
-
 } // anonymous namespace
 
 /// Basic SRTM loader implementation
@@ -268,7 +257,7 @@ private:
         result.coordinates = coordinates;
 
         // Try preferred resolution first
-        std::string filename = FormatFilename(coordinates);
+        std::string filename = FormatSRTMFilename(coordinates);
         std::string filepath = config_.local_directory + "/" + filename;
 
         // Check if file exists

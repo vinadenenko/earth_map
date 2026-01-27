@@ -342,5 +342,12 @@ TEST_F(SRTMLoaderTest, VerifyElevationData) {
     EXPECT_EQ(sample.elevation_meters, base_elevation);
 }
 
+TEST_F(SRTMLoaderTest, MatchesStandardSRTMNaming) {
+    EXPECT_EQ(FormatSRTMFilename({0, 0}), "N00E000.hgt");
+    EXPECT_EQ(FormatSRTMFilename({1, 2}), "N01E002.hgt");
+    EXPECT_EQ(FormatSRTMFilename({27, 86}), "N27E086.hgt");
+    EXPECT_EQ(FormatSRTMFilename({-9, -1}), "S09W001.hgt");
+}
+
 } // anonymous namespace
 } // namespace earth_map

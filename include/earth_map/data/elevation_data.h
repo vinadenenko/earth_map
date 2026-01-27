@@ -4,8 +4,10 @@
 #pragma once
 
 #include <cstdint>
+#include <iomanip>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <vector>
 
 namespace earth_map {
@@ -149,6 +151,20 @@ private:
     std::vector<int16_t> elevation_data_;  ///< Row-major: [y * width + x]
     bool valid_;
 };
+
+/// Format SRTM filename from coordinates following standard naming convention
+/// Examples: N27E086.hgt, S09W001.hgt, N00E000.hgt
+/// @param coords SRTM tile coordinates
+/// @return Standard SRTM filename with zero-padded coordinates
+[[nodiscard]] inline std::string FormatSRTMFilename(const SRTMCoordinates& coords) noexcept {
+    std::ostringstream oss;
+    oss << (coords.latitude >= 0 ? 'N' : 'S')
+        << std::setw(2) << std::setfill('0') << std::abs(coords.latitude)
+        << (coords.longitude >= 0 ? 'E' : 'W')
+        << std::setw(3) << std::setfill('0') << std::abs(coords.longitude)
+        << ".hgt";
+    return oss.str();
+}
 
 } // namespace earth_map
 

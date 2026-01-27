@@ -33,17 +33,6 @@ struct CacheEntry {
           timestamp(std::chrono::system_clock::now()) {}
 };
 
-/// Format cache filename from coordinates
-std::string FormatCacheFilename(const SRTMCoordinates& coords) {
-    std::ostringstream oss;
-    oss << (coords.latitude >= 0 ? 'N' : 'S')
-        << std::abs(coords.latitude)
-        << (coords.longitude >= 0 ? 'E' : 'W')
-        << std::abs(coords.longitude)
-        << ".hgt";
-    return oss.str();
-}
-
 } // anonymous namespace
 
 /// Basic elevation cache implementation with LRU eviction
@@ -161,7 +150,7 @@ public:
 
         // Check disk cache
         if (config_.enable_disk_cache) {
-            const std::string filename = FormatCacheFilename(coordinates);
+            const std::string filename = FormatSRTMFilename(coordinates);
             const std::string filepath = config_.disk_cache_directory + "/" + filename;
             return std::filesystem::exists(filepath);
         }
@@ -176,7 +165,7 @@ public:
 
         // Remove from disk cache
         if (config_.enable_disk_cache) {
-            const std::string filename = FormatCacheFilename(coordinates);
+            const std::string filename = FormatSRTMFilename(coordinates);
             const std::string filepath = config_.disk_cache_directory + "/" + filename;
 
             try {
@@ -358,7 +347,7 @@ private:
 
     bool WriteToDiskCache(const SRTMTileData& tile_data) {
         const auto& coords = tile_data.GetMetadata().coordinates;
-        const std::string filename = FormatCacheFilename(coords);
+        const std::string filename = FormatSRTMFilename(coords);
         const std::string filepath = config_.disk_cache_directory + "/" + filename;
 
         try {
@@ -390,7 +379,7 @@ private:
     std::shared_ptr<SRTMTileData> ReadFromDiskCache(
         const SRTMCoordinates& coordinates) {
 
-        const std::string filename = FormatCacheFilename(coordinates);
+        const std::string filename = FormatSRTMFilename(coordinates);
         const std::string filepath = config_.disk_cache_directory + "/" + filename;
 
         if (!std::filesystem::exists(filepath)) {
