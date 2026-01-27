@@ -20,6 +20,9 @@
 
 namespace earth_map {
 
+// Forward declaration
+class ElevationManager;
+
 /**
  * @brief Vertex structure for globe mesh
  */
@@ -295,17 +298,32 @@ public:
     std::vector<std::size_t> GetTrianglesInBounds(
         const BoundingBox2D& bounds) const override;
 
+    /**
+     * @brief Set elevation manager for terrain displacement
+     *
+     * @param manager Shared pointer to elevation manager
+     */
+    void SetElevationManager(std::shared_ptr<ElevationManager> manager);
+
 private:
     GlobeMeshParams params_;
     std::vector<GlobeVertex> vertices_;
     std::vector<GlobeTriangle> triangles_;
     std::vector<std::uint32_t> vertex_indices_;
     std::unordered_map<std::uint64_t, std::size_t> midpoint_cache_;
-    
+    std::shared_ptr<ElevationManager> elevation_manager_;
+
     /**
      * @brief Generate icosahedron base mesh
      */
     void GenerateIcosahedron();
+
+    /**
+     * @brief Apply elevation data to mesh vertices
+     *
+     * Called after tessellation to displace vertices based on elevation data
+     */
+    void ApplyElevation();
     
     /**
      * @brief Subdivide triangle recursively

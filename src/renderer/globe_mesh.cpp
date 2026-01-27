@@ -4,6 +4,7 @@
  */
 
 #include <earth_map/renderer/globe_mesh.h>
+#include <earth_map/renderer/elevation_manager.h>
 #include <earth_map/math/bounding_box.h>
 #include <earth_map/coordinates/coordinate_mapper.h>
 #include <cmath>
@@ -55,7 +56,13 @@ bool IcosahedronGlobeMesh::Generate() {
 
         // Generate vertex indices for rendering
         GenerateVertexIndices();
-        
+
+        // Apply elevation if manager is set
+        if (elevation_manager_) {
+            spdlog::info("Applying elevation to mesh vertices");
+            ApplyElevation();
+        }
+
         // Optimize mesh for GPU rendering
         if (!Optimize()) {
             spdlog::warn("Mesh optimization failed, using unoptimized mesh");
@@ -661,6 +668,26 @@ std::vector<std::size_t> IcosahedronGlobeMesh::GetTrianglesInBounds(
     }
     
     return triangles_in_bounds;
+}
+
+void IcosahedronGlobeMesh::SetElevationManager(std::shared_ptr<ElevationManager> manager) {
+    elevation_manager_ = std::move(manager);
+    spdlog::info("Elevation manager set for globe mesh");
+}
+
+void IcosahedronGlobeMesh::ApplyElevation() {
+    if (!elevation_manager_) {
+        spdlog::warn("ApplyElevation called but elevation manager is not set");
+        return;
+    }
+
+    // Apply elevation displacement to vertices
+    elevation_manager_->ApplyElevationToMesh(vertices_, params_.radius);
+
+    // Generate normals from elevation data for proper lighting
+    elevation_manager_->GenerateNormals(vertices_);
+
+    spdlog::info("Elevation applied to globe mesh");
 }
 
 } // namespace earth_map

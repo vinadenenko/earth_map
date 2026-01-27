@@ -77,8 +77,8 @@ public:
     /// Create elevation provider instance
     /// @param loader_config SRTM loader configuration
     /// @param cache_config Optional cache configuration
-    /// @return Unique pointer to elevation provider
-    [[nodiscard]] static std::unique_ptr<ElevationProvider> Create(
+    /// @return Shared pointer to elevation provider
+    [[nodiscard]] static std::shared_ptr<ElevationProvider> Create(
         const SRTMLoaderConfig& loader_config,
         const ElevationCacheConfig& cache_config = ElevationCacheConfig{});
 };

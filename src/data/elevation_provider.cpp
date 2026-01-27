@@ -206,7 +206,7 @@ private:
     // No mutex needed - all operations delegate to thread-safe components
 };
 
-std::unique_ptr<ElevationProvider> ElevationProvider::Create(
+std::shared_ptr<ElevationProvider> ElevationProvider::Create(
     const SRTMLoaderConfig& loader_config,
     const ElevationCacheConfig& cache_config) {
 

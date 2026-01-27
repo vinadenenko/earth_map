@@ -1,4 +1,6 @@
 #include <earth_map/renderer/renderer.h>
+#include <earth_map/renderer/elevation_manager.h>
+#include <earth_map/data/elevation_provider.h>
 #include <earth_map/earth_map.h>
 #include <earth_map/constants.h>
 #include <earth_map/platform/opengl_context.h>
@@ -150,6 +152,29 @@ public:
                 return false;
             }
 
+            // Create elevation manager if enabled
+            if (config_.elevation_config.enabled) {
+                spdlog::info("Creating elevation manager (elevation rendering enabled)");
+                try {
+                    // Create elevation provider with SRTM loader
+                    auto elevation_provider = ElevationProvider::Create(config_.srtm_loader_config);
+
+                    // Create elevation manager
+                    elevation_manager_ = ElevationManager::Create(elevation_provider);
+                    if (!elevation_manager_->Initialize(config_.elevation_config)) {
+                        spdlog::error("Failed to initialize elevation manager");
+                        return false;
+                    }
+
+                    spdlog::info("Elevation manager created successfully");
+                } catch (const std::exception& e) {
+                    spdlog::error("Exception creating elevation manager: {}", e.what());
+                    return false;
+                }
+            } else {
+                spdlog::info("Elevation rendering disabled");
+            }
+
             // Create icosahedron globe mesh with normalized radius
             GlobeMeshParams params;
             params.radius = static_cast<double>(constants::rendering::NORMALIZED_GLOBE_RADIUS);
@@ -159,8 +184,17 @@ public:
             params.enable_crack_prevention = true;
 
             globe_mesh_ = GlobeMesh::Create(params);
-            if (!globe_mesh_ || !globe_mesh_->Generate()) {
-                spdlog::error("Failed to create or generate globe mesh");
+
+            // Set elevation manager on globe mesh before generation
+            if (elevation_manager_) {
+                auto icosahedron_mesh = dynamic_cast<IcosahedronGlobeMesh*>(globe_mesh_.get());
+                if (icosahedron_mesh) {
+                    icosahedron_mesh->SetElevationManager(elevation_manager_);
+                }
+            }
+
+            if (!globe_mesh_->Generate()) {
+                spdlog::error("Failed to generate globe mesh");
                 return false;
             }
 
@@ -432,7 +466,19 @@ public:
     TileRenderer* GetTileRenderer() override {
         return tile_renderer_.get();
     }
-    
+
+    ElevationManager* GetElevationManager() override {
+        return elevation_manager_.get();
+    }
+
+    void SetElevationEnabled(bool enabled) override {
+        if (elevation_manager_) {
+            elevation_manager_->SetEnabled(enabled);
+        } else if (enabled) {
+            spdlog::warn("Cannot enable elevation: elevation manager not initialized");
+        }
+    }
+
     PlacemarkRenderer* GetPlacemarkRenderer() override {
         return nullptr; // TODO: Implement
     }
@@ -554,10 +600,11 @@ private:
     std::size_t expected_globe_index_count_ = 0;
 
     std::unique_ptr<TileRenderer> tile_renderer_;
-    std::unique_ptr<MiniMapRenderer> mini_map_renderer_;
+    std::shared_ptr<MiniMapRenderer> mini_map_renderer_;
+    std::shared_ptr<ElevationManager> elevation_manager_;
     CameraController* camera_controller_ = nullptr;
     bool mini_map_enabled_ = false;
-    
+
     bool LoadShaders() {
         // Compile vertex shader
         std::uint32_t vertex_shader = glCreateShader(GL_VERTEX_SHADER);

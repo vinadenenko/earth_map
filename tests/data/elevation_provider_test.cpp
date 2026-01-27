@@ -72,7 +72,7 @@ protected:
     }
 
     /// Create elevation provider with test configuration
-    std::unique_ptr<ElevationProvider> CreateProvider() {
+    std::shared_ptr<ElevationProvider> CreateProvider() {
         SRTMLoaderConfig loader_config;
         loader_config.source = SRTMSource::LOCAL_DISK;
         loader_config.local_directory = test_data_directory_;

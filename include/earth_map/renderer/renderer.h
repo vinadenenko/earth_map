@@ -25,6 +25,7 @@ class TileRenderer;
 class PlacemarkRenderer;
 class LODManager;
 class GPUResourceManager;
+class ElevationManager;
 
 /**
  * @brief Rendering statistics for performance monitoring
@@ -189,6 +190,20 @@ public:
       * @param enabled true to enable mini-map, false to disable
       */
     virtual void SetMiniMapEnabled(bool enabled) = 0;
+
+    /**
+     * @brief Get the elevation manager
+     *
+     * @return ElevationManager* Pointer to elevation manager (non-owning), nullptr if not initialized
+     */
+    virtual ElevationManager* GetElevationManager() = 0;
+
+    /**
+     * @brief Enable or disable elevation rendering
+     *
+     * @param enabled true to enable elevation rendering, false to disable
+     */
+    virtual void SetElevationEnabled(bool enabled) = 0;
 
 protected:
     /**
