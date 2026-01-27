@@ -73,6 +73,11 @@ public:
 
         // Apply displacement to each vertex
         size_t applied_count = 0;
+        float min_elevation = std::numeric_limits<float>::max();
+        float max_elevation = std::numeric_limits<float>::lowest();
+        float min_displacement = std::numeric_limits<float>::max();
+        float max_displacement = std::numeric_limits<float>::lowest();
+
         for (size_t i = 0; i < vertices.size(); ++i) {
             if (!elevations[i].valid) {
                 continue;
@@ -81,6 +86,10 @@ public:
             // Get elevation and apply clamping
             float elevation = elevations[i].elevation_meters;
             elevation = std::clamp(elevation, config_.min_elevation, config_.max_elevation);
+
+            // Track elevation range
+            min_elevation = std::min(min_elevation, elevation);
+            max_elevation = std::max(max_elevation, elevation);
 
             // Apply vertical exaggeration
             float displacement = elevation * config_.exaggeration_factor;
@@ -91,6 +100,10 @@ public:
             float normalized_displacement = static_cast<float>(
                 displacement / constants::geodetic::EARTH_MEAN_RADIUS);
 
+            // Track displacement range
+            min_displacement = std::min(min_displacement, normalized_displacement);
+            max_displacement = std::max(max_displacement, normalized_displacement);
+
             // Displace vertex along its normal vector
             // Normal is unit vector pointing outward from globe center
             vertices[i].position += vertices[i].normal * normalized_displacement;
@@ -98,7 +111,13 @@ public:
             ++applied_count;
         }
 
-        spdlog::debug("Applied elevation to {}/{} vertices", applied_count, vertices.size());
+        spdlog::info("Elevation Tag. Applied elevation to {}/{} vertices", applied_count, vertices.size());
+        if (applied_count > 0) {
+            spdlog::info("Elevation Tag. Elevation range: [{:.1f}m, {:.1f}m]", min_elevation, max_elevation);
+            spdlog::info("Elevation Tag. Displacement range: [{:.6f}, {:.6f}] normalized units",
+                        min_displacement, max_displacement);
+            spdlog::info("Elevation Tag. Max displacement as % of radius: {:.2f}%", max_displacement * 100.0f);
+        }
     }
 
     void GenerateNormals(std::vector<GlobeVertex>& vertices) override {

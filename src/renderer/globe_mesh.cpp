@@ -681,8 +681,33 @@ void IcosahedronGlobeMesh::ApplyElevation() {
         return;
     }
 
+    // Calculate vertex position stats before elevation
+    float min_radius_before = std::numeric_limits<float>::max();
+    float max_radius_before = std::numeric_limits<float>::lowest();
+    for (const auto& vertex : vertices_) {
+        float radius = glm::length(vertex.position);
+        min_radius_before = std::min(min_radius_before, radius);
+        max_radius_before = std::max(max_radius_before, radius);
+    }
+    spdlog::info("Vertex radius before elevation: [{:.6f}, {:.6f}]",
+                 min_radius_before, max_radius_before);
+
     // Apply elevation displacement to vertices
     elevation_manager_->ApplyElevationToMesh(vertices_, params_.radius);
+
+    // Calculate vertex position stats after elevation
+    float min_radius_after = std::numeric_limits<float>::max();
+    float max_radius_after = std::numeric_limits<float>::lowest();
+    for (const auto& vertex : vertices_) {
+        float radius = glm::length(vertex.position);
+        min_radius_after = std::min(min_radius_after, radius);
+        max_radius_after = std::max(max_radius_after, radius);
+    }
+    spdlog::info("Vertex radius after elevation: [{:.6f}, {:.6f}]",
+                 min_radius_after, max_radius_after);
+    spdlog::info("Radius change: min={:.6f}, max={:.6f}",
+                 min_radius_after - min_radius_before,
+                 max_radius_after - max_radius_before);
 
     // Generate normals from elevation data for proper lighting
     elevation_manager_->GenerateNormals(vertices_);

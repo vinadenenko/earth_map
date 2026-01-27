@@ -439,6 +439,8 @@ protected:
     
     // Mouse interaction state
     bool mouse_dragging_ = false;
+    bool middle_mouse_dragging_ = false;
+    int active_mouse_button_ = -1;  // Track which button is active
     glm::vec2 last_mouse_pos_{0.0f};
     uint64_t last_mouse_time_ = 0;
     
@@ -502,23 +504,32 @@ protected:
         if (movement_mode_ != MovementMode::FREE) {
             return;
         }
-        
+
         glm::vec3 forward = GetForwardVector();
         glm::vec3 right = GetRightVector();
         glm::vec3 up = GetUpVector();
-        
-        float speed = constraints_.max_movement_speed;
+
+        // Convert speed from meters/second to normalized units/second
+        // Camera is in normalized space (radius = 1.0), but constraints are in meters
+        float speed_meters = constraints_.max_movement_speed;  // meters/second
+        float speed_normalized = constants::conversion::MetersToNormalized(speed_meters);
+
+        // Scale movement speed based on altitude (faster when higher, slower when closer to surface)
+        float distance_from_origin = glm::length(position_);
+        float altitude_factor = std::max(0.1f, distance_from_origin - 1.0f);  // Relative to normalized radius
+        float adaptive_speed = speed_normalized * (1.0f + altitude_factor * 2.0f);
+
         float rot_speed = constraints_.max_rotation_speed;
-        
+
         // Update position
         if (glm::abs(movement_forward_) > 0.01f) {
-            position_ += forward * movement_forward_ * speed * delta_time;
+            position_ += forward * movement_forward_ * adaptive_speed * delta_time;
         }
         if (glm::abs(movement_right_) > 0.01f) {
-            position_ += right * movement_right_ * speed * delta_time;
+            position_ += right * movement_right_ * adaptive_speed * delta_time;
         }
         if (glm::abs(movement_up_) > 0.01f) {
-            position_ += up * movement_up_ * speed * delta_time;
+            position_ += up * movement_up_ * adaptive_speed * delta_time;
         }
         
         // Update orientation
@@ -534,7 +545,19 @@ protected:
             roll_ += rotation_z_ * rot_speed * delta_time;
             roll_ = std::fmod(roll_, 360.0f);
         }
-        
+
+        // Apply decay to movement impulses (from scroll wheel)
+        // This prevents continuous movement after scroll
+        float decay_rate = 10.0f;  // Higher = faster decay
+        movement_forward_ *= std::exp(-decay_rate * delta_time);
+        movement_right_ *= std::exp(-decay_rate * delta_time);
+        movement_up_ *= std::exp(-decay_rate * delta_time);
+
+        // Zero out very small values
+        if (std::abs(movement_forward_) < 0.001f) movement_forward_ = 0.0f;
+        if (std::abs(movement_right_) < 0.001f) movement_right_ = 0.0f;
+        if (std::abs(movement_up_) < 0.001f) movement_up_ = 0.0f;
+
         // Update target based on orientation
         glm::quat q = glm::quat(glm::radians(glm::vec3(pitch_, heading_, roll_)));
         glm::vec3 direction = q * glm::vec3(0.0f, 0.0f, -1.0f);
@@ -542,38 +565,78 @@ protected:
     }
     
     bool HandleMouseMove(const InputEvent& event) {
-        if (!mouse_dragging_) {
+        if (!mouse_dragging_ && !middle_mouse_dragging_) {
             return false;
         }
-        
+
         glm::vec2 current_pos(event.x, event.y);
         glm::vec2 delta = current_pos - last_mouse_pos_;
-        
-        if (movement_mode_ == MovementMode::ORBIT) {
-            // Orbital camera controls
-            float sensitivity = 0.5f;
-            
-            // Rotate around target
-            glm::vec3 offset = position_ - target_;
-            // float distance = glm::length(offset);
-            
-            // Horizontal rotation (around Y axis)
-            glm::quat horiz_rot = glm::angleAxis(-delta.x * sensitivity * 0.01f, glm::vec3(0.0f, 1.0f, 0.0f));
-            offset = horiz_rot * offset;
-            
-            // Vertical rotation (around right vector)
-            glm::vec3 right = glm::normalize(glm::cross(glm::normalize(offset), glm::vec3(0.0f, 1.0f, 0.0f)));
-            glm::quat vert_rot = glm::angleAxis(delta.y * sensitivity * 0.01f, right);
-            offset = vert_rot * offset;
-            
-            position_ = target_ + offset;
-        } else {
-            // Free camera controls
-            float sensitivity = 0.2f;
-            rotation_x_ = -delta.x * sensitivity;
-            rotation_y_ = -delta.y * sensitivity;
+
+        // Middle mouse button: Tilt and rotate camera (pitch and heading)
+        if (middle_mouse_dragging_ && active_mouse_button_ == 2) {
+            if (movement_mode_ == MovementMode::ORBIT) {
+                // Tilt mode: change pitch (up/down drag) and heading (left/right drag)
+                float sensitivity = 0.3f;
+
+                // Horizontal drag: rotate heading around the target
+                heading_ -= delta.x * sensitivity;
+                heading_ = std::fmod(heading_, 360.0f);
+
+                // Vertical drag: tilt pitch
+                pitch_ -= delta.y * sensitivity;
+                pitch_ = std::clamp(pitch_, constraints_.min_pitch, constraints_.max_pitch);
+
+                // Recalculate camera position based on new heading and pitch
+                glm::vec3 offset = position_ - target_;
+                float distance = glm::length(offset);
+
+                // Convert heading and pitch to spherical coordinates
+                float heading_rad = glm::radians(heading_);
+                float pitch_rad = glm::radians(pitch_);
+
+                // Calculate new camera position
+                offset.x = distance * std::cos(pitch_rad) * std::sin(heading_rad);
+                offset.y = distance * std::sin(pitch_rad);
+                offset.z = distance * std::cos(pitch_rad) * std::cos(heading_rad);
+
+                position_ = target_ + offset;
+            } else {
+                // Free mode: adjust pitch and heading
+                float sensitivity = 0.2f;
+                heading_ -= delta.x * sensitivity;
+                heading_ = std::fmod(heading_, 360.0f);
+
+                pitch_ -= delta.y * sensitivity;
+                pitch_ = std::clamp(pitch_, constraints_.min_pitch, constraints_.max_pitch);
+            }
         }
-        
+        // Left mouse button: Standard orbit/rotation
+        else if (mouse_dragging_ && active_mouse_button_ == 0) {
+            if (movement_mode_ == MovementMode::ORBIT) {
+                // Orbital camera controls
+                float sensitivity = 0.5f;
+
+                // Rotate around target
+                glm::vec3 offset = position_ - target_;
+
+                // Horizontal rotation (around Y axis)
+                glm::quat horiz_rot = glm::angleAxis(-delta.x * sensitivity * 0.01f, glm::vec3(0.0f, 1.0f, 0.0f));
+                offset = horiz_rot * offset;
+
+                // Vertical rotation (around right vector)
+                glm::vec3 right = glm::normalize(glm::cross(glm::normalize(offset), glm::vec3(0.0f, 1.0f, 0.0f)));
+                glm::quat vert_rot = glm::angleAxis(delta.y * sensitivity * 0.01f, right);
+                offset = vert_rot * offset;
+
+                position_ = target_ + offset;
+            } else {
+                // Free camera controls
+                float sensitivity = 0.2f;
+                rotation_x_ = -delta.x * sensitivity;
+                rotation_y_ = -delta.y * sensitivity;
+            }
+        }
+
         last_mouse_pos_ = current_pos;
         last_mouse_time_ = event.timestamp;
         return true;
@@ -582,6 +645,13 @@ protected:
     bool HandleMousePress(const InputEvent& event) {
         if (event.button == 0) { // Left mouse button
             mouse_dragging_ = true;
+            active_mouse_button_ = 0;
+            last_mouse_pos_ = glm::vec2(event.x, event.y);
+            last_mouse_time_ = event.timestamp;
+            return true;
+        } else if (event.button == 2) { // Middle mouse button (button 2 in GLFW)
+            middle_mouse_dragging_ = true;
+            active_mouse_button_ = 2;
             last_mouse_pos_ = glm::vec2(event.x, event.y);
             last_mouse_time_ = event.timestamp;
             return true;
@@ -592,34 +662,52 @@ protected:
     bool HandleMouseRelease(const InputEvent& event) {
         if (event.button == 0) { // Left mouse button
             mouse_dragging_ = false;
+            if (active_mouse_button_ == 0) {
+                active_mouse_button_ = -1;
+            }
             rotation_x_ = 0.0f;
             rotation_y_ = 0.0f;
+            return true;
+        } else if (event.button == 2) { // Middle mouse button
+            middle_mouse_dragging_ = false;
+            if (active_mouse_button_ == 2) {
+                active_mouse_button_ = -1;
+            }
             return true;
         }
         return false;
     }
     
     bool HandleMouseScroll(const InputEvent& event) {
+        // Zoom factor: how much to zoom per scroll tick
+        // Positive scroll = zoom in (decrease distance), negative = zoom out (increase distance)
         float zoom_factor = 0.1f;
-        float scroll_delta = event.scroll_delta * zoom_factor;
-        
+
         if (movement_mode_ == MovementMode::ORBIT) {
             // Zoom in orbital mode
             glm::vec3 offset = position_ - target_;
-            float new_distance = glm::length(offset) * (1.0f - scroll_delta);
-            
+            float current_distance = glm::length(offset);
+
+            // Calculate zoom speed based on current distance (zoom faster when far, slower when close)
+            float zoom_speed = 1.0f - (event.scroll_delta * zoom_factor);
+            float new_distance = current_distance * zoom_speed;
+
             // Apply constraints (in normalized units)
             float min_distance = constants::camera_constraints::MIN_DISTANCE_NORMALIZED;
             float max_distance = constants::camera_constraints::MAX_DISTANCE_NORMALIZED;
             new_distance = std::clamp(new_distance, min_distance, max_distance);
-            
-            offset = glm::normalize(offset) * new_distance;
-            position_ = target_ + offset;
+
+            // Only update if distance actually changed (not clamped)
+            if (std::abs(new_distance - current_distance) > 0.0001f) {
+                offset = glm::normalize(offset) * new_distance;
+                position_ = target_ + offset;
+            }
         } else {
-            // Move forward/backward in free mode
-            movement_forward_ = -scroll_delta;
+            // Move forward/backward in free mode using scroll
+            // Convert scroll to movement impulse
+            movement_forward_ = event.scroll_delta * 2.0f;
         }
-        
+
         return true;
     }
     
@@ -676,21 +764,99 @@ protected:
     }
     
     bool HandleDoubleClick(const InputEvent& event) {
-        (void)event;
-        // Animate to clicked position on globe
-        // This would require ray casting to intersect with globe
-        // For now, just zoom in
-        if (movement_mode_ == MovementMode::ORBIT) {
-            glm::vec3 offset = position_ - target_;
-            float new_distance = glm::length(offset) * 0.5f;
-            offset = glm::normalize(offset) * new_distance;
-            
-            glm::vec3 new_position = target_ + offset;
-            // glm::vec3 start_pos = position_;
-            
-            AnimateToPosition(new_position, 0.5f);
+        // Perform ray casting to find click location on globe
+        // Convert mouse coordinates to ray in world space
+
+        // Use screen dimensions from config (this is approximate - ideally we'd get actual viewport)
+        int screen_width = config_.screen_width;
+        int screen_height = config_.screen_height;
+        glm::ivec4 viewport(0, 0, screen_width, screen_height);
+
+        // Get camera matrices
+        float aspect_ratio = static_cast<float>(screen_width) / screen_height;
+        glm::mat4 projection = GetProjectionMatrix(aspect_ratio);
+        glm::mat4 view = GetViewMatrix();
+
+        // Convert screen coordinates to NDC (-1 to 1)
+        // Note: GLFW Y=0 at top, OpenGL Y=0 at bottom
+        float ndc_x = (event.x / screen_width) * 2.0f - 1.0f;
+        float ndc_y = 1.0f - (event.y / screen_height) * 2.0f;
+
+        // Unproject to world space
+        glm::vec4 ray_clip(ndc_x, ndc_y, -1.0f, 1.0f);
+        glm::vec4 ray_eye = glm::inverse(projection) * ray_clip;
+        ray_eye = glm::vec4(ray_eye.x, ray_eye.y, -1.0f, 0.0f);
+        glm::vec3 ray_world = glm::vec3(glm::inverse(view) * ray_eye);
+        ray_world = glm::normalize(ray_world);
+
+        // Ray-sphere intersection with globe (sphere at origin with radius 1.0)
+        glm::vec3 ray_origin = position_;
+        glm::vec3 ray_dir = ray_world;
+        glm::vec3 sphere_center(0.0f, 0.0f, 0.0f);
+        float sphere_radius = 1.0f;  // Normalized globe radius
+
+        // Ray-sphere intersection
+        glm::vec3 oc = ray_origin - sphere_center;
+        float a = glm::dot(ray_dir, ray_dir);
+        float b = 2.0f * glm::dot(oc, ray_dir);
+        float c = glm::dot(oc, oc) - sphere_radius * sphere_radius;
+        float discriminant = b * b - 4.0f * a * c;
+
+        if (discriminant >= 0.0f) {
+            // Ray hits the globe
+            float t = (-b - std::sqrt(discriminant)) / (2.0f * a);
+            glm::vec3 hit_point = ray_origin + ray_dir * t;
+
+            // Animate camera to look at this point
+            if (movement_mode_ == MovementMode::ORBIT) {
+                // Set new target to clicked point
+                glm::vec3 new_target = hit_point;
+
+                // Calculate new camera position: maintain current distance but point at new target
+                glm::vec3 current_offset = position_ - target_;
+                float current_distance = glm::length(current_offset);
+
+                // Zoom in to a closer distance (50% of current distance, but not too close)
+                float zoom_factor = 0.4f;
+                float new_distance = std::max(current_distance * zoom_factor,
+                                             constants::camera_constraints::MIN_DISTANCE_NORMALIZED * 2.0f);
+
+                // Calculate new position: from target toward camera direction
+                glm::vec3 to_camera = glm::normalize(position_ - new_target);
+                glm::vec3 new_position = new_target + to_camera * new_distance;
+
+                // Animate to new position and target
+                animation_.start_position = position_;
+                animation_.target_position = new_position;
+                animation_.start_orientation = glm::vec3(heading_, pitch_, roll_);
+                animation_.target_orientation = animation_.start_orientation;  // Keep orientation
+                animation_.duration = 0.8f;  // Smooth animation
+                animation_.elapsed = 0.0f;
+                animation_.active = true;
+                animation_.easing_function = Easing::EaseInOutCubic;
+
+                // Update target immediately so camera knows where to look during animation
+                target_ = new_target;
+
+                spdlog::info("Double-click: zooming to position ({:.3f}, {:.3f}, {:.3f})",
+                           new_target.x, new_target.y, new_target.z);
+            }
+        } else {
+            // Ray missed the globe - just zoom in toward current target
+            if (movement_mode_ == MovementMode::ORBIT) {
+                glm::vec3 offset = position_ - target_;
+                float new_distance = glm::length(offset) * 0.5f;
+
+                // Apply min distance constraint
+                new_distance = std::max(new_distance, constants::camera_constraints::MIN_DISTANCE_NORMALIZED);
+
+                offset = glm::normalize(offset) * new_distance;
+                glm::vec3 new_position = target_ + offset;
+
+                AnimateToPosition(new_position, 0.5f);
+            }
         }
-        
+
         return true;
     }
     

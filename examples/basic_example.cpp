@@ -33,6 +33,10 @@ static earth_map::EarthMap* g_earth_map_instance = nullptr;
 static bool show_help = true;
 static bool show_overlay = true;
 
+// Double-click detection
+static double last_click_time = 0.0;
+static constexpr double DOUBLE_CLICK_THRESHOLD = 0.3; // seconds
+
 // Movement state for WASD controls
 struct MovementState {
     bool forward = false;
@@ -49,8 +53,10 @@ void print_help() {
     std::cout << "║          EARTH MAP - CAMERA CONTROLS                       ║\n";
     std::cout << "╠════════════════════════════════════════════════════════════╣\n";
     std::cout << "║ Mouse Controls:                                            ║\n";
-    std::cout << "║   Left Mouse + Drag : Rotate camera view                   ║\n";
-    std::cout << "║   Scroll Wheel      : Zoom in/out                          ║\n";
+    std::cout << "║   Left Mouse + Drag   : Rotate camera view                 ║\n";
+    std::cout << "║   Middle Mouse + Drag : Tilt camera (pitch/heading)        ║\n";
+    std::cout << "║   Double Click        : Zoom to clicked location           ║\n";
+    std::cout << "║   Scroll Wheel        : Zoom in/out                        ║\n";
     std::cout << "║                                                            ║\n";
     std::cout << "║ Keyboard Controls:                                         ║\n";
     std::cout << "║   W / S             : Move forward / backward (FREE mode)  ║\n";
@@ -59,6 +65,7 @@ void print_help() {
     std::cout << "║   F                 : Toggle camera mode (FREE/ORBIT)      ║\n";
     std::cout << "║   M                 : Toggle mini-map                       ║\n";
     std::cout << "║   R                 : Reset camera to default view         ║\n";
+    std::cout << "║   1                 : Jump to Himalayas (SRTM data region) ║\n";
     std::cout << "║   O                 : Toggle debug overlay                 ║\n";
     std::cout << "║   H                 : Toggle this help text                ║\n";
     std::cout << "║   ESC               : Exit application                     ║\n";
@@ -100,6 +107,14 @@ void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int
                 camera->Reset();
                 std::cout << "→ Camera reset to default view\n";
                 break;
+            case GLFW_KEY_1: {
+                // Jump to Himalayan region (where SRTM data is)
+                // Coordinates: 27-29°N, 86-94°E (Mt. Everest region)
+                camera->SetGeographicPosition(90.0, 28.0, 500000.0);  // 500km altitude
+                camera->SetMovementMode(earth_map::CameraController::MovementMode::ORBIT);
+                std::cout << "→ Jumped to Himalayan region (SRTM data area)\n";
+                break;
+            }
             case GLFW_KEY_O:
                 show_overlay = !show_overlay;
                 std::cout << "→ Debug overlay: " << (show_overlay ? "ON" : "OFF") << "\n";
@@ -175,6 +190,37 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mod
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
+            // Detect double-click on left mouse button
+            if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT) {
+                double current_time = glfwGetTime();
+                double time_since_last_click = current_time - last_click_time;
+
+                // Get mouse position
+                double mouse_x, mouse_y;
+                glfwGetCursorPos(window, &mouse_x, &mouse_y);
+
+                // Check for double-click
+                if (time_since_last_click < DOUBLE_CLICK_THRESHOLD) {
+                    // Double-click detected
+                    earth_map::InputEvent double_click_event;
+                    double_click_event.type = earth_map::InputEvent::Type::DOUBLE_CLICK;
+                    double_click_event.button = button;
+                    double_click_event.x = static_cast<float>(mouse_x);
+                    double_click_event.y = static_cast<float>(mouse_y);
+                    double_click_event.timestamp = current_time * 1000.0;
+
+                    camera->ProcessInput(double_click_event);
+
+                    std::cout << "→ Double-click detected: zooming to location\n";
+
+                    // Reset click time to prevent triple-click
+                    last_click_time = 0.0;
+                    return;  // Don't process as regular click
+                }
+
+                last_click_time = current_time;
+            }
+
             // Convert click to geographic coordinates on left mouse press
             if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT) {
                 // Use actual OpenGL viewport (handles retina/HiDPI correctly)
@@ -345,7 +391,7 @@ int main() {
 
         // Using SRTM data
         config.elevation_config.enabled = true;
-        config.elevation_config.exaggeration_factor = 5.5f;  // Exaggerate for visibility
+        config.elevation_config.exaggeration_factor = 100.5f;  // Exaggerate for visibility
         config.srtm_loader_config.local_directory = "./srtm_data";
 
         auto earth_map_instance = earth_map::EarthMap::Create(config);
@@ -446,12 +492,14 @@ int main() {
         auto last_overlay_time = last_time;
 
         // Movement speed in meters/second
-        const float movement_speed = 100000.0f;  // 100 km/s
+        const float movement_speed = 0.5f;
 
         while (!glfwWindowShouldClose(window)) {
             // Calculate delta time
             auto current_time = std::chrono::high_resolution_clock::now();
             float delta_time = std::chrono::duration<float>(current_time - last_time).count();
+            // const float max_delta_time = 0.1f;  // Cap the delta_time to avoid extreme movement
+            // delta_time = glm::min(delta_time, max_delta_time);
             last_time = current_time;
 
             // Update camera
