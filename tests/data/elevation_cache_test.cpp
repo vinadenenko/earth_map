@@ -412,7 +412,7 @@ TEST_F(ElevationCacheTest, MultipleGetsUpdateLRU) {
     ElevationCacheConfig config;
     config.disk_cache_directory = cache_directory_;
     config.enable_disk_cache = false;
-    config.max_memory_cache_size = 10 * 1024 * 1024;  // Small cache
+    config.max_memory_cache_size = 30 * 1024 * 1024;  // Small cache
 
     auto cache = ElevationCache::Create(config);
     ASSERT_NE(cache, nullptr);

@@ -368,8 +368,18 @@ private:
             }
 
             const auto& raw_data = tile_data.GetRawData();
-            file.write(reinterpret_cast<const char*>(raw_data.data()),
-                       raw_data.size() * sizeof(int16_t));
+
+            // Convert to big-endian format (HGT standard) before writing
+            std::vector<uint8_t> big_endian_data(raw_data.size() * 2);
+            for (size_t i = 0; i < raw_data.size(); ++i) {
+                const int16_t value = raw_data[i];
+                // Write high byte first (big-endian)
+                big_endian_data[i * 2] = static_cast<uint8_t>((value >> 8) & 0xFF);
+                big_endian_data[i * 2 + 1] = static_cast<uint8_t>(value & 0xFF);
+            }
+
+            file.write(reinterpret_cast<const char*>(big_endian_data.data()),
+                       big_endian_data.size());
 
             return file.good();
         } catch (...) {
