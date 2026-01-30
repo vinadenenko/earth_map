@@ -506,5 +506,73 @@ bool CoordinateMapper::RaySphereIntersection(
     return true;
 }
 
+// ============================================================================
+// Spherical Tile Mapping (for 3D Globe)
+// ============================================================================
+
+TileCoordinates CoordinateMapper::GeographicToSphericalTile(
+    const Geographic& geo,
+    int32_t zoom) noexcept {
+
+    // For 3D sphere rendering with Web Mercator tiles:
+    // - Vertex positions use simple sphere math (no distortion)
+    // - Tile coordinates use Web Mercator (to match XYZ tile server layout)
+    // This function maps 3D vertex positions to Web Mercator tile coordinates
+
+    const int32_t n = 1 << zoom;  // 2^zoom
+
+    // Longitude: simple linear mapping
+    const double norm_lon = (geo.longitude + 180.0) / 360.0;
+
+    // Latitude: Web Mercator projection (to match tile server)
+    const double lat_clamped = std::clamp(geo.latitude, -85.0511, 85.0511);
+    const double lat_clamped_rad = lat_clamped * M_PI / 180.0;
+
+    // Web Mercator Y: y = ln(tan(π/4 + lat/2))
+    const double merc_y = std::log(std::tan(M_PI / 4.0 + lat_clamped_rad / 2.0));
+    // Normalize to [0, 1]: y ∈ [-π, π] → [0, 1]
+    const double norm_lat = (1.0 - merc_y / M_PI) / 2.0;
+
+    // Convert to tile coordinates
+    const int32_t tile_x = static_cast<int32_t>(std::floor(norm_lon * n));
+    const int32_t tile_y = static_cast<int32_t>(std::floor(norm_lat * n));
+
+    // Clamp to valid range [0, n-1]
+    const int32_t clamped_x = std::clamp(tile_x, 0, n - 1);
+    const int32_t clamped_y = std::clamp(tile_y, 0, n - 1);
+
+    return TileCoordinates{clamped_x, clamped_y, zoom};
+}
+
+glm::vec2 CoordinateMapper::GetTileFraction(
+    const Geographic& geo,
+    const TileCoordinates& tile) noexcept {
+
+    const int32_t n = 1 << tile.zoom;  // 2^zoom
+
+    // Longitude: simple linear mapping
+    const double norm_lon = (geo.longitude + 180.0) / 360.0;
+
+    // Latitude: Web Mercator projection (to match tile server)
+    const double lat_clamped = std::clamp(geo.latitude, -85.0511, 85.0511);
+    const double lat_clamped_rad = lat_clamped * M_PI / 180.0;
+    const double merc_y = std::log(std::tan(M_PI / 4.0 + lat_clamped_rad / 2.0));
+    const double norm_lat = (1.0 - merc_y / M_PI) / 2.0;
+
+    // Calculate tile-space coordinates (continuous)
+    const double tile_lon = norm_lon * n;
+    const double tile_lat = norm_lat * n;
+
+    // Calculate fractional position within tile
+    const double frac_x = tile_lon - tile.x;
+    const double frac_y = tile_lat - tile.y;
+
+    // Clamp to [0, 1] and convert to float
+    return glm::vec2(
+        static_cast<float>(std::clamp(frac_x, 0.0, 1.0)),
+        static_cast<float>(std::clamp(frac_y, 0.0, 1.0))
+    );
+}
+
 } // namespace coordinates
 } // namespace earth_map

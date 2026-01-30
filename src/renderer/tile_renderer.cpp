@@ -519,21 +519,27 @@ private:
             layout (location = 0) in vec3 aPos;
             layout (location = 1) in vec3 aNormal;
             layout (location = 2) in vec2 aTexCoord;
-            
+            layout (location = 3) in vec2 aBaseTile;     // Pre-computed tile coords (spherical)
+            layout (location = 4) in vec2 aTileFrac;     // Position within tile [0,1]
+
             uniform mat4 uModel;
             uniform mat4 uView;
             uniform mat4 uProjection;
             uniform sampler2D uTileTexture;
-            
+
             out vec3 FragPos;
             out vec3 Normal;
             out vec2 TexCoord;
-            
+            out vec2 BaseTile;    // Pass to fragment shader
+            out vec2 TileFrac;    // Pass to fragment shader
+
             void main() {
                 FragPos = vec3(uModel * vec4(aPos, 1.0));
                 Normal = mat3(transpose(inverse(uModel))) * aNormal;
                 TexCoord = aTexCoord;
-                
+                BaseTile = aBaseTile;  // Pass through pre-computed tile coords
+                TileFrac = aTileFrac;  // Pass through tile fraction
+
                 gl_Position = uProjection * uView * vec4(FragPos, 1.0);
             }
         )";
@@ -543,6 +549,8 @@ private:
             in vec3 FragPos;
             in vec3 Normal;
             in vec2 TexCoord;
+            in vec2 BaseTile;   // Not used - kept for compatibility
+            in vec2 TileFrac;   // Not used - kept for compatibility
 
             out vec4 FragColor;
 
@@ -559,28 +567,69 @@ private:
             uniform ivec3 uTileCoords[MAX_TILES];     // Tile coordinates (x, y, zoom)
             uniform vec4 uTileUVs[MAX_TILES];         // Atlas UV coords (u_min, v_min, u_max, v_max)
 
-            // Convert world position to geographic coordinates
-            // CRITICAL FIX: atan2 arguments must match C++ CartesianToGeographic
-            // C++ uses: atan2(x, z), GLSL atan(y_arg, x_arg) = atan2(y_arg, x_arg)
-            vec3 worldToGeo(vec3 worldPos) {
-                float lat = degrees(asin(clamp(worldPos.y, -1.0, 1.0)));
-                float lon = degrees(atan(worldPos.x, worldPos.z));  // atan2(x, z) in C++
-                return vec3(lon, lat, 0.0);
+            // Convert world position to geographic coordinates (lat/lon)
+            // This matches CoordinateMapper::CartesianToGeographic()
+            vec2 worldToGeo(vec3 pos) {
+                vec3 normalized = normalize(pos);
+                float lat = asin(normalized.y) * 180.0 / 3.14159265359;
+                float lon = atan(normalized.x, normalized.z) * 180.0 / 3.14159265359;
+                return vec2(lon, lat);
             }
 
-            // Convert geographic coordinates to tile coordinates at given zoom level
-            vec2 geoToTile(vec2 geo, float zoom) {
-                float n = pow(2.0, zoom);
-                float x = (geo.x + 180.0) / 360.0 * n;
-                // Web Mercator projection with latitude clamping
-                float lat_rad = radians(clamp(geo.y, -85.0511, 85.0511));
-                float y = (1.0 - log(tan(lat_rad) + 1.0/cos(lat_rad)) / 3.14159265359) / 2.0 * n;
-                return vec2(x, y);
+            // Convert geographic to tile coordinates using Web Mercator
+            // This matches CoordinateMapper::GeographicToSphericalTile() with Web Mercator
+            ivec2 geoToTile(vec2 geo, float zoom) {
+                const float PI = 3.14159265359;
+                int n = int(pow(2.0, zoom));
+
+                // Longitude: simple linear mapping
+                float norm_lon = (geo.x + 180.0) / 360.0;
+
+                // Latitude: Web Mercator projection
+                float lat_clamped = clamp(geo.y, -85.0511, 85.0511);
+                float lat_rad = lat_clamped * PI / 180.0;
+                float merc_y = log(tan(PI / 4.0 + lat_rad / 2.0));
+                float norm_lat = (1.0 - merc_y / PI) / 2.0;
+
+                int tile_x = int(floor(norm_lon * float(n)));
+                int tile_y = int(floor(norm_lat * float(n)));
+
+                // Clamp to valid range
+                tile_x = clamp(tile_x, 0, n - 1);
+                tile_y = clamp(tile_y, 0, n - 1);
+
+                return ivec2(tile_x, tile_y);
             }
 
-            // Find tile UV coordinates from loaded tiles
-            vec4 findTileUV(ivec3 tileCoord, vec2 tileFrac) {
-                // Search for matching tile in loaded tiles
+            // Calculate fractional position within tile
+            vec2 getTileFrac(vec2 geo, ivec2 tile, float zoom) {
+                const float PI = 3.14159265359;
+                int n = int(pow(2.0, zoom));
+
+                float norm_lon = (geo.x + 180.0) / 360.0;
+
+                float lat_clamped = clamp(geo.y, -85.0511, 85.0511);
+                float lat_rad = lat_clamped * PI / 180.0;
+                float merc_y = log(tan(PI / 4.0 + lat_rad / 2.0));
+                float norm_lat = (1.0 - merc_y / PI) / 2.0;
+
+                float tile_x_f = norm_lon * float(n);
+                float tile_y_f = norm_lat * float(n);
+
+                float frac_x = fract(tile_x_f);
+                float frac_y = fract(tile_y_f);
+
+                return vec2(frac_x, frac_y);
+            }
+
+            // Find tile UV in atlas
+            vec4 findTileUV(vec2 geo, float zoom) {
+                // Calculate tile coordinates at current zoom from geographic position
+                ivec2 tile = geoToTile(geo, zoom);
+                vec2 tileFrac = getTileFrac(geo, tile, zoom);
+
+                // Look up tile in loaded tiles array
+                ivec3 tileCoord = ivec3(tile, int(zoom));
                 for (int i = 0; i < uNumTiles && i < MAX_TILES; i++) {
                     if (uTileCoords[i] == tileCoord) {
                         // Found the tile - interpolate within its UV region
@@ -602,29 +651,16 @@ private:
                 float diff = max(dot(norm, lightDir), 0.0);
                 vec3 diffuse = diff * uLightColor;
 
-                // Convert world position to geographic coordinates
-                vec3 geo = worldToGeo(normalize(FragPos));
+                // Compute geographic coordinates from world position
+                vec2 geo = worldToGeo(FragPos);
 
-                // Convert to tile coordinates at current zoom level
+                // Look up tile using geographic coordinates
                 float zoom = max(uZoomLevel, 0.0);
-                vec2 tile = geoToTile(geo.xy, zoom);
-
-                // Get integer tile coordinates
-                ivec2 tileInt = ivec2(floor(tile));
-                int zoomInt = int(zoom);
-
-                // Calculate tile fraction (position within the tile)
-                vec2 tileFrac = fract(tile);
-                // CRITICAL FIX: Flip U coordinate (horizontal) to fix mirroring
-                tileFrac.x = 1.0 - tileFrac.x;
-
-                // Look up tile UV from coordinator's data
-                ivec3 tileCoord = ivec3(tileInt, zoomInt);
-                vec4 uvResult = findTileUV(tileCoord, tileFrac);
+                vec4 uvResult = findTileUV(geo, zoom);
 
                 vec3 result;
                 if (uvResult.z > 0.5) {
-                    // Tile found - sample from atlas using coordinator's UV
+                    // Tile found - sample from atlas
                     vec4 texColor = texture(uTileTexture, uvResult.xy);
 
                     float texBrightness = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
@@ -720,9 +756,9 @@ private:
                      mesh_vertices.size(), mesh_indices.size());
 
         // Convert GlobeVertex to flat array for OpenGL
-        // Format: position(3) + normal(3) + texcoord(2) = 8 floats per vertex
+        // Format: position(3) + normal(3) + texcoord(2) + base_tile(2) + tile_frac(2) = 12 floats per vertex
         std::vector<float> vertices;
-        vertices.reserve(mesh_vertices.size() * 8);
+        vertices.reserve(mesh_vertices.size() * 12);
 
         for (const auto& vertex : mesh_vertices) {
             // Position
@@ -736,6 +772,11 @@ private:
             // Texture coordinates
             vertices.push_back(vertex.texcoord.x);
             vertices.push_back(vertex.texcoord.y);
+            // Pre-computed tile coordinates (spherical mapping)
+            vertices.push_back(static_cast<float>(vertex.base_tile.x));
+            vertices.push_back(static_cast<float>(vertex.base_tile.y));
+            vertices.push_back(vertex.tile_frac.x);
+            vertices.push_back(vertex.tile_frac.y);
         }
 
         // Store indices for rendering
@@ -779,17 +820,25 @@ private:
         
         // Set vertex attributes
         // Position (location = 0)
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
-        
+
         // Normal (location = 1)
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 12 * sizeof(float), (void*)(3 * sizeof(float)));
         glEnableVertexAttribArray(1);
-        
+
         // Texture coordinates (location = 2)
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 12 * sizeof(float), (void*)(6 * sizeof(float)));
         glEnableVertexAttribArray(2);
-        
+
+        // Base tile coordinates (location = 3) - pre-computed on CPU
+        glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 12 * sizeof(float), (void*)(8 * sizeof(float)));
+        glEnableVertexAttribArray(3);
+
+        // Tile fraction (location = 4) - pre-computed on CPU
+        glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, 12 * sizeof(float), (void*)(10 * sizeof(float)));
+        glEnableVertexAttribArray(4);
+
         // Unbind VAO
         glBindVertexArray(0);
 

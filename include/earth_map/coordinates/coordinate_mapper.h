@@ -142,6 +142,39 @@ public:
         const GeographicBounds& bounds,
         int32_t zoom);
 
+    /**
+     * @brief Convert geographic to tile coordinates using SPHERICAL mapping (3D globe)
+     *
+     * Uses LINEAR latitude/longitude mapping for 3D sphere rendering:
+     * - NOT Web Mercator! This is for 3D globe only.
+     * - Latitude [-90°, 90°] → Y [0, 2^zoom] (linear, no distortion)
+     * - Longitude [-180°, 180°] → X [0, 2^zoom] (linear wraparound)
+     *
+     * This mapping ensures tile coordinates match sphere vertex positions.
+     * For 2D minimap, use Web Mercator-based GeographicToTile() instead.
+     *
+     * @param geo Geographic coordinates
+     * @param zoom Zoom level (0-30)
+     * @return Tile coordinates using spherical projection
+     */
+    [[nodiscard]] static TileCoordinates GeographicToSphericalTile(
+        const Geographic& geo,
+        int32_t zoom) noexcept;
+
+    /**
+     * @brief Calculate fractional position within a tile (0-1 range)
+     *
+     * Given a geographic point and its containing tile, calculate the
+     * fractional position within that tile for texture coordinate interpolation.
+     *
+     * @param geo Geographic coordinates
+     * @param tile Tile containing this point
+     * @return Fractional position (x, y) in [0, 1] within tile
+     */
+    [[nodiscard]] static glm::vec2 GetTileFraction(
+        const Geographic& geo,
+        const TileCoordinates& tile) noexcept;
+
     // ========================================================================
     // GEOGRAPHIC ↔ SCREEN (User Interaction)
     // ========================================================================
