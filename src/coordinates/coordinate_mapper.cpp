@@ -271,61 +271,146 @@ std::pair<World, glm::vec3> CoordinateMapper::ScreenToWorldRay(
 
 GeographicBounds CoordinateMapper::CalculateVisibleGeographicBounds(
     const World& camera_world,
-    const glm::mat4& /*view_matrix*/,  // Currently unused - for future frustum-based calculation
+    const glm::mat4& view_matrix,  // Now used for accurate orientation-based calculation
     const glm::mat4& proj_matrix,
     float globe_radius) noexcept {
 
-    // Calculate look direction (where camera is pointing)
     glm::vec3 camera_pos = camera_world.position;
     float distance = glm::length(camera_pos);
 
-    // For orbital camera: camera looks toward origin
-    // The point we're viewing is on the near side of the sphere, in the direction of the camera from origin
-    glm::vec3 view_point = glm::normalize(camera_pos) * globe_radius;
+    // Create combined view-projection matrix for frustum corner extraction
+    glm::mat4 view_proj = proj_matrix * view_matrix;
 
-    // Convert to geographic coordinates
-    Geographic center = CartesianToGeographic(view_point);
+    // Attempt to invert the view-projection matrix for ray-casting
+    glm::mat4 inv_vp;
+    try {
+        inv_vp = glm::inverse(view_proj);
+    } catch (...) {
+        // Fallback to old method if matrix is not invertible
+        glm::vec3 view_point = glm::normalize(camera_pos) * globe_radius;
+        Geographic center = CartesianToGeographic(view_point);
 
-    // Calculate visible angular extent based on distance and FOV
-    // Horizon angle: angle from camera to tangent of sphere
-    float horizon_angle_rad = std::asin(globe_radius / distance);
-    float horizon_angle_deg = glm::degrees(horizon_angle_rad);
+        float horizon_angle_rad = std::asin(std::min(1.0f, globe_radius / distance));
+        float horizon_angle_deg = glm::degrees(horizon_angle_rad);
+        float fov_y = 2.0f * std::atan(1.0f / proj_matrix[1][1]);
+        float fov_deg = glm::degrees(fov_y);
+        float coverage_angle = std::min(160.0f, std::max(horizon_angle_deg, fov_deg / 2.0f) * 2.0f);
+        double half_coverage = static_cast<double>(coverage_angle) / 2.0;
 
-    // Extract FOV from projection matrix (rough estimate)
-    // For perspective projection: fov = 2 * atan(1 / proj[1][1])
-    float fov_y = 2.0f * std::atan(1.0f / proj_matrix[1][1]);
-    float fov_deg = glm::degrees(fov_y);
-
-    // Use larger of horizon angle or FOV
-    float visible_angle = std::max(horizon_angle_deg, fov_deg / 2.0f);
-
-    // Add generous margin for typical viewing distances
-    float coverage_angle = visible_angle * 2.0f;  // 100% margin
-
-    // Clamp to reasonable bounds
-    coverage_angle = std::min(160.0f, coverage_angle);
-
-    // Calculate bounds
-    double half_coverage = static_cast<double>(coverage_angle) / 2.0;
-
-    double min_lat = std::max(-85.05, center.latitude - half_coverage);
-    double max_lat = std::min(85.05, center.latitude + half_coverage);
-    double min_lon = center.longitude - half_coverage;
-    double max_lon = center.longitude + half_coverage;
-
-    // Handle date line wraparound
-    if (min_lon < -180.0 || max_lon > 180.0) {
-        min_lon = -180.0;
-        max_lon = 180.0;
-    } else {
-        min_lon = std::max(-180.0, min_lon);
-        max_lon = std::min(180.0, max_lon);
+        return GeographicBounds(
+            Geographic(std::max(-85.05, center.latitude - half_coverage),
+                      std::max(-180.0, center.longitude - half_coverage), 0.0),
+            Geographic(std::min(85.05, center.latitude + half_coverage),
+                      std::min(180.0, center.longitude + half_coverage), 0.0)
+        );
     }
 
-    Geographic min_corner(min_lat, min_lon, 0.0);
-    Geographic max_corner(max_lat, max_lon, 0.0);
+    // Ray-cast frustum corners to globe surface to find actual visible region
+    // NDC corners: 8 corners of the frustum (4 near plane + 4 far plane)
+    const glm::vec4 ndc_corners[8] = {
+        glm::vec4(-1.0f, -1.0f, -1.0f, 1.0f),  // Near bottom-left
+        glm::vec4( 1.0f, -1.0f, -1.0f, 1.0f),  // Near bottom-right
+        glm::vec4( 1.0f,  1.0f, -1.0f, 1.0f),  // Near top-right
+        glm::vec4(-1.0f,  1.0f, -1.0f, 1.0f),  // Near top-left
+        glm::vec4(-1.0f, -1.0f,  1.0f, 1.0f),  // Far bottom-left
+        glm::vec4( 1.0f, -1.0f,  1.0f, 1.0f),  // Far bottom-right
+        glm::vec4( 1.0f,  1.0f,  1.0f, 1.0f),  // Far top-right
+        glm::vec4(-1.0f,  1.0f,  1.0f, 1.0f)   // Far top-left
+    };
 
-    return GeographicBounds(min_corner, max_corner);
+    // Collect geographic coordinates of ray-sphere intersections
+    double min_lat = 90.0;
+    double max_lat = -90.0;
+    double min_lon = 180.0;
+    double max_lon = -180.0;
+    int intersection_count = 0;
+
+    for (int i = 0; i < 8; ++i) {
+        // Unproject NDC corner to world space
+        glm::vec4 world_homo = inv_vp * ndc_corners[i];
+        if (std::abs(world_homo.w) < 1e-6f) {
+            continue;  // Skip if homogeneous coordinate is near zero
+        }
+        glm::vec3 world_pos = glm::vec3(world_homo) / world_homo.w;
+
+        // Ray from camera to this corner
+        glm::vec3 ray_dir = world_pos - camera_pos;
+        float ray_length = glm::length(ray_dir);
+        if (ray_length < 1e-6f) {
+            continue;  // Skip degenerate rays
+        }
+        ray_dir /= ray_length;  // Normalize
+
+        // Ray-sphere intersection using quadratic formula
+        // Ray: P = camera_pos + t * ray_dir
+        // Sphere: |P|² = globe_radius²
+        // Expand: |camera_pos + t * ray_dir|² = globe_radius²
+        const float a = 1.0f;  // glm::dot(ray_dir, ray_dir) = 1.0 (normalized)
+        const float b = 2.0f * glm::dot(camera_pos, ray_dir);
+        const float c = glm::dot(camera_pos, camera_pos) - globe_radius * globe_radius;
+        const float discriminant = b * b - 4.0f * a * c;
+
+        if (discriminant >= 0.0f) {
+            // Take the nearest intersection (smaller t, in front of camera)
+            const float sqrt_discriminant = std::sqrt(discriminant);
+            const float t1 = (-b - sqrt_discriminant) / (2.0f * a);
+            const float t2 = (-b + sqrt_discriminant) / (2.0f * a);
+
+            // Use the nearest positive t (intersection in front of camera)
+            float t = (t1 > 0.0f) ? t1 : t2;
+            if (t > 0.0f) {
+                glm::vec3 intersection = camera_pos + t * ray_dir;
+                Geographic geo = CartesianToGeographic(intersection);
+
+                // Update bounds
+                min_lat = std::min(min_lat, geo.latitude);
+                max_lat = std::max(max_lat, geo.latitude);
+                min_lon = std::min(min_lon, geo.longitude);
+                max_lon = std::max(max_lon, geo.longitude);
+                ++intersection_count;
+            }
+        }
+    }
+
+    // Fallback: if no valid intersections found, use old orbital method
+    if (intersection_count == 0) {
+        glm::vec3 view_point = glm::normalize(camera_pos) * globe_radius;
+        Geographic center = CartesianToGeographic(view_point);
+
+        float horizon_angle_rad = std::asin(std::min(1.0f, globe_radius / distance));
+        float horizon_angle_deg = glm::degrees(horizon_angle_rad);
+        float fov_y = 2.0f * std::atan(1.0f / proj_matrix[1][1]);
+        float fov_deg = glm::degrees(fov_y);
+        float coverage_angle = std::min(160.0f, std::max(horizon_angle_deg, fov_deg / 2.0f) * 2.0f);
+        double half_coverage = static_cast<double>(coverage_angle) / 2.0;
+
+        return GeographicBounds(
+            Geographic(std::max(-85.05, center.latitude - half_coverage),
+                      std::max(-180.0, center.longitude - half_coverage), 0.0),
+            Geographic(std::min(85.05, center.latitude + half_coverage),
+                      std::min(180.0, center.longitude + half_coverage), 0.0)
+        );
+    }
+
+    // Add 10% margin for safety (avoid edge cases where tiles at boundaries are missed)
+    const double lat_margin = (max_lat - min_lat) * 0.1;
+    const double lon_margin = (max_lon - min_lon) * 0.1;
+
+    min_lat = std::max(-85.05, min_lat - lat_margin);
+    max_lat = std::min(85.05, max_lat + lat_margin);
+    min_lon = std::max(-180.0, min_lon - lon_margin);
+    max_lon = std::min(180.0, max_lon + lon_margin);
+
+    // Handle date line wraparound (if bounds span more than 180° longitude)
+    if (max_lon - min_lon > 180.0) {
+        min_lon = -180.0;
+        max_lon = 180.0;
+    }
+
+    return GeographicBounds(
+        Geographic(min_lat, min_lon, 0.0),
+        Geographic(max_lat, max_lon, 0.0)
+    );
 }
 
 // ============================================================================

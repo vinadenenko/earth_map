@@ -53,15 +53,26 @@ bool Frustum::Contains(const glm::vec3& point) const {
 }
 
 bool Frustum::Intersects(const BoundingBox& box) const {
-    // TODO: Implement bounding box intersection test
-    // For now, just check if any corner is inside
-    const auto corners = box.GetCorners();
-    for (const auto& corner : corners) {
-        if (Contains(corner)) {
-            return true;
+    // Plane-AABB intersection test using separating axis theorem
+    // For each frustum plane, check if the box is entirely behind it
+    // If the box is entirely behind any plane, it's outside the frustum
+
+    for (const auto& plane : planes) {
+        // Find the "positive vertex" - the corner of the box that is
+        // farthest in the direction of the plane normal
+        glm::vec3 positive_vertex;
+        positive_vertex.x = (plane.normal.x >= 0.0f) ? box.max.x : box.min.x;
+        positive_vertex.y = (plane.normal.y >= 0.0f) ? box.max.y : box.min.y;
+        positive_vertex.z = (plane.normal.z >= 0.0f) ? box.max.z : box.min.z;
+
+        // If the positive vertex is behind the plane, the entire box is outside
+        if (plane.DistanceTo(positive_vertex) < 0.0f) {
+            return false;
         }
     }
-    return false;
+
+    // Box intersects or is inside the frustum
+    return true;
 }
 
 std::array<glm::vec3, 8> Frustum::GetCorners(float near_distance, float far_distance) const {

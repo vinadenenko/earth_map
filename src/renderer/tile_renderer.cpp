@@ -183,6 +183,20 @@ public:
             spdlog::warn("Visible bounds: lon[{:.1f}, {:.1f}], lat[{:.1f}, {:.1f}]",
                 visible_bounds.min.x, visible_bounds.max.x,
                 visible_bounds.min.y, visible_bounds.max.y);
+
+            // Extract camera forward vector from view matrix to diagnose orientation issues
+            // View matrix transforms world space to camera space
+            // Camera looks down -Z axis in camera space, so world forward is negated third column
+            glm::vec3 camera_forward = -glm::vec3(view_matrix[0][2], view_matrix[1][2], view_matrix[2][2]);
+            spdlog::warn("Camera forward vector: ({:.3f}, {:.3f}, {:.3f})",
+                camera_forward.x, camera_forward.y, camera_forward.z);
+
+            // Check if camera is looking toward origin (expected for orbital camera)
+            // If not, this confirms the root cause of the tile rendering issue
+            glm::vec3 expected_look_direction = -glm::normalize(camera_position);
+            float dot_product = glm::dot(camera_forward, expected_look_direction);
+            spdlog::warn("Camera orientation: dot(forward, -position) = {:.3f} (1.0 = looking at origin, <1.0 = looking elsewhere)",
+                dot_product);
         }
 
         // Get tiles in visible bounds at appropriate zoom
