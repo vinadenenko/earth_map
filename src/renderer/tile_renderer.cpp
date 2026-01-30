@@ -546,9 +546,11 @@ private:
             uniform vec4 uTileUVs[MAX_TILES];         // Atlas UV coords (u_min, v_min, u_max, v_max)
 
             // Convert world position to geographic coordinates
+            // CRITICAL FIX: atan2 arguments must match C++ CartesianToGeographic
+            // C++ uses: atan2(x, z), GLSL atan(y_arg, x_arg) = atan2(y_arg, x_arg)
             vec3 worldToGeo(vec3 worldPos) {
                 float lat = degrees(asin(clamp(worldPos.y, -1.0, 1.0)));
-                float lon = degrees(atan(worldPos.x, worldPos.z));
+                float lon = degrees(atan(worldPos.x, worldPos.z));  // atan2(x, z) in C++
                 return vec3(lon, lat, 0.0);
             }
 
@@ -599,6 +601,8 @@ private:
 
                 // Calculate tile fraction (position within the tile)
                 vec2 tileFrac = fract(tile);
+                // CRITICAL FIX: Flip U coordinate (horizontal) to fix mirroring
+                tileFrac.x = 1.0 - tileFrac.x;
 
                 // Look up tile UV from coordinator's data
                 ivec3 tileCoord = ivec3(tileInt, zoomInt);
