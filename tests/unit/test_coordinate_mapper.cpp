@@ -638,9 +638,9 @@ protected:
 };
 
 TEST_F(UtilityFunctionsTest, CalculateVisibleGeographicBounds_ReturnsValidBounds) {
-    // Camera at (0, 0, -3) on -Z axis looks toward origin at (0,0,0) in +Z direction
-    // This corresponds to looking at lon=0° (prime meridian), avoiding dateline issues
-    World camera(0.0f, 0.0f, -3.0f);
+    // Camera at (0, 0, 3) on +Z axis, matching the view_matrix from SetUp()
+    // lookAt(vec3(0,0,3), origin, up) looks along -Z toward lon=0° (prime meridian)
+    World camera(0.0f, 0.0f, 3.0f);
     GeographicBounds bounds = CoordinateMapper::CalculateVisibleGeographicBounds(
         camera, view_matrix, proj_matrix
     );
@@ -652,9 +652,9 @@ TEST_F(UtilityFunctionsTest, CalculateVisibleGeographicBounds_ReturnsValidBounds
 }
 
 TEST_F(UtilityFunctionsTest, CalculateVisibleGeographicBounds_CoversReasonableArea) {
-    // Camera at (0, 0, -3) on -Z axis looks toward origin at lon=0° (prime meridian)
-    // This avoids dateline crossing which would expand bounds to full [-180, 180]
-    World camera(0.0f, 0.0f, -3.0f);
+    // Camera at (0, 0, 3) on +Z axis, matching the view_matrix from SetUp()
+    // lookAt(vec3(0,0,3), origin, up) looks along -Z toward lon=0° (prime meridian)
+    World camera(0.0f, 0.0f, 3.0f);
     GeographicBounds bounds = CoordinateMapper::CalculateVisibleGeographicBounds(
         camera, view_matrix, proj_matrix
     );
@@ -819,7 +819,7 @@ TEST_F(RayCastingTest, ScreenToGeographic_SameVisualPoint_DifferentCameras) {
 
     // Test from 3 different camera positions
     struct CameraSetup {
-        std::string name;
+        const char* name;
         glm::vec3 position;
     };
 

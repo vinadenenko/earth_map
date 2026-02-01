@@ -337,12 +337,12 @@ TEST_F(WorldTest, IsOnGlobeSurface_DetectsCorrectly) {
 // Utility Function Tests
 // ============================================================================
 
-class UtilityFunctionsTest : public ::testing::Test {
+class CoordinateSpacesUtilityTest : public ::testing::Test {
 protected:
     void SetUp() override {}
 };
 
-TEST_F(UtilityFunctionsTest, CalculateGreatCircleDistance_NYC_to_London) {
+TEST_F(CoordinateSpacesUtilityTest, CalculateGreatCircleDistance_NYC_to_London) {
     Geographic nyc(40.7128, -74.0060, 0.0);
     Geographic london(51.5074, -0.1278, 0.0);
 
@@ -352,14 +352,14 @@ TEST_F(UtilityFunctionsTest, CalculateGreatCircleDistance_NYC_to_London) {
     EXPECT_NEAR(5570000.0, distance, 10000.0);  // Within 10 km tolerance
 }
 
-TEST_F(UtilityFunctionsTest, CalculateGreatCircleDistance_SamePoint_ReturnsZero) {
+TEST_F(CoordinateSpacesUtilityTest, CalculateGreatCircleDistance_SamePoint_ReturnsZero) {
     Geographic point(40.7128, -74.0060, 0.0);
     double distance = CalculateGreatCircleDistance(point, point);
 
     EXPECT_NEAR(0.0, distance, 1.0);  // Within 1 meter
 }
 
-TEST_F(UtilityFunctionsTest, CalculateBearing_North) {
+TEST_F(CoordinateSpacesUtilityTest, CalculateBearing_North) {
     Geographic start(40.0, 0.0, 0.0);
     Geographic end(41.0, 0.0, 0.0);  // Due north
 
@@ -367,7 +367,7 @@ TEST_F(UtilityFunctionsTest, CalculateBearing_North) {
     EXPECT_NEAR(0.0, bearing, 1.0);  // 0° = North
 }
 
-TEST_F(UtilityFunctionsTest, CalculateBearing_East) {
+TEST_F(CoordinateSpacesUtilityTest, CalculateBearing_East) {
     Geographic start(0.0, 0.0, 0.0);  // Equator
     Geographic end(0.0, 1.0, 0.0);    // 1° east
 
@@ -375,7 +375,7 @@ TEST_F(UtilityFunctionsTest, CalculateBearing_East) {
     EXPECT_NEAR(90.0, bearing, 1.0);  // 90° = East
 }
 
-TEST_F(UtilityFunctionsTest, CalculateDestination_RoundTrip) {
+TEST_F(CoordinateSpacesUtilityTest, CalculateDestination_RoundTrip) {
     Geographic start(40.7128, -74.0060, 0.0);
     double bearing = 45.0;  // Northeast
     double distance = 100000.0;  // 100 km
@@ -390,7 +390,7 @@ TEST_F(UtilityFunctionsTest, CalculateDestination_RoundTrip) {
     EXPECT_NEAR(distance, actual_distance, 100.0);  // Within 100 meters
 }
 
-TEST_F(UtilityFunctionsTest, CalculateDestination_InvalidInput_ReturnsInvalid) {
+TEST_F(CoordinateSpacesUtilityTest, CalculateDestination_InvalidInput_ReturnsInvalid) {
     Geographic start(40.7128, -74.0060, 0.0);
 
     // Negative distance
