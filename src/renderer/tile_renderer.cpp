@@ -166,30 +166,36 @@ public:
         // Estimate optimal zoom level based on distance
         const int zoom_level = CalculateOptimalZoom(camera_distance);
         
-        // Calculate geographic bounds of visible area
-        const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
-            camera_position, view_matrix, projection_matrix);
-
-        // Get tiles in visible bounds at appropriate zoom
-        const std::vector<TileCoordinates> candidate_tiles =
-            tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
-        
-        // Filter tiles by frustum culling and limit with performance considerations
-        std::size_t tiles_added = 0;
-        std::size_t max_tiles_for_frame = std::min(static_cast<std::size_t>(config_.max_visible_tiles),
-                                                 static_cast<std::size_t>(tiles_per_row_ * tiles_per_row_));
-
-        // Collect visible tile coordinates and request them from texture coordinator
+        // Collect visible tile coordinates
+        const int32_t n = 1 << zoom_level;
         std::vector<TileCoordinates> visible_tile_coords;
-        for (const TileCoordinates& tile_coords : candidate_tiles) {
-            if (tiles_added >= max_tiles_for_frame) {
-                break;
-            }
 
-            // Check if tile is in frustum
-            if (IsTileInFrustum(tile_coords, frustum)) {
-                visible_tile_coords.push_back(tile_coords);
-                tiles_added++;
+        if (n * n <= 256) {
+            // At low zoom (≤4), request all tiles — cheap and guarantees full coverage.
+            // This avoids issues with CalculateVisibleGeographicBounds() ray-sphere
+            // intersection failures that cause missing tiles.
+            visible_tile_coords.reserve(n * n);
+            for (int32_t x = 0; x < n; ++x) {
+                for (int32_t y = 0; y < n; ++y) {
+                    visible_tile_coords.emplace_back(x, y, zoom_level);
+                }
+            }
+        } else {
+            // At higher zoom, use visibility bounds and frustum culling
+            const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
+                camera_position, view_matrix, projection_matrix);
+            const std::vector<TileCoordinates> candidate_tiles =
+                tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
+
+            const std::size_t max_tiles_for_frame = std::min(
+                static_cast<std::size_t>(config_.max_visible_tiles),
+                static_cast<std::size_t>(tiles_per_row_ * tiles_per_row_));
+
+            for (const TileCoordinates& tile_coords : candidate_tiles) {
+                if (visible_tile_coords.size() >= max_tiles_for_frame) break;
+                if (IsTileInFrustum(tile_coords, frustum)) {
+                    visible_tile_coords.push_back(tile_coords);
+                }
             }
         }
 
@@ -448,7 +454,6 @@ private:
     std::unordered_map<TileCoordinates, std::uint32_t, TileCoordinatesHash> texture_cache_;
     
     // Tile atlas vertex shader source
-    // Canonical source: src/shaders/tile_atlas.vert
     static constexpr const char* kTileVertexShader = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -472,7 +477,6 @@ void main() {
 )";
 
     // Tile atlas fragment shader source
-    // Canonical source: src/shaders/tile_atlas.frag
     static constexpr const char* kTileFragmentShader = R"(
 #version 330 core
 in vec3 FragPos;

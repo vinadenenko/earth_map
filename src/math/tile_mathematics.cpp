@@ -124,14 +124,6 @@ TileCoordinates TileMathematics::GeographicToTile(const Geographic& geo, int32_t
     // Web Mercator normalized_y: 0=south, 1=north, so invert: (1.0 - normalized_y)
     const int32_t y = static_cast<int32_t>(std::round((1.0 - normalized_y) * n - 0.5));
 
-    // CRITICAL DEBUG: Log conversion for debugging
-    static int geo_debug_counter = 0;
-    if (++geo_debug_counter % 180 == 0) {
-        spdlog::info("GeographicToTile: lon={:.1f}, lat={:.1f} -> proj.x={:.0f}, normalized_x={:.3f} -> tile.x={} (zoom={})",
-            geo.longitude, geo.latitude, proj.x, normalized_x,
-            std::max(0, std::min(x, n - 1)), zoom);
-    }
-
     return TileCoordinates(std::max(0, std::min(x, n - 1)),
                           std::max(0, std::min(y, n - 1)),
                           zoom);
