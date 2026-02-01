@@ -1,4 +1,7 @@
 #include <earth_map/renderer/renderer.h>
+#include <earth_map/renderer/shader_loader.h>
+#include <earth_map/renderer/elevation_manager.h>
+#include <earth_map/data/elevation_provider.h>
 #include <earth_map/earth_map.h>
 #include <earth_map/constants.h>
 #include <earth_map/platform/opengl_context.h>
@@ -150,6 +153,29 @@ public:
                 return false;
             }
 
+            // Create elevation manager if enabled
+            if (config_.elevation_config.enabled) {
+                spdlog::info("Creating elevation manager (elevation rendering enabled)");
+                try {
+                    // Create elevation provider with SRTM loader
+                    auto elevation_provider = ElevationProvider::Create(config_.srtm_loader_config);
+
+                    // Create elevation manager
+                    elevation_manager_ = ElevationManager::Create(elevation_provider);
+                    if (!elevation_manager_->Initialize(config_.elevation_config)) {
+                        spdlog::error("Failed to initialize elevation manager");
+                        return false;
+                    }
+
+                    spdlog::info("Elevation manager created successfully");
+                } catch (const std::exception& e) {
+                    spdlog::error("Exception creating elevation manager: {}", e.what());
+                    return false;
+                }
+            } else {
+                spdlog::info("Elevation rendering disabled");
+            }
+
             // Create icosahedron globe mesh with normalized radius
             GlobeMeshParams params;
             params.radius = static_cast<double>(constants::rendering::NORMALIZED_GLOBE_RADIUS);
@@ -159,8 +185,17 @@ public:
             params.enable_crack_prevention = true;
 
             globe_mesh_ = GlobeMesh::Create(params);
-            if (!globe_mesh_ || !globe_mesh_->Generate()) {
-                spdlog::error("Failed to create or generate globe mesh");
+
+            // Set elevation manager on globe mesh before generation
+            if (elevation_manager_) {
+                auto icosahedron_mesh = dynamic_cast<IcosahedronGlobeMesh*>(globe_mesh_.get());
+                if (icosahedron_mesh) {
+                    icosahedron_mesh->SetElevationManager(elevation_manager_);
+                }
+            }
+
+            if (!globe_mesh_->Generate()) {
+                spdlog::error("Failed to generate globe mesh");
                 return false;
             }
 
@@ -186,6 +221,11 @@ public:
             spdlog::error("Failed to create or initialize tile renderer");
             return false;
         }
+
+        // CRITICAL: Set the icosahedron mesh on tile renderer
+        // Tile renderer MUST use this mesh, not generate its own
+        tile_renderer_->SetGlobeMesh(globe_mesh_.get());
+        spdlog::info("Icosahedron mesh provided to tile renderer");
 
         // Initialize mini-map renderer with valid shader program
         MiniMapRenderer::Config mini_map_config;
@@ -221,17 +261,24 @@ public:
         if (!initialized_) {
             return;
         }
-        
-        // Update tile renderer with current view
+
+        // SINGLE RENDERING PATH: Always use tile renderer
+        // Tile renderer now uses the icosahedron mesh (with elevation displacement)
+        // Missing tiles are handled by base color in shader (no fallback mesh needed)
         if (tile_renderer_) {
             tile_renderer_->BeginFrame();
             tile_renderer_->UpdateVisibleTiles(view_matrix, projection_matrix,
                                                  camera_controller_->GetPosition(), frustum);
             tile_renderer_->RenderTiles(view_matrix, projection_matrix);
             tile_renderer_->EndFrame();
+        } else {
+            // Only if tile renderer completely unavailable (should never happen)
+            spdlog::error("Tile renderer not available - nothing to render");
         }
-        
-        // Fallback to basic globe if tile renderer not available
+
+        // OLD: Fallback rendering removed - tile renderer handles everything now
+        // No more dual-mesh system!
+        /*
         if (!tile_renderer_ || tile_renderer_->GetStats().visible_tiles == 0) {
             // Log why we're using fallback globe rendering
             static bool logged_fallback_reason = false;
@@ -341,6 +388,8 @@ public:
                 glBindVertexArray(0);
             }
         }
+        */
+        // END OF OLD FALLBACK CODE
     }
 
     
@@ -432,17 +481,29 @@ public:
     TileRenderer* GetTileRenderer() override {
         return tile_renderer_.get();
     }
-    
+
+    ElevationManager* GetElevationManager() override {
+        return elevation_manager_.get();
+    }
+
+    void SetElevationEnabled(bool enabled) override {
+        if (elevation_manager_) {
+            elevation_manager_->SetEnabled(enabled);
+        } else if (enabled) {
+            spdlog::warn("Cannot enable elevation: elevation manager not initialized");
+        }
+    }
+
     PlacemarkRenderer* GetPlacemarkRenderer() override {
-        return nullptr; // TODO: Implement
+        return nullptr;
     }
-    
+
     LODManager* GetLODManager() override {
-        return nullptr; // TODO: Implement
+        return nullptr;
     }
-    
+
     GPUResourceManager* GetGPUResourceManager() override {
-        return nullptr; // TODO: Implement
+        return nullptr;
     }
 
     void RenderMiniMapOverlay() {
@@ -554,99 +615,24 @@ private:
     std::size_t expected_globe_index_count_ = 0;
 
     std::unique_ptr<TileRenderer> tile_renderer_;
-    std::unique_ptr<MiniMapRenderer> mini_map_renderer_;
+    std::shared_ptr<MiniMapRenderer> mini_map_renderer_;
+    std::shared_ptr<ElevationManager> elevation_manager_;
     CameraController* camera_controller_ = nullptr;
     bool mini_map_enabled_ = false;
-    
+
     bool LoadShaders() {
-        // Compile vertex shader
-        std::uint32_t vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-        glShaderSource(vertex_shader, 1, &BASIC_VERTEX_SHADER, nullptr);
-        glCompileShader(vertex_shader);
-        
-        if (!CheckShaderCompile(vertex_shader)) {
-            return false;
-        }
-        
-        // Compile fragment shader
-        std::uint32_t fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(fragment_shader, 1, &BASIC_FRAGMENT_SHADER, nullptr);
-        glCompileShader(fragment_shader);
-        
-        if (!CheckShaderCompile(fragment_shader)) {
-            return false;
-        }
-        
-        // Link shader program
-        shader_program_ = glCreateProgram();
-        glAttachShader(shader_program_, vertex_shader);
-        glAttachShader(shader_program_, fragment_shader);
-        glLinkProgram(shader_program_);
-        
-        if (!CheckProgramLink(shader_program_)) {
-            return false;
-        }
-        
-        // Clean up shaders
-        glDeleteShader(vertex_shader);
-        glDeleteShader(fragment_shader);
-
-        // Compile mini-map vertex shader
-        std::uint32_t minimap_vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-        glShaderSource(minimap_vertex_shader, 1, &MINIMAP_VERTEX_SHADER, nullptr);
-        glCompileShader(minimap_vertex_shader);
-
-        if (!CheckShaderCompile(minimap_vertex_shader)) {
+        shader_program_ = ShaderLoader::CreateProgram(
+            BASIC_VERTEX_SHADER, BASIC_FRAGMENT_SHADER, "basic");
+        if (shader_program_ == 0) {
             return false;
         }
 
-        // Compile mini-map fragment shader
-        std::uint32_t minimap_fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(minimap_fragment_shader, 1, &MINIMAP_FRAGMENT_SHADER, nullptr);
-        glCompileShader(minimap_fragment_shader);
-
-        if (!CheckShaderCompile(minimap_fragment_shader)) {
+        minimap_shader_program_ = ShaderLoader::CreateProgram(
+            MINIMAP_VERTEX_SHADER, MINIMAP_FRAGMENT_SHADER, "minimap");
+        if (minimap_shader_program_ == 0) {
             return false;
         }
 
-        // Link mini-map shader program
-        minimap_shader_program_ = glCreateProgram();
-        glAttachShader(minimap_shader_program_, minimap_vertex_shader);
-        glAttachShader(minimap_shader_program_, minimap_fragment_shader);
-        glLinkProgram(minimap_shader_program_);
-
-        if (!CheckProgramLink(minimap_shader_program_)) {
-            return false;
-        }
-
-        // Clean up mini-map shaders
-        glDeleteShader(minimap_vertex_shader);
-        glDeleteShader(minimap_fragment_shader);
-
-        return true;
-    }
-    
-    bool CheckShaderCompile(std::uint32_t shader) {
-        int success;
-        glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            char info_log[512];
-            glGetShaderInfoLog(shader, 512, nullptr, info_log);
-            spdlog::error("Shader compilation failed: {}", info_log);
-            return false;
-        }
-        return true;
-    }
-    
-    bool CheckProgramLink(std::uint32_t program) {
-        int success;
-        glGetProgramiv(program, GL_LINK_STATUS, &success);
-        if (!success) {
-            char info_log[512];
-            glGetProgramInfoLog(program, 512, nullptr, info_log);
-            spdlog::error("Shader program linking failed: {}", info_log);
-            return false;
-        }
         return true;
     }
 

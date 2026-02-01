@@ -21,6 +21,7 @@ namespace earth_map {
 // Forward declarations
 class TileManager;
 class TileTextureCoordinator;
+class GlobeMesh;
 struct Frustum;
 
 /**
@@ -114,6 +115,16 @@ public:
      * @param coordinator Pointer to texture coordinator (non-owning)
      */
     virtual void SetTextureCoordinator(TileTextureCoordinator* coordinator) = 0;
+
+    /**
+     * @brief Set globe mesh to render tiles on
+     *
+     * CRITICAL: Tile renderer MUST use the provided mesh geometry, not generate its own.
+     * This ensures tiles are rendered on the actual displaced geometry with elevation data.
+     *
+     * @param globe_mesh Pointer to globe mesh (non-owning)
+     */
+    virtual void SetGlobeMesh(GlobeMesh* globe_mesh) = 0;
 
     /**
      * @brief Update visible tiles based on camera position

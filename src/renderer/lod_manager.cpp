@@ -137,13 +137,9 @@ std::uint8_t BasicLODManager::CalculatePerformanceBasedLOD(std::uint8_t target_l
 LODResult BasicLODManager::CalculateTriangleLOD(
     const GlobeTriangle& triangle,
     const glm::vec3& camera_position,
-    const glm::mat4& view_matrix,
-    const glm::mat4& projection_matrix,
-    const glm::vec2& viewport_size) const {
-    
-    (void)view_matrix;
-    (void)projection_matrix;
-    (void)viewport_size;
+    const glm::mat4& /*view_matrix*/,
+    const glm::mat4& /*projection_matrix*/,
+    const glm::vec2& /*viewport_size*/) const {
 
     LODResult result;
     
@@ -191,16 +187,10 @@ LODResult BasicLODManager::CalculateTriangleLOD(
 }
 
 LODResult BasicLODManager::CalculateTileLOD(const Tile& tile,
-                                            const glm::vec3& camera_position,
-                                            const glm::mat4& view_matrix,
-                                            const glm::mat4& projection_matrix,
-                                            const glm::vec2& viewport_size ) const {
-    (void)camera_position;
-    (void)view_matrix;
-    (void)projection_matrix;
-    (void)viewport_size;
-
-
+                                            const glm::vec3& /*camera_position*/,
+                                            const glm::mat4& /*view_matrix*/,
+                                            const glm::mat4& /*projection_matrix*/,
+                                            const glm::vec2& /*viewport_size*/) const {
     LODResult result;
     
     // Use pre-calculated screen error from tile manager

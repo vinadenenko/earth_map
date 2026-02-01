@@ -5,6 +5,7 @@
 
 #include <earth_map/renderer/texture_atlas/tile_load_worker_pool.h>
 #include <spdlog/spdlog.h>
+#define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
 namespace earth_map {
