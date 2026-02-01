@@ -33,12 +33,23 @@ namespace coordinates {
  * Constraints:
  * - Latitude: [-90°, +90°] (South to North)
  * - Longitude: [-180°, +180°] (West to East)
- * - Altitude: meters above WGS84 ellipsoid
+ * - Altitude: meters (reference defined by altitude_reference field)
+ *
+ * **Altitude Reference**: The altitude field's meaning depends on altitude_reference:
+ * - WGS84_ELLIPSOID (default): Height above WGS84 ellipsoid (standard for SRTM, GPS)
+ * - MEAN_SEA_LEVEL: Height above geoid (orthometric height)
+ * - TERRAIN: Height above local terrain (AGL - Above Ground Level)
+ * - ABSOLUTE: Distance from Earth's center (geocentric radius)
+ *
+ * @see altitude_reference.h for AltitudeReference enum and conversion utilities
  */
 struct Geographic {
     double latitude;   ///< Latitude in degrees [-90, 90]
     double longitude;  ///< Longitude in degrees [-180, 180]
-    double altitude;   ///< Altitude in meters above WGS84 ellipsoid
+    double altitude;   ///< Altitude in meters (reference defined by altitude_reference)
+
+    // Note: altitude_reference not included in constexpr constructor to maintain C++17 compatibility
+    // It will be default-initialized to WGS84_ELLIPSOID (value 0)
 
     /**
      * @brief Default constructor - creates invalid coordinates
@@ -52,7 +63,7 @@ struct Geographic {
      * @brief Construct from lat/lon/alt
      * @param lat Latitude in degrees
      * @param lon Longitude in degrees
-     * @param alt Altitude in meters (default: 0.0)
+     * @param alt Altitude in meters (default: 0.0, referenced to WGS84 ellipsoid)
      */
     constexpr Geographic(double lat, double lon, double alt = 0.0)
         : latitude(lat), longitude(lon), altitude(alt) {}

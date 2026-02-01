@@ -8,7 +8,6 @@
  * and tile-related mathematical operations for map tile management.
  */
 
-#include "coordinate_system.h"
 #include "projection.h"
 #include "bounding_box.h"
 #include <glm/glm.hpp>
@@ -17,6 +16,9 @@
 #include <string>
 
 namespace earth_map {
+
+// Import coordinate types from coordinates namespace
+using coordinates::Geographic;
 
 /**
  * @brief Tile coordinates (X, Y, Zoom)
@@ -237,20 +239,20 @@ class TileMathematics {
 public:
     /**
      * @brief Convert geographic coordinates to tile coordinates
-     * 
+     *
      * @param geo Geographic coordinates
      * @param zoom Zoom level
      * @return TileCoordinates Tile coordinates
      */
-    static TileCoordinates GeographicToTile(const GeographicCoordinates& geo, int32_t zoom);
-    
+    static TileCoordinates GeographicToTile(const Geographic& geo, int32_t zoom);
+
     /**
      * @brief Convert tile coordinates to geographic coordinates (tile center)
-     * 
+     *
      * @param tile Tile coordinates
-     * @return GeographicCoordinates Geographic coordinates of tile center
+     * @return Geographic Geographic coordinates of tile center
      */
-    static GeographicCoordinates TileToGeographic(const TileCoordinates& tile);
+    static Geographic TileToGeographic(const TileCoordinates& tile);
     
     /**
      * @brief Get geographic bounds of a tile

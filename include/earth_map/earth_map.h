@@ -17,6 +17,8 @@
 #include <cstdint>
 
 #include <earth_map/data/tile_loader.h>
+#include <earth_map/data/srtm_loader.h>
+#include <earth_map/renderer/elevation_manager.h>
 
 namespace earth_map {
 
@@ -56,6 +58,12 @@ struct Configuration {
 
     /** Tile provider for loading tiles */
     std::shared_ptr<TileProvider> tile_provider;
+
+    /** Elevation rendering configuration */
+    ElevationConfig elevation_config;
+
+    /** SRTM data loader configuration */
+    SRTMLoaderConfig srtm_loader_config;
 };
 
 /**

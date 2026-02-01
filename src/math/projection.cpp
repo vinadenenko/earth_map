@@ -6,98 +6,113 @@
 #include "../../include/earth_map/math/projection.h"
 #include <cmath>
 #include <stdexcept>
+#include <glm/glm.hpp>
 
 namespace earth_map {
 
+// Helper functions
+namespace {
+    constexpr double PI = 3.14159265358979323846;
+    constexpr double WGS84_SEMI_MAJOR_AXIS = 6378137.0;
+
+    inline double DegreesToRadians(double degrees) {
+        return glm::radians(degrees);
+    }
+
+    inline double RadiansToDegrees(double radians) {
+        return glm::degrees(radians);
+    }
+}
+
 // WebMercatorProjection implementation
 
-ProjectedCoordinates WebMercatorProjection::Project(const GeographicCoordinates& geo) const {
+Projected WebMercatorProjection::Project(const Geographic& geo) const {
     if (!IsValidLocation(geo)) {
         throw std::invalid_argument("Geographic coordinates outside Web Mercator bounds");
     }
-    
-    const double lat_rad = geo.LatitudeRadians();
-    const double lon_rad = geo.LongitudeRadians();
-    
-    const double x = WEB_MERCATOR_HALF_WORLD * lon_rad / M_PI;
-    const double y = WEB_MERCATOR_HALF_WORLD * std::log(std::tan(M_PI_4 + lat_rad / 2.0)) / M_PI;
-    
-    return ProjectedCoordinates(x, y);
+
+    const double lat_rad = DegreesToRadians(geo.latitude);
+    const double lon_rad = DegreesToRadians(geo.longitude);
+
+    const double x = WEB_MERCATOR_HALF_WORLD * lon_rad / PI;
+    const double y = WEB_MERCATOR_HALF_WORLD * std::log(std::tan(PI / 4.0 + lat_rad / 2.0)) / PI;
+
+    return Projected(x, y);
 }
 
-GeographicCoordinates WebMercatorProjection::Unproject(const ProjectedCoordinates& proj) const {
+Geographic WebMercatorProjection::Unproject(const Projected& proj) const {
     const double x = proj.x;
     const double y = proj.y;
-    
-    const double lon_rad = x * M_PI / WEB_MERCATOR_HALF_WORLD;
-    const double lat_rad = 2.0 * std::atan(std::exp(y * M_PI / WEB_MERCATOR_HALF_WORLD)) - M_PI_2;
-    
+
+    const double lon_rad = x * PI / WEB_MERCATOR_HALF_WORLD;
+    const double lat_rad = 2.0 * std::atan(std::exp(y * PI / WEB_MERCATOR_HALF_WORLD)) - PI / 2.0;
+
     // Clamp latitude to valid range
-    const double clamped_lat = std::max(-MAX_LATITUDE, std::min(MAX_LATITUDE, 
-                                       CoordinateSystem::RadiansToDegrees(lat_rad)));
-    
-    return GeographicCoordinates(clamped_lat, CoordinateSystem::RadiansToDegrees(lon_rad), 0.0);
+    const double clamped_lat = std::max(-MAX_LATITUDE, std::min(MAX_LATITUDE,
+                                       RadiansToDegrees(lat_rad)));
+
+    return Geographic(clamped_lat, RadiansToDegrees(lon_rad), 0.0);
 }
 
-bool WebMercatorProjection::IsValidLocation(const GeographicCoordinates& geo) const {
+bool WebMercatorProjection::IsValidLocation(const Geographic& geo) const {
     return std::abs(geo.latitude) <= MAX_LATITUDE && geo.IsValid();
 }
 
-BoundingBox2D WebMercatorProjection::GetProjectedBounds() const {
-    return BoundingBox2D(
-        glm::dvec2(-WEB_MERCATOR_HALF_WORLD, -WEB_MERCATOR_HALF_WORLD),
-        glm::dvec2(WEB_MERCATOR_HALF_WORLD, WEB_MERCATOR_HALF_WORLD)
+ProjectedBounds WebMercatorProjection::GetProjectedBounds() const {
+    return ProjectedBounds(
+        Projected(-WEB_MERCATOR_HALF_WORLD, -WEB_MERCATOR_HALF_WORLD),
+        Projected(WEB_MERCATOR_HALF_WORLD, WEB_MERCATOR_HALF_WORLD)
     );
 }
 
-double WebMercatorProjection::GetScale(const GeographicCoordinates& geo) const {
-    const double lat_rad = geo.LatitudeRadians();
-    return std::cos(lat_rad) * WGS84Ellipsoid::SEMI_MAJOR_AXIS;
+double WebMercatorProjection::GetScale(const Geographic& geo) const {
+    const double lat_rad = DegreesToRadians(geo.latitude);
+    return std::cos(lat_rad) * WGS84_SEMI_MAJOR_AXIS;
 }
 
-glm::dvec2 WebMercatorProjection::ToNormalized(const GeographicCoordinates& geo) const {
-    const ProjectedCoordinates proj = Project(geo);
+glm::dvec2 WebMercatorProjection::ToNormalized(const Geographic& geo) const {
+    const Projected proj = Project(geo);
     return glm::dvec2(
         (proj.x + WEB_MERCATOR_HALF_WORLD) / WEB_MERCATOR_ORIGIN_SHIFT,
         (proj.y + WEB_MERCATOR_HALF_WORLD) / WEB_MERCATOR_ORIGIN_SHIFT
     );
 }
 
-GeographicCoordinates WebMercatorProjection::FromNormalized(const glm::dvec2& normalized) const {
+Geographic WebMercatorProjection::FromNormalized(const glm::dvec2& normalized) const {
     const double x = normalized.x * WEB_MERCATOR_ORIGIN_SHIFT - WEB_MERCATOR_HALF_WORLD;
     const double y = normalized.y * WEB_MERCATOR_ORIGIN_SHIFT - WEB_MERCATOR_HALF_WORLD;
-    return Unproject(ProjectedCoordinates(x, y));
+    return Unproject(Projected(x, y));
 }
 
 // WGS84Projection implementation
 
-ProjectedCoordinates WGS84Projection::Project(const GeographicCoordinates& geo) const {
+Projected WGS84Projection::Project(const Geographic& geo) const {
     if (!IsValidLocation(geo)) {
         throw std::invalid_argument("Invalid geographic coordinates");
     }
-    
-    // Identity projection - just convert to double
-    return ProjectedCoordinates(geo.longitude, geo.latitude);
+
+    // Identity projection - just convert to projected
+    return Projected(geo.longitude, geo.latitude);
 }
 
-GeographicCoordinates WGS84Projection::Unproject(const ProjectedCoordinates& proj) const {
-    return GeographicCoordinates(proj.y, proj.x, 0.0);  // y=lat, x=lon
+Geographic WGS84Projection::Unproject(const Projected& proj) const {
+    return Geographic(proj.y, proj.x, 0.0);  // y=lat, x=lon
 }
 
-bool WGS84Projection::IsValidLocation(const GeographicCoordinates& geo) const {
+bool WGS84Projection::IsValidLocation(const Geographic& geo) const {
     return geo.IsValid();
 }
 
-BoundingBox2D WGS84Projection::GetProjectedBounds() const {
-    return BoundingBox2D(
-        glm::dvec2(-180.0, -90.0),
-        glm::dvec2(180.0, 90.0)
+ProjectedBounds WGS84Projection::GetProjectedBounds() const {
+    return ProjectedBounds(
+        Projected(-180.0, -90.0),
+        Projected(180.0, 90.0)
     );
 }
 
-double WGS84Projection::GetScale(const GeographicCoordinates& geo) const {
+double WGS84Projection::GetScale(const Geographic& geo) const {
     // Approximate meters per degree at given latitude
-    const double lat_rad = geo.LatitudeRadians();
+    const double lat_rad = DegreesToRadians(geo.latitude);
     const double meters_per_degree_lat = 111132.954;  // Constant
     const double meters_per_degree_lon = 111132.954 * std::cos(lat_rad);
     return std::sqrt(meters_per_degree_lat * meters_per_degree_lon);
@@ -105,46 +120,46 @@ double WGS84Projection::GetScale(const GeographicCoordinates& geo) const {
 
 // EquirectangularProjection implementation
 
-ProjectedCoordinates EquirectangularProjection::Project(const GeographicCoordinates& geo) const {
+Projected EquirectangularProjection::Project(const Geographic& geo) const {
     if (!IsValidLocation(geo)) {
         throw std::invalid_argument("Invalid geographic coordinates");
     }
-    
-    const double lat_rad = geo.LatitudeRadians();
-    const double lon_rad = geo.LongitudeRadians();
-    
+
+    const double lat_rad = DegreesToRadians(geo.latitude);
+    const double lon_rad = DegreesToRadians(geo.longitude);
+
     // Simple linear projection
-    const double x = WGS84Ellipsoid::SEMI_MAJOR_AXIS * lon_rad;
-    const double y = WGS84Ellipsoid::SEMI_MAJOR_AXIS * lat_rad;
-    
-    return ProjectedCoordinates(x, y);
+    const double x = WGS84_SEMI_MAJOR_AXIS * lon_rad;
+    const double y = WGS84_SEMI_MAJOR_AXIS * lat_rad;
+
+    return Projected(x, y);
 }
 
-GeographicCoordinates EquirectangularProjection::Unproject(const ProjectedCoordinates& proj) const {
-    const double lat = proj.y / WGS84Ellipsoid::SEMI_MAJOR_AXIS;
-    const double lon = proj.x / WGS84Ellipsoid::SEMI_MAJOR_AXIS;
-    
-    return GeographicCoordinates(
-        CoordinateSystem::RadiansToDegrees(lat),
-        CoordinateSystem::RadiansToDegrees(lon),
+Geographic EquirectangularProjection::Unproject(const Projected& proj) const {
+    const double lat = proj.y / WGS84_SEMI_MAJOR_AXIS;
+    const double lon = proj.x / WGS84_SEMI_MAJOR_AXIS;
+
+    return Geographic(
+        RadiansToDegrees(lat),
+        RadiansToDegrees(lon),
         0.0
     );
 }
 
-bool EquirectangularProjection::IsValidLocation(const GeographicCoordinates& geo) const {
+bool EquirectangularProjection::IsValidLocation(const Geographic& geo) const {
     return geo.IsValid();
 }
 
-BoundingBox2D EquirectangularProjection::GetProjectedBounds() const {
-    const double half_world = M_PI * WGS84Ellipsoid::SEMI_MAJOR_AXIS;
-    return BoundingBox2D(
-        glm::dvec2(-half_world, -half_world),
-        glm::dvec2(half_world, half_world)
+ProjectedBounds EquirectangularProjection::GetProjectedBounds() const {
+    const double half_world = PI * WGS84_SEMI_MAJOR_AXIS;
+    return ProjectedBounds(
+        Projected(-half_world, -half_world),
+        Projected(half_world, half_world)
     );
 }
 
-double EquirectangularProjection::GetScale(const GeographicCoordinates& /*geo*/) const {
-    return WGS84Ellipsoid::SEMI_MAJOR_AXIS;
+double EquirectangularProjection::GetScale(const Geographic& /*geo*/) const {
+    return WGS84_SEMI_MAJOR_AXIS;
 }
 
 // ProjectionRegistry implementation
@@ -209,23 +224,23 @@ std::vector<ProjectionType> ProjectionRegistry::GetAvailableProjections() {
 
 // ProjectionTransformer implementation
 
-ProjectedCoordinates ProjectionTransformer::Transform(const ProjectedCoordinates& source_coords,
-                                                     const Projection& source_proj,
-                                                     const Projection& target_proj) {
+Projected ProjectionTransformer::Transform(const Projected& source_coords,
+                                          const Projection& source_proj,
+                                          const Projection& target_proj) {
     // Transform via geographic coordinates
-    const GeographicCoordinates geo = source_proj.Unproject(source_coords);
+    const Geographic geo = source_proj.Unproject(source_coords);
     return target_proj.Project(geo);
 }
 
-ProjectedCoordinates ProjectionTransformer::TransformGeographic(const GeographicCoordinates& geo,
-                                                                const Projection& /*source_proj*/,
-                                                                const Projection& target_proj) {
+Projected ProjectionTransformer::TransformGeographic(const Geographic& geo,
+                                                     const Projection& /*source_proj*/,
+                                                     const Projection& target_proj) {
     return target_proj.Project(geo);
 }
 
 glm::dmat3 ProjectionTransformer::CreateTransformationMatrix(const Projection& /*source_proj*/,
-                                                           const Projection& /*target_proj*/,
-                                                           const GeographicCoordinates& /*reference_geo*/) {
+                                                            const Projection& /*target_proj*/,
+                                                            const Geographic& /*reference_geo*/) {
     // For now, return identity matrix
     // In a full implementation, this would calculate scale, rotation, and translation
     return glm::dmat3(1.0);
