@@ -39,12 +39,6 @@ struct GlobeVertex {
     /** Geographic coordinates (longitude, latitude) */
     glm::vec2 geographic;
 
-    /** Pre-computed tile coordinates at base zoom level (for spherical mapping) */
-    glm::ivec2 base_tile = glm::ivec2(0, 0);
-
-    /** Fractional position within tile [0,1] (for spherical mapping) */
-    glm::vec2 tile_frac = glm::vec2(0.0f, 0.0f);
-
     /** Subdivision level of this vertex */
     std::uint8_t lod_level = 0;
     

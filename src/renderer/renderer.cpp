@@ -1,4 +1,5 @@
 #include <earth_map/renderer/renderer.h>
+#include <earth_map/renderer/shader_loader.h>
 #include <earth_map/renderer/elevation_manager.h>
 #include <earth_map/data/elevation_provider.h>
 #include <earth_map/earth_map.h>
@@ -494,15 +495,15 @@ public:
     }
 
     PlacemarkRenderer* GetPlacemarkRenderer() override {
-        return nullptr; // TODO: Implement
+        return nullptr;
     }
-    
+
     LODManager* GetLODManager() override {
-        return nullptr; // TODO: Implement
+        return nullptr;
     }
-    
+
     GPUResourceManager* GetGPUResourceManager() override {
-        return nullptr; // TODO: Implement
+        return nullptr;
     }
 
     void RenderMiniMapOverlay() {
@@ -620,94 +621,18 @@ private:
     bool mini_map_enabled_ = false;
 
     bool LoadShaders() {
-        // Compile vertex shader
-        std::uint32_t vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-        glShaderSource(vertex_shader, 1, &BASIC_VERTEX_SHADER, nullptr);
-        glCompileShader(vertex_shader);
-        
-        if (!CheckShaderCompile(vertex_shader)) {
-            return false;
-        }
-        
-        // Compile fragment shader
-        std::uint32_t fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(fragment_shader, 1, &BASIC_FRAGMENT_SHADER, nullptr);
-        glCompileShader(fragment_shader);
-        
-        if (!CheckShaderCompile(fragment_shader)) {
-            return false;
-        }
-        
-        // Link shader program
-        shader_program_ = glCreateProgram();
-        glAttachShader(shader_program_, vertex_shader);
-        glAttachShader(shader_program_, fragment_shader);
-        glLinkProgram(shader_program_);
-        
-        if (!CheckProgramLink(shader_program_)) {
-            return false;
-        }
-        
-        // Clean up shaders
-        glDeleteShader(vertex_shader);
-        glDeleteShader(fragment_shader);
-
-        // Compile mini-map vertex shader
-        std::uint32_t minimap_vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-        glShaderSource(minimap_vertex_shader, 1, &MINIMAP_VERTEX_SHADER, nullptr);
-        glCompileShader(minimap_vertex_shader);
-
-        if (!CheckShaderCompile(minimap_vertex_shader)) {
+        shader_program_ = ShaderLoader::CreateProgram(
+            BASIC_VERTEX_SHADER, BASIC_FRAGMENT_SHADER, "basic");
+        if (shader_program_ == 0) {
             return false;
         }
 
-        // Compile mini-map fragment shader
-        std::uint32_t minimap_fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(minimap_fragment_shader, 1, &MINIMAP_FRAGMENT_SHADER, nullptr);
-        glCompileShader(minimap_fragment_shader);
-
-        if (!CheckShaderCompile(minimap_fragment_shader)) {
+        minimap_shader_program_ = ShaderLoader::CreateProgram(
+            MINIMAP_VERTEX_SHADER, MINIMAP_FRAGMENT_SHADER, "minimap");
+        if (minimap_shader_program_ == 0) {
             return false;
         }
 
-        // Link mini-map shader program
-        minimap_shader_program_ = glCreateProgram();
-        glAttachShader(minimap_shader_program_, minimap_vertex_shader);
-        glAttachShader(minimap_shader_program_, minimap_fragment_shader);
-        glLinkProgram(minimap_shader_program_);
-
-        if (!CheckProgramLink(minimap_shader_program_)) {
-            return false;
-        }
-
-        // Clean up mini-map shaders
-        glDeleteShader(minimap_vertex_shader);
-        glDeleteShader(minimap_fragment_shader);
-
-        return true;
-    }
-    
-    bool CheckShaderCompile(std::uint32_t shader) {
-        int success;
-        glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            char info_log[512];
-            glGetShaderInfoLog(shader, 512, nullptr, info_log);
-            spdlog::error("Shader compilation failed: {}", info_log);
-            return false;
-        }
-        return true;
-    }
-    
-    bool CheckProgramLink(std::uint32_t program) {
-        int success;
-        glGetProgramiv(program, GL_LINK_STATUS, &success);
-        if (!success) {
-            char info_log[512];
-            glGetProgramInfoLog(program, 512, nullptr, info_log);
-            spdlog::error("Shader program linking failed: {}", info_log);
-            return false;
-        }
         return true;
     }
 
