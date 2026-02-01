@@ -244,16 +244,6 @@ std::vector<TileCoordinates> TileMathematics::GetTilesInBounds(const BoundingBox
         return tiles;
     }
 
-    // CRITICAL DEBUG: Log the conversion process
-    static int debug_counter = 0;
-    bool should_log = (++debug_counter % 60 == 0);
-
-    if (should_log) {
-        spdlog::warn("=== GetTilesInBounds DEBUG ===");
-        spdlog::warn("Input bounds: lon[{:.1f},{:.1f}], lat[{:.1f},{:.1f}], zoom={}",
-            bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y, zoom);
-    }
-
     // Convert bounds corners to tile coordinates
     const TileCoordinates min_tile = GeographicToTile(
         Geographic(bounds.min.y, bounds.min.x, 0.0), zoom
@@ -262,12 +252,6 @@ std::vector<TileCoordinates> TileMathematics::GetTilesInBounds(const BoundingBox
         Geographic(bounds.max.y, bounds.max.x, 0.0), zoom
     );
 
-    if (should_log) {
-        spdlog::warn("min_tile: ({},{},z{}), max_tile: ({},{},z{})",
-            min_tile.x, min_tile.y, min_tile.zoom,
-            max_tile.x, max_tile.y, max_tile.zoom);
-    }
-
     // Clamp to valid range
     const int32_t n = 1 << zoom;
     const int32_t min_x = std::max(0, std::min(min_tile.x, max_tile.x));
@@ -275,26 +259,7 @@ std::vector<TileCoordinates> TileMathematics::GetTilesInBounds(const BoundingBox
     const int32_t min_y = std::max(0, std::min(min_tile.y, max_tile.y));
     const int32_t max_y = std::min(n - 1, std::max(min_tile.y, max_tile.y));
 
-    if (should_log) {
-        spdlog::warn("Tile range: x=[{},{}], y=[{},{}]", min_x, max_x, min_y, max_y);
-    }
-
-    // TODO: If we decide to render all globe (without frustum) at zoom level say 18, then it becomes (156994 - 105149 + 1) * (158843 - 103300 +1)
-    // And for some reason we will exit rendering at frame 0
     tiles.reserve((max_x - min_x + 1) * (max_y - min_y + 1));
-    
-    // // Calculate expected tile count with safety limits
-    // const int64_t tile_count_x = static_cast<int64_t>(max_x - min_x + 1);
-    // const int64_t tile_count_y = static_cast<int64_t>(max_y - min_y + 1);
-    // const int64_t total_tiles = tile_count_x * tile_count_y;
-    
-    // // Safety limit to prevent excessive memory allocation
-    // const int64_t max_safe_tiles = 10000; // Reasonable limit
-    // const int64_t reserve_count = std::min(total_tiles, max_safe_tiles);
-    
-    // if (reserve_count > 0) {
-    //     tiles.reserve(static_cast<std::size_t>(reserve_count));
-    // }
     
     for (int32_t x = min_x; x <= max_x; ++x) {
         for (int32_t y = min_y; y <= max_y; ++y) {

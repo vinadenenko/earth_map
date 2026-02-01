@@ -143,19 +143,16 @@ public:
         int32_t zoom);
 
     /**
-     * @brief Convert geographic to tile coordinates using SPHERICAL mapping (3D globe)
+     * @brief Convert geographic to XYZ tile coordinates for 3D globe rendering
      *
-     * Uses LINEAR latitude/longitude mapping for 3D sphere rendering:
-     * - NOT Web Mercator! This is for 3D globe only.
-     * - Latitude [-90°, 90°] → Y [0, 2^zoom] (linear, no distortion)
-     * - Longitude [-180°, 180°] → X [0, 2^zoom] (linear wraparound)
-     *
-     * This mapping ensures tile coordinates match sphere vertex positions.
-     * For 2D minimap, use Web Mercator-based GeographicToTile() instead.
+     * Uses Web Mercator latitude mapping to match standard XYZ tile server
+     * layout (OSM, etc.). Longitude uses linear mapping.
+     * - Latitude: Web Mercator projection (matches tile servers)
+     * - Longitude: linear [-180°, 180°] → X [0, 2^zoom]
      *
      * @param geo Geographic coordinates
      * @param zoom Zoom level (0-30)
-     * @return Tile coordinates using spherical projection
+     * @return Tile coordinates using Web Mercator projection
      */
     [[nodiscard]] static TileCoordinates GeographicToSphericalTile(
         const Geographic& geo,

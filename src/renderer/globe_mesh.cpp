@@ -160,14 +160,6 @@ void IcosahedronGlobeMesh::GenerateIcosahedron() {
         vertex.lod_level = 0;
         vertex.edge_flags = 0;
 
-        // Pre-compute tile coordinates for spherical mapping (3D globe)
-        using namespace coordinates;
-        Geographic geo(vertex.geographic.y, vertex.geographic.x, 0.0);  // (lat, lon, alt)
-        const int32_t base_zoom = 2;  // Match hardcoded zoom in tile_renderer.cpp:926
-        TileCoordinates tile_coord = CoordinateMapper::GeographicToSphericalTile(geo, base_zoom);
-        vertex.base_tile = glm::ivec2(tile_coord.x, tile_coord.y);
-        vertex.tile_frac = CoordinateMapper::GetTileFraction(geo, tile_coord);
-
         vertices_.push_back(vertex);
     }
 
@@ -311,14 +303,6 @@ std::size_t IcosahedronGlobeMesh::CreateMidpointVertex(std::size_t v1, std::size
     vertex.texcoord = GeographicToUV(vertex.geographic);
     vertex.lod_level = std::max(vertices_[v1].lod_level, vertices_[v2].lod_level) + 1;
     vertex.edge_flags = 0;
-
-    // Pre-compute tile coordinates for spherical mapping (3D globe)
-    using namespace coordinates;
-    Geographic geo(vertex.geographic.y, vertex.geographic.x, 0.0);  // (lat, lon, alt)
-    const int32_t base_zoom = 2;  // Match hardcoded zoom in tile_renderer.cpp:926
-    TileCoordinates tile_coord = CoordinateMapper::GeographicToSphericalTile(geo, base_zoom);
-    vertex.base_tile = glm::ivec2(tile_coord.x, tile_coord.y);
-    vertex.tile_frac = CoordinateMapper::GetTileFraction(geo, tile_coord);
 
     std::size_t new_vertex_index = vertices_.size();
     vertices_.push_back(vertex);
