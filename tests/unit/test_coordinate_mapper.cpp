@@ -514,20 +514,27 @@ TEST_F(GeographicScreenTest, ScreenToGeographic_SamePoint_DifferentAngles) {
     Geographic target(40.7128, -74.0060, 0.0);
     World target_world = CoordinateMapper::GeographicToWorld(target);
 
-    // Camera 1: View from East (positive X)
-    glm::vec3 cam1_pos = target_world.position + glm::vec3(3.0f, 0.0f, 0.0f);
+    // Camera must be on the same hemisphere as the target (along the outward
+    // normal) so the target is on the near face of the globe. Arbitrary offsets
+    // like (+3,0,0) can place the target on the far side, causing the ray to
+    // hit the wrong hemisphere.
+    glm::vec3 outward = glm::normalize(target_world.position);
+
+    // Camera 1: Directly along the outward normal, 3 units from target
+    glm::vec3 cam1_pos = target_world.position + outward * 3.0f;
     glm::mat4 view1 = glm::lookAt(
         cam1_pos,
         target_world.position,
         glm::vec3(0.0f, 1.0f, 0.0f)
     );
 
-    // Camera 2: View from above (positive Y)
-    glm::vec3 cam2_pos = target_world.position + glm::vec3(0.0f, 3.0f, 0.0f);
+    // Camera 2: Slightly offset from the normal (still same hemisphere)
+    glm::vec3 tangent = glm::normalize(glm::cross(outward, glm::vec3(0.0f, 1.0f, 0.0f)));
+    glm::vec3 cam2_pos = target_world.position + outward * 3.0f + tangent * 0.5f;
     glm::mat4 view2 = glm::lookAt(
         cam2_pos,
         target_world.position,
-        glm::vec3(0.0f, 0.0f, -1.0f)  // Different up vector
+        glm::vec3(0.0f, 1.0f, 0.0f)
     );
 
     glm::mat4 proj = glm::perspective(
