@@ -234,10 +234,6 @@ bool TileLoadWorkerPool::DecodeImage(TileData& tile_data) {
     int height = 0;
     int channels = 0;
 
-    // Flip vertically: stb_image decodes row 0 = top, but OpenGL textures
-    // have v=0 at the bottom. Without this flip, tiles appear upside-down in the atlas.
-    stbi_set_flip_vertically_on_load(1);
-
     // Decode image (stbi_load_from_memory handles PNG, JPEG, etc.)
     unsigned char* decoded_data = stbi_load_from_memory(
         tile_data.data.data(),
@@ -247,8 +243,6 @@ bool TileLoadWorkerPool::DecodeImage(TileData& tile_data) {
         &channels,
         0  // Desired channels (0 = original)
     );
-
-    stbi_set_flip_vertically_on_load(0);
 
     if (!decoded_data) {
         const char* error = stbi_failure_reason();
