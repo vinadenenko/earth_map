@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <fstream>
 #include <filesystem>
+#include <mutex>
 #include <sstream>
 #include <iomanip>
 #include <random>
@@ -39,7 +40,10 @@ public:
         const TileCoordinates& coordinates) const override;
     std::size_t Cleanup() override;
     
-    TileCacheConfig GetConfiguration() const override { return config_; }
+    TileCacheConfig GetConfiguration() const override {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return config_;
+    }
     bool SetConfiguration(const TileCacheConfig& config) override;
     
     std::size_t Preload(const std::vector<TileCoordinates>& coordinates) override;
@@ -49,6 +53,12 @@ public:
         std::uint8_t zoom_level) const override;
 
 private:
+    // Coarse-grained lock protecting all mutable state. The LRU implementation
+    // (vector + index map) is O(n) per access and should be replaced with
+    // std::list + iterator map for O(1) when the cache is redesigned for
+    // texture streaming. For now this mutex prevents the data races.
+    mutable std::recursive_mutex mutex_;
+
     TileCacheConfig config_;
     TileCacheStats stats_;
     
@@ -87,6 +97,7 @@ std::unique_ptr<TileCache> CreateTileCache(const TileCacheConfig& config) {
 }
 
 bool BasicTileCache::Initialize(const TileCacheConfig& config) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     config_ = config;
     stats_.Reset();
     
@@ -113,6 +124,7 @@ bool BasicTileCache::Initialize(const TileCacheConfig& config) {
 }
 
 bool BasicTileCache::Put(const TileData& tile_data) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!tile_data.IsValid()) {
         spdlog::warn("Attempted to store invalid tile data");
         return false;
@@ -152,6 +164,7 @@ bool BasicTileCache::Put(const TileData& tile_data) {
 }
 
 std::optional<TileData> BasicTileCache::Get(const TileCoordinates& coordinates) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     stats_.total_requests++;
 
     // First try memory cache
@@ -193,6 +206,7 @@ std::optional<TileData> BasicTileCache::Get(const TileCoordinates& coordinates) 
 }
 
 bool BasicTileCache::Contains(const TileCoordinates& coordinates) const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     // Check memory cache first
     if (memory_cache_.find(coordinates) != memory_cache_.end()) {
         return true;
@@ -204,6 +218,7 @@ bool BasicTileCache::Contains(const TileCoordinates& coordinates) const {
 }
 
 bool BasicTileCache::Remove(const TileCoordinates& coordinates) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     bool removed_memory = false;
     bool removed_disk = false;
     
@@ -247,6 +262,7 @@ bool BasicTileCache::Remove(const TileCoordinates& coordinates) {
 }
 
 void BasicTileCache::Clear() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     memory_cache_.clear();
     metadata_cache_.clear();
     lru_list_.clear();
@@ -268,6 +284,7 @@ void BasicTileCache::Clear() {
 }
 
 TileCacheStats BasicTileCache::GetStatistics() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     TileCacheStats stats = stats_;  // Copy current stats
     
     // Calculate disk usage (mutable operation but returns copy)
@@ -289,15 +306,16 @@ TileCacheStats BasicTileCache::GetStatistics() const {
     return stats;
 }
 
-bool BasicTileCache::UpdateMetadata(const TileCoordinates& coordinates, 
+bool BasicTileCache::UpdateMetadata(const TileCoordinates& coordinates,
                                     const TileMetadata& metadata) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     metadata_cache_[coordinates] = std::make_shared<TileMetadata>(metadata);
     return SaveMetadataToDisk(metadata);
 }
 
 std::shared_ptr<TileMetadata> BasicTileCache::GetMetadata(
     const TileCoordinates& coordinates) const {
-    
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     // Check memory cache first
     auto it = metadata_cache_.find(coordinates);
     if (it != metadata_cache_.end()) {
@@ -318,6 +336,7 @@ std::shared_ptr<TileMetadata> BasicTileCache::GetMetadata(
 }
 
 std::size_t BasicTileCache::Cleanup() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::size_t cleaned_count = 0;
     
     // Clean expired tiles
@@ -364,6 +383,7 @@ std::size_t BasicTileCache::Cleanup() {
 }
 
 bool BasicTileCache::SetConfiguration(const TileCacheConfig& config) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     config_ = config;
     
     // Perform immediate cleanup if limits decreased
@@ -379,6 +399,7 @@ bool BasicTileCache::SetConfiguration(const TileCacheConfig& config) {
 }
 
 std::size_t BasicTileCache::Preload(const std::vector<TileCoordinates>& coordinates) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::size_t loaded_count = 0;
     
     for (const auto& coords : coordinates) {
@@ -402,6 +423,7 @@ std::size_t BasicTileCache::Preload(const std::vector<TileCoordinates>& coordina
 
 std::vector<TileCoordinates> BasicTileCache::GetTilesInBounds(
     const BoundingBox2D& bounds) const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::vector<TileCoordinates> tiles_in_bounds;
     
     for (const auto& [coords, tile_data] : memory_cache_) {
@@ -418,6 +440,7 @@ std::vector<TileCoordinates> BasicTileCache::GetTilesInBounds(
 
 std::vector<TileCoordinates> BasicTileCache::GetTilesAtZoom(
     std::uint8_t zoom_level) const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::vector<TileCoordinates> tiles_at_zoom;
     
     for (const auto& [coords, tile_data] : memory_cache_) {
