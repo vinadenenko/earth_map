@@ -22,13 +22,15 @@ TileTextureCoordinator::TileTextureCoordinator(
     // Create upload queue (shared between workers and GL thread)
     upload_queue_ = std::make_shared<GLUploadQueue>();
 
-    // Create atlas manager (GL thread only)
-    atlas_manager_ = std::make_unique<TextureAtlasManager>(
-        2048,  // atlas_width
-        2048,  // atlas_height
+    // Create tile texture pool (replaces atlas for tile rendering)
+    tile_pool_ = std::make_unique<TileTexturePool>(
         256,   // tile_size
+        512,   // max_layers
         skip_gl_init
     );
+
+    // Create indirection texture manager
+    indirection_manager_ = std::make_unique<IndirectionTextureManager>(skip_gl_init);
 
     // Create worker pool
     worker_pool_ = std::make_unique<TileLoadWorkerPool>(
@@ -38,12 +40,11 @@ TileTextureCoordinator::TileTextureCoordinator(
         num_worker_threads
     );
 
-    spdlog::info("TileTextureCoordinator initialized with {} workers",
+    spdlog::info("TileTextureCoordinator initialized with {} workers (tile pool + indirection)",
                  num_worker_threads);
 }
 
 TileTextureCoordinator::~TileTextureCoordinator() {
-    // Worker pool destructor will gracefully shutdown workers
     spdlog::info("TileTextureCoordinator shutting down");
 }
 
@@ -63,7 +64,6 @@ void TileTextureCoordinator::RequestTiles(
         for (const auto& coords : tiles) {
             auto it = tile_states_.find(coords);
 
-            // Load if: not in map, or status is NotLoaded
             if (it == tile_states_.end() ||
                 it->second.status == TileStatus::NotLoaded) {
                 to_load.push_back(coords);
@@ -72,7 +72,7 @@ void TileTextureCoordinator::RequestTiles(
     }
 
     if (to_load.empty()) {
-        return;  // All tiles already loaded or loading
+        return;
     }
 
     // Step 2: Mark tiles as Loading and submit to worker pool (write lock)
@@ -80,13 +80,11 @@ void TileTextureCoordinator::RequestTiles(
         std::unique_lock<std::shared_mutex> lock(state_mutex_);
 
         for (const auto& coords : to_load) {
-            // Check again under write lock (TOCTOU prevention)
             auto& state = tile_states_[coords];
             if (state.status == TileStatus::NotLoaded) {
                 state.status = TileStatus::Loading;
                 state.request_time = std::chrono::steady_clock::now();
 
-                // Submit to worker pool
                 worker_pool_->SubmitRequest(coords, priority,
                     [this](const TileCoordinates& loaded_coords) {
                         this->OnTileLoadComplete(loaded_coords);
@@ -99,18 +97,41 @@ void TileTextureCoordinator::RequestTiles(
 }
 
 bool TileTextureCoordinator::IsTileReady(const TileCoordinates& coords) const {
-    // Check both state map and atlas (atlas is source of truth)
-    // Tiles may be evicted from atlas without state map update
-    return atlas_manager_->IsTileLoaded(coords);
+    return tile_pool_->IsTileLoaded(coords);
 }
 
 glm::vec4 TileTextureCoordinator::GetTileUV(const TileCoordinates& coords) const {
-    // Atlas manager is source of truth - it returns default UV if tile not loaded
-    return atlas_manager_->GetTileUV(coords);
+    // With texture arrays, each tile uses full [0,1] UV range.
+    // Return (0,0,1,1) if loaded, (0,0,0,0) if not.
+    if (tile_pool_->IsTileLoaded(coords)) {
+        return glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
+    }
+    return glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+}
+
+std::uint32_t TileTextureCoordinator::GetTilePoolTextureID() const {
+    return tile_pool_->GetTextureArrayID();
+}
+
+std::uint32_t TileTextureCoordinator::GetIndirectionTextureID(int zoom) const {
+    return indirection_manager_->GetTextureID(zoom);
+}
+
+glm::ivec2 TileTextureCoordinator::GetIndirectionOffset(int zoom) const {
+    return indirection_manager_->GetWindowOffset(zoom);
+}
+
+void TileTextureCoordinator::UpdateIndirectionWindowCenter(
+    int zoom, int center_tile_x, int center_tile_y) {
+    indirection_manager_->UpdateWindowCenter(zoom, center_tile_x, center_tile_y);
+}
+
+int TileTextureCoordinator::GetTileLayerIndex(const TileCoordinates& coords) const {
+    return tile_pool_->GetLayerIndex(coords);
 }
 
 std::uint32_t TileTextureCoordinator::GetAtlasTextureID() const {
-    return atlas_manager_->GetAtlasTextureID();
+    return tile_pool_->GetTextureArrayID();
 }
 
 void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
@@ -119,14 +140,13 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
     }
 
     for (int i = 0; i < max_uploads_per_frame; ++i) {
-        // Pop command from upload queue
         auto cmd = upload_queue_->TryPop();
         if (!cmd) {
-            break;  // Queue empty
+            break;
         }
 
-        // Upload to atlas (GL calls happen here)
-        int slot = atlas_manager_->UploadTile(
+        // Upload to tile pool
+        int layer = tile_pool_->UploadTile(
             cmd->coords,
             cmd->pixel_data.data(),
             cmd->width,
@@ -134,23 +154,27 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
             cmd->channels
         );
 
-        if (slot >= 0) {
+        if (layer >= 0) {
+            // Update indirection texture
+            indirection_manager_->SetTileLayer(
+                cmd->coords,
+                static_cast<std::uint16_t>(layer));
+
             // Update state to Loaded
             std::unique_lock<std::shared_mutex> lock(state_mutex_);
 
             auto it = tile_states_.find(cmd->coords);
             if (it != tile_states_.end()) {
                 it->second.status = TileStatus::Loaded;
-                it->second.atlas_slot = slot;
+                it->second.pool_layer = layer;
 
-                spdlog::trace("Tile {} uploaded to atlas slot {}",
-                             cmd->coords.GetKey(), slot);
+                spdlog::trace("Tile {} uploaded to pool layer {}",
+                             cmd->coords.GetKey(), layer);
             }
         } else {
-            spdlog::warn("Failed to upload tile {} to atlas", cmd->coords.GetKey());
+            spdlog::warn("Failed to upload tile {} to pool", cmd->coords.GetKey());
         }
 
-        // Execute completion callback if provided
         if (cmd->on_complete) {
             cmd->on_complete(cmd->coords);
         }
@@ -161,7 +185,6 @@ std::size_t TileTextureCoordinator::EvictUnusedTiles(std::chrono::seconds max_ag
     const auto now = std::chrono::steady_clock::now();
     std::vector<TileCoordinates> to_evict;
 
-    // Step 1: Find old tiles (read lock)
     {
         std::shared_lock<std::shared_mutex> lock(state_mutex_);
 
@@ -181,12 +204,14 @@ std::size_t TileTextureCoordinator::EvictUnusedTiles(std::chrono::seconds max_ag
         return 0;
     }
 
-    // Step 2: Evict tiles (write lock + atlas modification)
     std::unique_lock<std::shared_mutex> lock(state_mutex_);
 
     for (const auto& coords : to_evict) {
-        // Evict from atlas
-        atlas_manager_->EvictTile(coords);
+        // Clear from indirection texture
+        indirection_manager_->ClearTile(coords);
+
+        // Evict from tile pool
+        tile_pool_->EvictTile(coords);
 
         // Remove from state map
         tile_states_.erase(coords);
@@ -210,12 +235,7 @@ TileTextureCoordinator::GetTileStatus(const TileCoordinates& coords) const {
 }
 
 void TileTextureCoordinator::OnTileLoadComplete(const TileCoordinates& coords) {
-    // This callback is invoked by worker threads after loading and queuing
-    // The tile is now in the upload queue, waiting for GL thread to process
     spdlog::trace("Tile {} load complete, queued for upload", coords.GetKey());
-
-    // Note: We don't transition to Loaded here - that happens in ProcessUploads
-    // after actual GL upload succeeds
 }
 
 } // namespace earth_map

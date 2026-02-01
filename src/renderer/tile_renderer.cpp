@@ -25,10 +25,9 @@ namespace earth_map {
 
 namespace {
 
-constexpr int kDefaultAtlasSize = 2048;
 constexpr int kDefaultTileSize = 256;
 constexpr int kDefaultZoomLevel = 2;
-constexpr int kMaxShaderTiles = 256;
+constexpr int kMaxFallbackLevels = 5;
 constexpr glm::vec3 kDefaultLightPosition{2.0f, 2.0f, 2.0f};
 constexpr glm::vec3 kDefaultViewPosition{0.0f, 0.0f, 3.0f};
 
@@ -54,12 +53,8 @@ struct TileRenderState {
 class TileRendererImpl : public TileRenderer {
 public:
     explicit TileRendererImpl(const TileRenderConfig& config)
-        : config_(config), frame_counter_(0), atlas_size_(kDefaultAtlasSize), tile_size_(kDefaultTileSize) {
+        : config_(config), frame_counter_(0) {
         spdlog::info("Creating tile renderer with max tiles: {}", config.max_visible_tiles);
-        // Calculate tiles per row for atlas layout
-        tiles_per_row_ = atlas_size_ / tile_size_;
-        spdlog::info("Atlas layout: {}x{} tiles per row, total {} tiles",
-                    tiles_per_row_, tiles_per_row_, tiles_per_row_ * tiles_per_row_);
     }
     
     ~TileRendererImpl() override {
@@ -187,9 +182,8 @@ public:
             const std::vector<TileCoordinates> candidate_tiles =
                 tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
 
-            const std::size_t max_tiles_for_frame = std::min(
-                static_cast<std::size_t>(config_.max_visible_tiles),
-                static_cast<std::size_t>(tiles_per_row_ * tiles_per_row_));
+            const std::size_t max_tiles_for_frame =
+                static_cast<std::size_t>(config_.max_visible_tiles);
 
             for (const TileCoordinates& tile_coords : candidate_tiles) {
                 if (visible_tile_coords.size() >= max_tiles_for_frame) break;
@@ -299,12 +293,9 @@ public:
         const GLint view_loc = glGetUniformLocation(tile_shader_program_, "uView");
         const GLint proj_loc = glGetUniformLocation(tile_shader_program_, "uProjection");
         const GLint model_loc = glGetUniformLocation(tile_shader_program_, "uModel");
-        const GLint time_loc = glGetUniformLocation(tile_shader_program_, "uTime");
-
         glUniformMatrix4fv(view_loc, 1, GL_FALSE, glm::value_ptr(view_matrix));
         glUniformMatrix4fv(proj_loc, 1, GL_FALSE, glm::value_ptr(projection_matrix));
         glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
-        glUniform1f(time_loc, static_cast<float>(frame_counter_) * 0.016f);  // ~60fps timing
 
         // Set lighting uniforms
         const GLint light_loc = glGetUniformLocation(tile_shader_program_, "uLightPos");
@@ -315,65 +306,62 @@ public:
         glUniform3f(light_color_loc, 1.0f, 1.0f, 1.0f);
         glUniform3f(view_pos_loc, kDefaultViewPosition.x, kDefaultViewPosition.y, kDefaultViewPosition.z);
 
-        // Set tile rendering uniforms (dynamic zoom)
-        const GLint zoom_loc = glGetUniformLocation(tile_shader_program_, "uZoomLevel");
-
         // Get current zoom level from visible tiles (or use default)
         int current_zoom = kDefaultZoomLevel;
         if (!visible_tiles_.empty()) {
             current_zoom = visible_tiles_[0].coordinates.zoom;
         }
+
+        // Set zoom and fallback level uniforms
+        const GLint zoom_loc = glGetUniformLocation(tile_shader_program_, "uZoomLevel");
         glUniform1i(zoom_loc, current_zoom);
 
-        // Populate tile data arrays for shader (only ready tiles)
-        constexpr int MAX_SHADER_TILES = kMaxShaderTiles;
-        std::vector<GLint> tile_coords_data;  // Flat array: x0,y0,z0, x1,y1,z1, ...
-        std::vector<GLfloat> tile_uvs_data;   // Flat array: u0,v0,w0,h0, u1,v1,w1,h1, ...
+        const int num_fallback = std::min(kMaxFallbackLevels, current_zoom + 1);
+        const GLint fallback_loc = glGetUniformLocation(tile_shader_program_, "uNumFallbackLevels");
+        glUniform1i(fallback_loc, num_fallback);
 
-        tile_coords_data.reserve(visible_tiles_.size() * 3);
-        tile_uvs_data.reserve(visible_tiles_.size() * 4);
-
-        int num_shader_tiles = 0;
-        for (const auto& tile : visible_tiles_) {
-            if (num_shader_tiles >= MAX_SHADER_TILES) break;
-            if (!tile.is_ready) continue;  // Only send ready tiles to shader
-
-            // Add tile coordinates
-            tile_coords_data.push_back(static_cast<GLint>(tile.coordinates.x));
-            tile_coords_data.push_back(static_cast<GLint>(tile.coordinates.y));
-            tile_coords_data.push_back(static_cast<GLint>(tile.coordinates.zoom));
-
-            // Add tile UV coordinates
-            tile_uvs_data.push_back(tile.uv_coords.x);  // u_min
-            tile_uvs_data.push_back(tile.uv_coords.y);  // v_min
-            tile_uvs_data.push_back(tile.uv_coords.z);  // u_max
-            tile_uvs_data.push_back(tile.uv_coords.w);  // v_max
-
-            num_shader_tiles++;
-        }
-
-        // Set tile data uniforms
-        const GLint num_tiles_loc = glGetUniformLocation(tile_shader_program_, "uNumTiles");
-        const GLint tile_coords_loc = glGetUniformLocation(tile_shader_program_, "uTileCoords");
-        const GLint tile_uvs_loc = glGetUniformLocation(tile_shader_program_, "uTileUVs");
-
-        glUniform1i(num_tiles_loc, num_shader_tiles);
-
-        if (num_shader_tiles > 0) {
-            glUniform3iv(tile_coords_loc, num_shader_tiles, tile_coords_data.data());
-            glUniform4fv(tile_uvs_loc, num_shader_tiles, tile_uvs_data.data());
-        }
-
-        // Bind the coordinator's atlas texture
+        // Bind tile pool texture array to unit 0
         glActiveTexture(GL_TEXTURE0);
-        std::uint32_t atlas_texture_id = 0;
+        std::uint32_t pool_texture_id = 0;
         if (texture_coordinator_) {
-            atlas_texture_id = texture_coordinator_->GetAtlasTextureID();
+            pool_texture_id = texture_coordinator_->GetTilePoolTextureID();
         }
-        glBindTexture(GL_TEXTURE_2D, atlas_texture_id);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, pool_texture_id);
 
-        const GLint tex_loc = glGetUniformLocation(tile_shader_program_, "uTileTexture");
-        glUniform1i(tex_loc, 0);
+        const GLint pool_loc = glGetUniformLocation(tile_shader_program_, "uTilePool");
+        glUniform1i(pool_loc, 0);
+
+        // Bind indirection textures for zoom Z through Z-(N-1) to units 1..N
+        const char* indirection_names[] = {
+            "uIndirection0", "uIndirection1", "uIndirection2",
+            "uIndirection3", "uIndirection4"
+        };
+        const char* offset_names[] = {
+            "uIndirectionOffset0", "uIndirectionOffset1", "uIndirectionOffset2",
+            "uIndirectionOffset3", "uIndirectionOffset4"
+        };
+
+        for (int level = 0; level < num_fallback; ++level) {
+            const int zoom = current_zoom - level;
+            const GLint tex_unit = 1 + level;
+
+            glActiveTexture(GL_TEXTURE0 + tex_unit);
+
+            std::uint32_t indirection_id = 0;
+            glm::ivec2 offset(0, 0);
+            if (texture_coordinator_) {
+                indirection_id = texture_coordinator_->GetIndirectionTextureID(zoom);
+                offset = texture_coordinator_->GetIndirectionOffset(zoom);
+            }
+
+            glBindTexture(GL_TEXTURE_2D, indirection_id);
+
+            const GLint ind_loc = glGetUniformLocation(tile_shader_program_, indirection_names[level]);
+            glUniform1i(ind_loc, tex_unit);
+
+            const GLint off_loc = glGetUniformLocation(tile_shader_program_, offset_names[level]);
+            glUniform2i(off_loc, offset.x, offset.y);
+        }
 
         // Render globe mesh with atlas texture
         glBindVertexArray(globe_vao_);
@@ -408,7 +396,7 @@ public:
     
     void ClearCache() override {
         visible_tiles_.clear();
-        texture_cache_.clear();
+        // Cache cleared
         spdlog::info("Tile renderer cache cleared");
     }
     
@@ -439,10 +427,6 @@ private:
     std::vector<TileRenderState> visible_tiles_;
     TileRenderStats stats_;
     
-    // Texture atlas implementation
-    int atlas_size_;
-    int tile_size_;
-    int tiles_per_row_;
     std::vector<TileCoordinates> last_visible_tiles_;
     
     // OpenGL objects
@@ -451,7 +435,6 @@ private:
     std::uint32_t globe_vbo_ = 0;
     std::uint32_t globe_ebo_ = 0;
     std::vector<unsigned int> globe_indices_;
-    std::unordered_map<TileCoordinates, std::uint32_t, TileCoordinatesHash> texture_cache_;
     
     // Tile atlas vertex shader source
     static constexpr const char* kTileVertexShader = R"(
@@ -476,7 +459,7 @@ void main() {
 }
 )";
 
-    // Tile atlas fragment shader source
+    // Tile pool + indirection fragment shader
     static constexpr const char* kTileFragmentShader = R"(
 #version 330 core
 in vec3 FragPos;
@@ -485,62 +468,45 @@ in vec2 TexCoord;
 
 out vec4 FragColor;
 
-uniform sampler2D uTileTexture;
+uniform sampler2DArray uTilePool;
+uniform usampler2D uIndirection0;
+uniform usampler2D uIndirection1;
+uniform usampler2D uIndirection2;
+uniform usampler2D uIndirection3;
+uniform usampler2D uIndirection4;
+uniform int uZoomLevel;
+uniform int uNumFallbackLevels;
+uniform ivec2 uIndirectionOffset0;
+uniform ivec2 uIndirectionOffset1;
+uniform ivec2 uIndirectionOffset2;
+uniform ivec2 uIndirectionOffset3;
+uniform ivec2 uIndirectionOffset4;
 uniform vec3 uLightPos;
 uniform vec3 uLightColor;
 uniform vec3 uViewPos;
-uniform float uTime;
-uniform int uZoomLevel;
-
-#define MAX_TILES 256
-uniform int uNumTiles;
-uniform ivec3 uTileCoords[MAX_TILES];
-uniform vec4 uTileUVs[MAX_TILES];
 
 vec2 worldToGeo(vec3 pos) {
-    vec3 normalized = normalize(pos);
-    float lat = asin(normalized.y) * 180.0 / 3.14159265359;
-    float lon = atan(normalized.x, normalized.z) * 180.0 / 3.14159265359;
-    return vec2(lon, lat);
+    vec3 n = normalize(pos);
+    return vec2(atan(n.x, n.z) * 180.0 / 3.14159265359,
+                asin(n.y) * 180.0 / 3.14159265359);
 }
 
-// Web Mercator is intentional: matches standard XYZ tile server layout (OSM, etc.)
-ivec2 geoToTile(vec2 geo, int zoom) {
+void geoToTileAndFrac(vec2 geo, int zoom, out ivec2 tile, out vec2 frac) {
     const float PI = 3.14159265359;
     int n = 1 << zoom;
-    float norm_lon = (geo.x + 180.0) / 360.0;
-    float lat_clamped = clamp(geo.y, -85.0511, 85.0511);
-    float lat_rad = lat_clamped * PI / 180.0;
-    float merc_y = log(tan(PI / 4.0 + lat_rad / 2.0));
-    float norm_lat = (1.0 - merc_y / PI) / 2.0;
-    int tile_x = clamp(int(floor(norm_lon * float(n))), 0, n - 1);
-    int tile_y = clamp(int(floor(norm_lat * float(n))), 0, n - 1);
-    return ivec2(tile_x, tile_y);
+    float fx = ((geo.x + 180.0) / 360.0) * float(n);
+    float lat_rad = clamp(geo.y, -85.0511, 85.0511) * PI / 180.0;
+    float fy = ((1.0 - log(tan(PI / 4.0 + lat_rad / 2.0)) / PI) / 2.0) * float(n);
+    tile = ivec2(clamp(int(floor(fx)), 0, n - 1), clamp(int(floor(fy)), 0, n - 1));
+    frac = vec2(fract(fx), fract(fy));
 }
 
-vec2 getTileFrac(vec2 geo, ivec2 tile, int zoom) {
-    const float PI = 3.14159265359;
-    int n = 1 << zoom;
-    float norm_lon = (geo.x + 180.0) / 360.0;
-    float lat_clamped = clamp(geo.y, -85.0511, 85.0511);
-    float lat_rad = lat_clamped * PI / 180.0;
-    float merc_y = log(tan(PI / 4.0 + lat_rad / 2.0));
-    float norm_lat = (1.0 - merc_y / PI) / 2.0;
-    return vec2(fract(norm_lon * float(n)), fract(norm_lat * float(n)));
-}
-
-vec4 findTileUV(vec2 geo, int zoom) {
-    ivec2 tile = geoToTile(geo, zoom);
-    vec2 tileFrac = getTileFrac(geo, tile, zoom);
-    ivec3 tileCoord = ivec3(tile, zoom);
-    for (int i = 0; i < uNumTiles && i < MAX_TILES; i++) {
-        if (uTileCoords[i] == tileCoord) {
-            vec4 uv = uTileUVs[i];
-            vec2 atlasUV = mix(uv.xy, uv.zw, tileFrac);
-            return vec4(atlasUV, 1.0, 1.0);
-        }
-    }
-    return vec4(0.0, 0.0, 0.0, 0.0);
+uint lookupLayer(int level, ivec2 tile) {
+    if      (level == 0) return texelFetch(uIndirection0, tile - uIndirectionOffset0, 0).r;
+    else if (level == 1) return texelFetch(uIndirection1, tile - uIndirectionOffset1, 0).r;
+    else if (level == 2) return texelFetch(uIndirection2, tile - uIndirectionOffset2, 0).r;
+    else if (level == 3) return texelFetch(uIndirection3, tile - uIndirectionOffset3, 0).r;
+    else                 return texelFetch(uIndirection4, tile - uIndirectionOffset4, 0).r;
 }
 
 void main() {
@@ -552,26 +518,26 @@ void main() {
     vec3 diffuse = diff * uLightColor;
 
     vec2 geo = worldToGeo(FragPos);
-    int zoom = max(uZoomLevel, 0);
-    vec4 uvResult = findTileUV(geo, zoom);
 
-    vec3 result;
-    if (uvResult.z > 0.5) {
-        vec4 texColor = texture(uTileTexture, uvResult.xy);
-        float texBrightness = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
-        if (texBrightness > 0.05) {
-            result = (ambient + diffuse) * texColor.rgb;
-            FragColor = vec4(result, texColor.a);
-        } else {
-            vec3 baseColor = vec3(0.85, 0.82, 0.75);
-            result = (ambient + diffuse) * baseColor;
-            FragColor = vec4(result, 1.0);
+    for (int level = 0; level < uNumFallbackLevels; level++) {
+        int zoom = uZoomLevel - level;
+        if (zoom < 0) break;
+
+        ivec2 tile;
+        vec2 frac;
+        geoToTileAndFrac(geo, zoom, tile, frac);
+
+        uint layerIdx = lookupLayer(level, tile);
+
+        if (layerIdx != 0xFFFFu) {
+            vec4 texColor = texture(uTilePool, vec3(frac, float(layerIdx)));
+            FragColor = vec4((ambient + diffuse) * texColor.rgb, texColor.a);
+            return;
         }
-    } else {
-        vec3 baseColor = vec3(0.85, 0.82, 0.75);
-        result = (ambient + diffuse) * baseColor;
-        FragColor = vec4(result, 1.0);
     }
+
+    vec3 baseColor = vec3(0.85, 0.82, 0.75);
+    FragColor = vec4((ambient + diffuse) * baseColor, 1.0);
 }
 )";
 
