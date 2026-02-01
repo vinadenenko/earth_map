@@ -38,7 +38,7 @@ struct GlobeVertex {
     
     /** Geographic coordinates (longitude, latitude) */
     glm::vec2 geographic;
-    
+
     /** Subdivision level of this vertex */
     std::uint8_t lod_level = 0;
     

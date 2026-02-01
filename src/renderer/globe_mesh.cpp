@@ -159,23 +159,24 @@ void IcosahedronGlobeMesh::GenerateIcosahedron() {
         vertex.texcoord = GeographicToUV(vertex.geographic);
         vertex.lod_level = 0;
         vertex.edge_flags = 0;
+
         vertices_.push_back(vertex);
     }
 
-    // Define 20 faces of standard icosahedron with consistent CCW winding
-    // Verified to produce outward-facing normals
+    // Define 20 faces of standard icosahedron with CCW winding (from outside)
+    // so that face normals point outward, matching OpenGL's default GL_FRONT_FACE = GL_CCW
     std::vector<std::array<int, 3>> faces = {
         // Top cap (5 triangles around vertex 5)
-        {5, 11, 0}, {5, 0, 1}, {5, 1, 9}, {5, 9, 4}, {5, 4, 11},
+        {5, 0, 11}, {5, 1, 0}, {5, 9, 1}, {5, 4, 9}, {5, 11, 4},
 
         // Upper belt (5 triangles)
-        {0, 11, 10}, {0, 10, 7}, {1, 0, 7}, {1, 7, 8}, {9, 1, 8},
+        {0, 10, 11}, {0, 7, 10}, {1, 7, 0}, {1, 8, 7}, {9, 8, 1},
 
         // Lower belt (5 triangles)
-        {4, 9, 3}, {9, 8, 3}, {8, 7, 6}, {7, 10, 6}, {10, 11, 2},
+        {4, 3, 9}, {9, 3, 8}, {8, 6, 7}, {7, 6, 10}, {10, 2, 11},
 
         // Bottom cap (5 triangles around vertex 2)
-        {2, 4, 3}, {2, 3, 6}, {2, 6, 10}, {2, 11, 4}, {3, 8, 6}
+        {2, 3, 4}, {2, 6, 3}, {2, 10, 6}, {2, 4, 11}, {3, 6, 8}
     };
     
     // Create GlobeTriangle objects
@@ -302,7 +303,7 @@ std::size_t IcosahedronGlobeMesh::CreateMidpointVertex(std::size_t v1, std::size
     vertex.texcoord = GeographicToUV(vertex.geographic);
     vertex.lod_level = std::max(vertices_[v1].lod_level, vertices_[v2].lod_level) + 1;
     vertex.edge_flags = 0;
-    
+
     std::size_t new_vertex_index = vertices_.size();
     vertices_.push_back(vertex);
     

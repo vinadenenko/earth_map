@@ -1,4 +1,5 @@
 #include <earth_map/renderer/renderer.h>
+#include <earth_map/renderer/shader_loader.h>
 #include <earth_map/renderer/elevation_manager.h>
 #include <earth_map/data/elevation_provider.h>
 #include <earth_map/earth_map.h>
@@ -221,6 +222,11 @@ public:
             return false;
         }
 
+        // CRITICAL: Set the icosahedron mesh on tile renderer
+        // Tile renderer MUST use this mesh, not generate its own
+        tile_renderer_->SetGlobeMesh(globe_mesh_.get());
+        spdlog::info("Icosahedron mesh provided to tile renderer");
+
         // Initialize mini-map renderer with valid shader program
         MiniMapRenderer::Config mini_map_config;
         mini_map_config.width = 256;
@@ -255,17 +261,24 @@ public:
         if (!initialized_) {
             return;
         }
-        
-        // Update tile renderer with current view
+
+        // SINGLE RENDERING PATH: Always use tile renderer
+        // Tile renderer now uses the icosahedron mesh (with elevation displacement)
+        // Missing tiles are handled by base color in shader (no fallback mesh needed)
         if (tile_renderer_) {
             tile_renderer_->BeginFrame();
             tile_renderer_->UpdateVisibleTiles(view_matrix, projection_matrix,
                                                  camera_controller_->GetPosition(), frustum);
             tile_renderer_->RenderTiles(view_matrix, projection_matrix);
             tile_renderer_->EndFrame();
+        } else {
+            // Only if tile renderer completely unavailable (should never happen)
+            spdlog::error("Tile renderer not available - nothing to render");
         }
-        
-        // Fallback to basic globe if tile renderer not available
+
+        // OLD: Fallback rendering removed - tile renderer handles everything now
+        // No more dual-mesh system!
+        /*
         if (!tile_renderer_ || tile_renderer_->GetStats().visible_tiles == 0) {
             // Log why we're using fallback globe rendering
             static bool logged_fallback_reason = false;
@@ -375,6 +388,8 @@ public:
                 glBindVertexArray(0);
             }
         }
+        */
+        // END OF OLD FALLBACK CODE
     }
 
     
@@ -480,15 +495,15 @@ public:
     }
 
     PlacemarkRenderer* GetPlacemarkRenderer() override {
-        return nullptr; // TODO: Implement
+        return nullptr;
     }
-    
+
     LODManager* GetLODManager() override {
-        return nullptr; // TODO: Implement
+        return nullptr;
     }
-    
+
     GPUResourceManager* GetGPUResourceManager() override {
-        return nullptr; // TODO: Implement
+        return nullptr;
     }
 
     void RenderMiniMapOverlay() {
@@ -606,94 +621,18 @@ private:
     bool mini_map_enabled_ = false;
 
     bool LoadShaders() {
-        // Compile vertex shader
-        std::uint32_t vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-        glShaderSource(vertex_shader, 1, &BASIC_VERTEX_SHADER, nullptr);
-        glCompileShader(vertex_shader);
-        
-        if (!CheckShaderCompile(vertex_shader)) {
-            return false;
-        }
-        
-        // Compile fragment shader
-        std::uint32_t fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(fragment_shader, 1, &BASIC_FRAGMENT_SHADER, nullptr);
-        glCompileShader(fragment_shader);
-        
-        if (!CheckShaderCompile(fragment_shader)) {
-            return false;
-        }
-        
-        // Link shader program
-        shader_program_ = glCreateProgram();
-        glAttachShader(shader_program_, vertex_shader);
-        glAttachShader(shader_program_, fragment_shader);
-        glLinkProgram(shader_program_);
-        
-        if (!CheckProgramLink(shader_program_)) {
-            return false;
-        }
-        
-        // Clean up shaders
-        glDeleteShader(vertex_shader);
-        glDeleteShader(fragment_shader);
-
-        // Compile mini-map vertex shader
-        std::uint32_t minimap_vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-        glShaderSource(minimap_vertex_shader, 1, &MINIMAP_VERTEX_SHADER, nullptr);
-        glCompileShader(minimap_vertex_shader);
-
-        if (!CheckShaderCompile(minimap_vertex_shader)) {
+        shader_program_ = ShaderLoader::CreateProgram(
+            BASIC_VERTEX_SHADER, BASIC_FRAGMENT_SHADER, "basic");
+        if (shader_program_ == 0) {
             return false;
         }
 
-        // Compile mini-map fragment shader
-        std::uint32_t minimap_fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(minimap_fragment_shader, 1, &MINIMAP_FRAGMENT_SHADER, nullptr);
-        glCompileShader(minimap_fragment_shader);
-
-        if (!CheckShaderCompile(minimap_fragment_shader)) {
+        minimap_shader_program_ = ShaderLoader::CreateProgram(
+            MINIMAP_VERTEX_SHADER, MINIMAP_FRAGMENT_SHADER, "minimap");
+        if (minimap_shader_program_ == 0) {
             return false;
         }
 
-        // Link mini-map shader program
-        minimap_shader_program_ = glCreateProgram();
-        glAttachShader(minimap_shader_program_, minimap_vertex_shader);
-        glAttachShader(minimap_shader_program_, minimap_fragment_shader);
-        glLinkProgram(minimap_shader_program_);
-
-        if (!CheckProgramLink(minimap_shader_program_)) {
-            return false;
-        }
-
-        // Clean up mini-map shaders
-        glDeleteShader(minimap_vertex_shader);
-        glDeleteShader(minimap_fragment_shader);
-
-        return true;
-    }
-    
-    bool CheckShaderCompile(std::uint32_t shader) {
-        int success;
-        glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            char info_log[512];
-            glGetShaderInfoLog(shader, 512, nullptr, info_log);
-            spdlog::error("Shader compilation failed: {}", info_log);
-            return false;
-        }
-        return true;
-    }
-    
-    bool CheckProgramLink(std::uint32_t program) {
-        int success;
-        glGetProgramiv(program, GL_LINK_STATUS, &success);
-        if (!success) {
-            char info_log[512];
-            glGetProgramInfoLog(program, 512, nullptr, info_log);
-            spdlog::error("Shader program linking failed: {}", info_log);
-            return false;
-        }
         return true;
     }
 
