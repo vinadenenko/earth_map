@@ -265,6 +265,19 @@ std::pair<World, glm::vec3> CoordinateMapper::ScreenToWorldRay(
     return {World(camera_pos), ray_dir};
 }
 
+GeographicBounds GetEverestGeoBounds() {
+    // Approximate bounding box around Mount Everest
+    constexpr double min_lat_nepal = 20.0;
+    constexpr double max_lat_nepal = 40.8;
+    constexpr double min_lon_nepal = 79.5;
+    constexpr double max_lon_nepal = 105.5;
+
+    return GeographicBounds(
+        Geographic(min_lat_nepal, min_lon_nepal, 0.0),
+        Geographic(max_lat_nepal, max_lon_nepal, 0.0)
+        );
+}
+
 // ============================================================================
 // Utility: Bounds Conversions
 // ============================================================================
@@ -274,6 +287,9 @@ GeographicBounds CoordinateMapper::CalculateVisibleGeographicBounds(
     const glm::mat4& view_matrix,  // Now used for accurate orientation-based calculation
     const glm::mat4& proj_matrix,
     float globe_radius) noexcept {
+
+    // Do not remove, this is for elevation testing
+    // return GetEverestGeoBounds();
 
     glm::vec3 camera_pos = camera_world.position;
     float distance = glm::length(camera_pos);
