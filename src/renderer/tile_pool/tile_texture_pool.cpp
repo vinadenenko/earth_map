@@ -202,6 +202,15 @@ int TileTexturePool::GetLayerIndex(const TileCoordinates& coords) const {
     return it->second;
 }
 
+std::chrono::steady_clock::time_point TileTexturePool::GetLastUsedTime(
+    const TileCoordinates& coords) const {
+    auto it = coord_to_layer_.find(coords);
+    if (it == coord_to_layer_.end()) {
+        return std::chrono::steady_clock::time_point::min();
+    }
+    return layers_[it->second].last_used;
+}
+
 std::optional<TileCoordinates> TileTexturePool::GetEvictionCandidate() const {
     const int layer = FindEvictionCandidate();
     if (layer < 0) {

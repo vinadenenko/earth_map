@@ -12,7 +12,7 @@ namespace earth_map::tests {
 /**
  * @brief Mock TileCache for testing
  */
-class MockTileCache : public TileCache {
+class CoordinatorMockTileCache : public TileCache {
 public:
     bool Initialize(const TileCacheConfig&) override { return true; }
     bool Put(const TileData&) override { return true; }
@@ -34,7 +34,7 @@ public:
 /**
  * @brief Mock TileLoader for testing
  */
-class MockTileLoader : public TileLoader {
+class CoordinatorMockTileLoader : public TileLoader {
 public:
     bool Initialize(const TileLoaderConfig&) override { return true; }
     void SetTileCache(std::shared_ptr<TileCache>) override {}
@@ -56,9 +56,9 @@ public:
         result.tile_data->loaded = true;
         result.tile_data->width = 256;
         result.tile_data->height = 256;
-        result.tile_data->channels = 3;
+        result.tile_data->channels = 4;
 
-        const std::size_t data_size = 256 * 256 * 3;
+        const std::size_t data_size = 256 * 256 * 4;
         result.tile_data->data.resize(data_size);
         const std::uint8_t value = static_cast<std::uint8_t>((coords.x + coords.y) % 256);
         std::fill(result.tile_data->data.begin(), result.tile_data->data.end(), value);
@@ -92,8 +92,8 @@ public:
 class TileTextureCoordinatorTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        cache_ = std::make_shared<MockTileCache>();
-        loader_ = std::make_shared<MockTileLoader>();
+        cache_ = std::make_shared<CoordinatorMockTileCache>();
+        loader_ = std::make_shared<CoordinatorMockTileLoader>();
 
         coordinator_ = std::make_unique<TileTextureCoordinator>(
             cache_,
@@ -107,8 +107,8 @@ protected:
         coordinator_.reset();
     }
 
-    std::shared_ptr<MockTileCache> cache_;
-    std::shared_ptr<MockTileLoader> loader_;
+    std::shared_ptr<CoordinatorMockTileCache> cache_;
+    std::shared_ptr<CoordinatorMockTileLoader> loader_;
     std::unique_ptr<TileTextureCoordinator> coordinator_;
 };
 

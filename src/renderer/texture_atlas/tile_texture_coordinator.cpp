@@ -97,13 +97,15 @@ void TileTextureCoordinator::RequestTiles(
 }
 
 bool TileTextureCoordinator::IsTileReady(const TileCoordinates& coords) const {
-    return tile_pool_->IsTileLoaded(coords);
+    std::shared_lock<std::shared_mutex> lock(state_mutex_);
+    auto it = tile_states_.find(coords);
+    return it != tile_states_.end() && it->second.status == TileStatus::Loaded;
 }
 
 glm::vec4 TileTextureCoordinator::GetTileUV(const TileCoordinates& coords) const {
     // With texture arrays, each tile uses full [0,1] UV range.
     // Return (0,0,1,1) if loaded, (0,0,0,0) if not.
-    if (tile_pool_->IsTileLoaded(coords)) {
+    if (IsTileReady(coords)) {
         return glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
     }
     return glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -215,8 +217,11 @@ std::size_t TileTextureCoordinator::EvictUnusedTiles(std::chrono::seconds max_ag
 
         for (const auto& [coords, state] : tile_states_) {
             if (state.status == TileStatus::Loaded) {
-                auto age = std::chrono::duration_cast<std::chrono::seconds>(
-                    now - state.request_time);
+                // Use the pool's last-used timestamp (updated by TouchTile)
+                // rather than request_time, so actively rendered tiles survive.
+                const auto last_used = tile_pool_->GetLastUsedTime(coords);
+                const auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                    now - last_used);
 
                 if (age > max_age) {
                     to_evict.push_back(coords);

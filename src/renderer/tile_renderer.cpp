@@ -9,6 +9,7 @@
 #include <earth_map/math/projection.h>
 #include <earth_map/math/tile_mathematics.h>
 #include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
+#include <earth_map/renderer/tile_pool/indirection_texture_manager.h>
 #include <earth_map/coordinates/coordinate_mapper.h>
 #include <earth_map/constants.h>
 #include <spdlog/spdlog.h>
@@ -191,6 +192,23 @@ public:
                     visible_tile_coords.push_back(tile_coords);
                 }
             }
+        }
+
+        // Update indirection window center for windowed zoom levels (13+).
+        // Converts camera position to tile coordinates at the current zoom.
+        if (texture_coordinator_ && zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom) {
+            const glm::vec3 cam_dir = glm::normalize(camera_position);
+            const double lon = glm::degrees(std::atan2(
+                static_cast<double>(cam_dir.x), static_cast<double>(cam_dir.z)));
+            const double lat = glm::degrees(std::asin(
+                static_cast<double>(cam_dir.y)));
+            const int n = 1 << zoom_level;
+            const int center_x = static_cast<int>(((lon + 180.0) / 360.0) * n);
+            const double lat_rad = glm::radians(glm::clamp(lat, -85.0511, 85.0511));
+            const int center_y = static_cast<int>(
+                ((1.0 - std::log(std::tan(M_PI / 4.0 + lat_rad / 2.0)) / M_PI) / 2.0) * n);
+            texture_coordinator_->UpdateIndirectionWindowCenter(
+                zoom_level, center_x, center_y);
         }
 
         // Request all visible tiles from texture coordinator (idempotent, lock-free)

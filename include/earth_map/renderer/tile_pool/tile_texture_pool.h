@@ -114,6 +114,14 @@ public:
     std::size_t GetFreeLayers() const { return free_layers_.size(); }
 
     /**
+     * @brief Get the last-used timestamp for a tile
+     *
+     * @return Time point of last access, or time_point::min() if not loaded
+     */
+    std::chrono::steady_clock::time_point GetLastUsedTime(
+        const TileCoordinates& coords) const;
+
+    /**
      * @brief Get the LRU eviction candidate
      *
      * Returns the coordinates of the least-recently-used tile in the pool.
