@@ -87,6 +87,25 @@ public:
 };
 
 /**
+ * @brief Mock TileLoader that can simulate load failures
+ */
+class CoordinatorFailingMockTileLoader : public CoordinatorMockTileLoader {
+public:
+    std::atomic<bool> fail_loads{true};
+
+    TileLoadResult LoadTile(const TileCoordinates& coords, const std::string& provider) override {
+        if (fail_loads.load()) {
+            TileLoadResult result;
+            result.success = false;
+            result.coordinates = coords;
+            result.error_message = "Simulated load failure";
+            return result;
+        }
+        return CoordinatorMockTileLoader::LoadTile(coords, provider);
+    }
+};
+
+/**
  * @brief Test fixture for TileTextureCoordinator
  */
 class TileTextureCoordinatorTest : public ::testing::Test {
@@ -445,6 +464,81 @@ TEST_F(TileTextureCoordinatorTest, Backpressure_FloodDoesNotExceedLimit) {
     // Pending count should not exceed kMaxPendingLoads
     EXPECT_LE(coordinator_->GetPendingLoadCount(),
               TileTextureCoordinator::kMaxPendingLoads);
+}
+
+// ============================================================================
+// Failed Tile Load Tests (demonstrate stuck-in-Loading bug)
+// ============================================================================
+
+/**
+ * @brief Fixture using the failing loader to reproduce the bug where
+ *        a failed LoadTile leaves the tile stuck in Loading state forever.
+ */
+class TileTextureCoordinatorFailureTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        cache_ = std::make_shared<CoordinatorMockTileCache>();
+        loader_ = std::make_shared<CoordinatorFailingMockTileLoader>();
+
+        coordinator_ = std::make_unique<TileTextureCoordinator>(
+            cache_,
+            loader_,
+            2,     // 2 worker threads
+            true   // skip_gl_init
+        );
+    }
+
+    void TearDown() override {
+        coordinator_.reset();
+    }
+
+    std::shared_ptr<CoordinatorMockTileCache> cache_;
+    std::shared_ptr<CoordinatorFailingMockTileLoader> loader_;
+    std::unique_ptr<TileTextureCoordinator> coordinator_;
+};
+
+TEST_F(TileTextureCoordinatorFailureTest, FailedTile_DoesNotStayInLoadingState) {
+    TileCoordinates tile(0, 0, 5);
+
+    coordinator_->RequestTiles({tile}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    coordinator_->ProcessUploads(10);
+
+    // BUG: tile stays Loading forever because failed load never
+    // enqueues an upload command and never decrements state.
+    EXPECT_NE(coordinator_->GetTileStatus(tile),
+              TileTextureCoordinator::TileStatus::Loading);
+}
+
+TEST_F(TileTextureCoordinatorFailureTest, FailedTile_PendingCountReturnsToZero) {
+    TileCoordinates tile(0, 0, 5);
+
+    coordinator_->RequestTiles({tile}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    coordinator_->ProcessUploads(10);
+
+    // BUG: pending_load_count_ is incremented on request but never
+    // decremented when the worker fails, so it stays at 1.
+    EXPECT_EQ(coordinator_->GetPendingLoadCount(), 0u);
+}
+
+TEST_F(TileTextureCoordinatorFailureTest, FailedTile_CanBeReRequested) {
+    TileCoordinates tile(0, 0, 5);
+
+    // Phase 1: request with failing loader
+    coordinator_->RequestTiles({tile}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    coordinator_->ProcessUploads(10);
+
+    // Phase 2: fix the loader and re-request the same tile
+    loader_->fail_loads.store(false);
+    coordinator_->RequestTiles({tile}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    coordinator_->ProcessUploads(10);
+
+    // BUG: tile is still stuck in Loading from the first request,
+    // so the second request is ignored and tile never becomes ready.
+    EXPECT_TRUE(coordinator_->IsTileReady(tile));
 }
 
 } // namespace earth_map::tests
