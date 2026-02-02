@@ -341,7 +341,11 @@ public:
             "uIndirectionOffset3", "uIndirectionOffset4"
         };
 
-        for (int level = 0; level < num_fallback; ++level) {
+        // Always bind ALL 5 indirection units to valid GL_TEXTURE_2D targets.
+        // Unused levels get the dummy 1x1 texture (kInvalidLayer).
+        // This prevents undefined behavior from sampler/target type mismatch
+        // (usampler2D pointing at GL_TEXTURE_2D_ARRAY on unit 0).
+        for (int level = 0; level < kMaxFallbackLevels; ++level) {
             const int zoom = current_zoom - level;
             const GLint tex_unit = 1 + level;
 
@@ -349,9 +353,11 @@ public:
 
             std::uint32_t indirection_id = 0;
             glm::ivec2 offset(0, 0);
-            if (texture_coordinator_) {
+            if (texture_coordinator_ && zoom >= 0) {
                 indirection_id = texture_coordinator_->GetIndirectionTextureID(zoom);
                 offset = texture_coordinator_->GetIndirectionOffset(zoom);
+            } else if (texture_coordinator_) {
+                indirection_id = texture_coordinator_->GetIndirectionTextureID(-1);
             }
 
             glBindTexture(GL_TEXTURE_2D, indirection_id);
@@ -501,12 +507,19 @@ void geoToTileAndFrac(vec2 geo, int zoom, out ivec2 tile, out vec2 frac) {
     frac = vec2(fract(fx), fract(fy));
 }
 
+uint safeFetch(usampler2D tex, ivec2 coord) {
+    ivec2 sz = textureSize(tex, 0);
+    if (coord.x < 0 || coord.y < 0 || coord.x >= sz.x || coord.y >= sz.y)
+        return 0xFFFFu;
+    return texelFetch(tex, coord, 0).r;
+}
+
 uint lookupLayer(int level, ivec2 tile) {
-    if      (level == 0) return texelFetch(uIndirection0, tile - uIndirectionOffset0, 0).r;
-    else if (level == 1) return texelFetch(uIndirection1, tile - uIndirectionOffset1, 0).r;
-    else if (level == 2) return texelFetch(uIndirection2, tile - uIndirectionOffset2, 0).r;
-    else if (level == 3) return texelFetch(uIndirection3, tile - uIndirectionOffset3, 0).r;
-    else                 return texelFetch(uIndirection4, tile - uIndirectionOffset4, 0).r;
+    if      (level == 0) return safeFetch(uIndirection0, tile - uIndirectionOffset0);
+    else if (level == 1) return safeFetch(uIndirection1, tile - uIndirectionOffset1);
+    else if (level == 2) return safeFetch(uIndirection2, tile - uIndirectionOffset2);
+    else if (level == 3) return safeFetch(uIndirection3, tile - uIndirectionOffset3);
+    else                 return safeFetch(uIndirection4, tile - uIndirectionOffset4);
 }
 
 void main() {

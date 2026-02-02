@@ -46,12 +46,12 @@ void TileTexturePool::CreateTextureArray() {
     glTexImage3D(
         GL_TEXTURE_2D_ARRAY,
         0,
-        GL_RGB8,
+        GL_RGBA8,
         static_cast<GLsizei>(tile_size_),
         static_cast<GLsizei>(tile_size_),
         static_cast<GLsizei>(max_layers_),
         0,
-        GL_RGB,
+        GL_RGBA,
         GL_UNSIGNED_BYTE,
         nullptr);
 
@@ -154,11 +154,22 @@ int TileTexturePool::UploadTile(
 
     layers_[layer_index].last_used = std::chrono::steady_clock::now();
 
+    if (channels != 4) {
+        spdlog::warn("TileTexturePool::UploadTile: expected 4 channels (RGBA), got {}",
+                     channels);
+        return -1;
+    }
+
     // Upload to GL
     if (!skip_gl_init_ && texture_array_id_ != 0) {
-        glBindTexture(GL_TEXTURE_2D_ARRAY, texture_array_id_);
+        // Clear any stale GL errors from previous operations (e.g. render pass
+        // binding texture 0 to usampler2D uniforms before indirection textures
+        // are allocated). Without this, glGetError() below would pick up errors
+        // unrelated to the actual upload.
+        while (glGetError() != GL_NO_ERROR) {}
 
-        const GLenum format = (channels == 4) ? GL_RGBA : GL_RGB;
+        glBindTexture(GL_TEXTURE_2D_ARRAY, texture_array_id_);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
         glTexSubImage3D(
             GL_TEXTURE_2D_ARRAY,
@@ -167,10 +178,11 @@ int TileTexturePool::UploadTile(
             static_cast<GLsizei>(tile_size_),
             static_cast<GLsizei>(tile_size_),
             1,
-            format,
+            GL_RGBA,
             GL_UNSIGNED_BYTE,
             pixel_data);
 
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 
         const GLenum error = glGetError();

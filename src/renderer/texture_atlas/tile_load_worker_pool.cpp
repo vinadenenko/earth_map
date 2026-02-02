@@ -234,14 +234,15 @@ bool TileLoadWorkerPool::DecodeImage(TileData& tile_data) {
     int height = 0;
     int channels = 0;
 
-    // Decode image (stbi_load_from_memory handles PNG, JPEG, etc.)
+    // Decode image, forcing RGBA (4 channels) for GL_RGBA8 texture pool compatibility
+    constexpr int kDesiredChannels = 4;
     unsigned char* decoded_data = stbi_load_from_memory(
         tile_data.data.data(),
         static_cast<int>(tile_data.data.size()),
         &width,
         &height,
         &channels,
-        0  // Desired channels (0 = original)
+        kDesiredChannels
     );
 
     if (!decoded_data) {
@@ -249,6 +250,10 @@ bool TileLoadWorkerPool::DecodeImage(TileData& tile_data) {
         spdlog::warn("stb_image decode failed: {}", error ? error : "unknown error");
         return false;
     }
+
+    // stbi returns original channel count in 'channels' even when forcing,
+    // so override to the actual output channel count
+    channels = kDesiredChannels;
 
     // Update tile_data with decoded info
     tile_data.width = static_cast<std::uint32_t>(width);

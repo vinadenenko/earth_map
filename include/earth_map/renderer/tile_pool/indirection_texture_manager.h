@@ -137,6 +137,7 @@ private:
 
     std::unordered_map<int, ZoomTexture> zoom_textures_;
     bool skip_gl_init_;
+    std::uint32_t dummy_texture_id_ = 0;
 };
 
 } // namespace earth_map

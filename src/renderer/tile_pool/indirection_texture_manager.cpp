@@ -13,7 +13,29 @@ namespace earth_map {
 
 IndirectionTextureManager::IndirectionTextureManager(bool skip_gl_init)
     : skip_gl_init_(skip_gl_init) {
-    spdlog::debug("IndirectionTextureManager initialized (skip_gl={})", skip_gl_init);
+
+    // Create a 1x1 dummy GL_R16UI texture filled with kInvalidLayer.
+    // This is returned by GetTextureID() for zoom levels that haven't been
+    // allocated yet, preventing the shader from binding texture 0 to a
+    // usampler2D uniform (which causes GL_INVALID_OPERATION).
+    if (!skip_gl_init_) {
+        glGenTextures(1, &dummy_texture_id_);
+        glBindTexture(GL_TEXTURE_2D, dummy_texture_id_);
+
+        const std::uint16_t sentinel = kInvalidLayer;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R16UI, 1, 1, 0,
+                     GL_RED_INTEGER, GL_UNSIGNED_SHORT, &sentinel);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    spdlog::debug("IndirectionTextureManager initialized (skip_gl={}, dummy_tex={})",
+                  skip_gl_init, dummy_texture_id_);
 }
 
 IndirectionTextureManager::~IndirectionTextureManager() {
@@ -22,6 +44,9 @@ IndirectionTextureManager::~IndirectionTextureManager() {
             if (zt.texture_id != 0) {
                 glDeleteTextures(1, &zt.texture_id);
             }
+        }
+        if (dummy_texture_id_ != 0) {
+            glDeleteTextures(1, &dummy_texture_id_);
         }
     }
 }
@@ -197,7 +222,7 @@ std::uint16_t IndirectionTextureManager::GetTileLayer(
 std::uint32_t IndirectionTextureManager::GetTextureID(int zoom) const {
     auto it = zoom_textures_.find(zoom);
     if (it == zoom_textures_.end()) {
-        return 0;
+        return dummy_texture_id_;
     }
     return it->second.texture_id;
 }
