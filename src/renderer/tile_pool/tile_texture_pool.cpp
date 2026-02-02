@@ -77,20 +77,6 @@ int TileTexturePool::AllocateLayer() {
     return -1;
 }
 
-int TileTexturePool::FindEvictionCandidate() const {
-    int oldest_layer = -1;
-    auto oldest_time = std::chrono::steady_clock::time_point::max();
-
-    for (std::size_t i = 0; i < layers_.size(); ++i) {
-        if (layers_[i].occupied && layers_[i].last_used < oldest_time) {
-            oldest_time = layers_[i].last_used;
-            oldest_layer = static_cast<int>(i);
-        }
-    }
-
-    return oldest_layer;
-}
-
 void TileTexturePool::FreeLayer(int layer_index) {
     if (layer_index < 0 || static_cast<std::size_t>(layer_index) >= layers_.size()) {
         return;
@@ -98,6 +84,7 @@ void TileTexturePool::FreeLayer(int layer_index) {
 
     LayerSlot& slot = layers_[layer_index];
     if (slot.occupied) {
+        lru_order_.erase(slot.lru_it);
         coord_to_layer_.erase(slot.coords);
         slot.occupied = false;
         free_layers_.push(layer_index);
@@ -123,12 +110,20 @@ int TileTexturePool::UploadTile(
         return -1;
     }
 
+    if (channels != 4) {
+        spdlog::warn("TileTexturePool::UploadTile: expected 4 channels (RGBA), got {}",
+                     channels);
+        return -1;
+    }
+
     // Check if already loaded (update in place)
     auto it = coord_to_layer_.find(coords);
     int layer_index;
 
     if (it != coord_to_layer_.end()) {
         layer_index = it->second;
+        // Move to front of LRU (most recently used)
+        lru_order_.splice(lru_order_.begin(), lru_order_, layers_[layer_index].lru_it);
     } else {
         layer_index = AllocateLayer();
         if (layer_index < 0) {
@@ -137,15 +132,12 @@ int TileTexturePool::UploadTile(
         coord_to_layer_[coords] = layer_index;
         layers_[layer_index].coords = coords;
         layers_[layer_index].occupied = true;
+        // Insert at front of LRU
+        lru_order_.push_front(layer_index);
+        layers_[layer_index].lru_it = lru_order_.begin();
     }
 
     layers_[layer_index].last_used = std::chrono::steady_clock::now();
-
-    if (channels != 4) {
-        spdlog::warn("TileTexturePool::UploadTile: expected 4 channels (RGBA), got {}",
-                     channels);
-        return -1;
-    }
 
     // Upload to GL
     if (!skip_gl_init_ && texture_array_id_ != 0) {
@@ -202,18 +194,28 @@ int TileTexturePool::GetLayerIndex(const TileCoordinates& coords) const {
     return it->second;
 }
 
+std::chrono::steady_clock::time_point TileTexturePool::GetLastUsedTime(
+    const TileCoordinates& coords) const {
+    auto it = coord_to_layer_.find(coords);
+    if (it == coord_to_layer_.end()) {
+        return std::chrono::steady_clock::time_point::min();
+    }
+    return layers_[it->second].last_used;
+}
+
 std::optional<TileCoordinates> TileTexturePool::GetEvictionCandidate() const {
-    const int layer = FindEvictionCandidate();
-    if (layer < 0) {
+    if (lru_order_.empty()) {
         return std::nullopt;
     }
-    return layers_[layer].coords;
+    return layers_[lru_order_.back()].coords;
 }
 
 void TileTexturePool::TouchTile(const TileCoordinates& coords) {
     auto it = coord_to_layer_.find(coords);
     if (it != coord_to_layer_.end()) {
-        layers_[it->second].last_used = std::chrono::steady_clock::now();
+        LayerSlot& slot = layers_[it->second];
+        slot.last_used = std::chrono::steady_clock::now();
+        lru_order_.splice(lru_order_.begin(), lru_order_, slot.lru_it);
     }
 }
 

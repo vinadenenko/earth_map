@@ -123,6 +123,15 @@ private:
     void ClearZoomTextureData(ZoomTexture& zt);
 
     /**
+     * @brief Shift window data by (dx, dy), preserving overlapping tiles
+     *
+     * Moves existing data so that tiles in the overlap region end up at
+     * their correct new texel positions. Newly exposed texels are set to
+     * kInvalidLayer.
+     */
+    void ShiftWindowData(ZoomTexture& zt, int dx, int dy);
+
+    /**
      * @brief Check if tile coords fall within the windowed texture
      */
     bool IsTileInWindow(const ZoomTexture& zt, int tile_x, int tile_y) const;

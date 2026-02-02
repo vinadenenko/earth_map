@@ -9,6 +9,7 @@
 #include <earth_map/math/projection.h>
 #include <earth_map/math/tile_mathematics.h>
 #include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
+#include <earth_map/renderer/tile_pool/indirection_texture_manager.h>
 #include <earth_map/coordinates/coordinate_mapper.h>
 #include <earth_map/constants.h>
 #include <spdlog/spdlog.h>
@@ -29,7 +30,6 @@ constexpr int kDefaultTileSize = 256;
 constexpr int kDefaultZoomLevel = 2;
 constexpr int kMaxFallbackLevels = 5;
 constexpr glm::vec3 kDefaultLightPosition{2.0f, 2.0f, 2.0f};
-constexpr glm::vec3 kDefaultViewPosition{0.0f, 0.0f, 3.0f};
 
 } // namespace
 
@@ -96,7 +96,7 @@ public:
 
         // Process GL uploads from worker threads (must be on GL thread)
         if (texture_coordinator_) {
-            texture_coordinator_->ProcessUploads(5);  // Upload up to 5 tiles per frame for 60 FPS
+            texture_coordinator_->ProcessUploads(100);  // Upload up to 5 tiles per frame for 60 FPS (changed)
         }
 
     }
@@ -191,6 +191,26 @@ public:
                     visible_tile_coords.push_back(tile_coords);
                 }
             }
+        }
+
+        // Update indirection window center for windowed zoom levels (13+).
+        // Converts camera position to tile coordinates at the current zoom.
+        if (texture_coordinator_ && zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom) {
+            const glm::vec3 cam_dir = glm::normalize(camera_position);
+            const double lon = glm::degrees(std::atan2(
+                static_cast<double>(cam_dir.x), static_cast<double>(cam_dir.z)));
+            const double lat = glm::degrees(std::asin(
+                static_cast<double>(cam_dir.y)));
+            const int n = 1 << zoom_level;
+            const int center_x = std::clamp(
+                static_cast<int>(((lon + 180.0) / 360.0) * n), 0, n - 1);
+            const double lat_rad = glm::radians(glm::clamp(lat, -85.0511, 85.0511));
+            const int center_y = std::clamp(
+                static_cast<int>(
+                    ((1.0 - std::log(std::tan(M_PI / 4.0 + lat_rad / 2.0)) / M_PI) / 2.0) * n),
+                0, n - 1);
+            texture_coordinator_->UpdateIndirectionWindowCenter(
+                zoom_level, center_x, center_y);
         }
 
         // Request all visible tiles from texture coordinator (idempotent, lock-free)
@@ -290,21 +310,13 @@ public:
         glUseProgram(tile_shader_program_);
         
         // Set matrices
-        const GLint view_loc = glGetUniformLocation(tile_shader_program_, "uView");
-        const GLint proj_loc = glGetUniformLocation(tile_shader_program_, "uProjection");
-        const GLint model_loc = glGetUniformLocation(tile_shader_program_, "uModel");
-        glUniformMatrix4fv(view_loc, 1, GL_FALSE, glm::value_ptr(view_matrix));
-        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, glm::value_ptr(projection_matrix));
-        glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
+        glUniformMatrix4fv(uniform_locs_.view, 1, GL_FALSE, glm::value_ptr(view_matrix));
+        glUniformMatrix4fv(uniform_locs_.projection, 1, GL_FALSE, glm::value_ptr(projection_matrix));
+        glUniformMatrix4fv(uniform_locs_.model, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
 
         // Set lighting uniforms
-        const GLint light_loc = glGetUniformLocation(tile_shader_program_, "uLightPos");
-        const GLint light_color_loc = glGetUniformLocation(tile_shader_program_, "uLightColor");
-        const GLint view_pos_loc = glGetUniformLocation(tile_shader_program_, "uViewPos");
-
-        glUniform3f(light_loc, kDefaultLightPosition.x, kDefaultLightPosition.y, kDefaultLightPosition.z);
-        glUniform3f(light_color_loc, 1.0f, 1.0f, 1.0f);
-        glUniform3f(view_pos_loc, kDefaultViewPosition.x, kDefaultViewPosition.y, kDefaultViewPosition.z);
+        glUniform3f(uniform_locs_.light_pos, kDefaultLightPosition.x, kDefaultLightPosition.y, kDefaultLightPosition.z);
+        glUniform3f(uniform_locs_.light_color, 1.0f, 1.0f, 1.0f);
 
         // Get current zoom level from visible tiles (or use default)
         int current_zoom = kDefaultZoomLevel;
@@ -313,12 +325,10 @@ public:
         }
 
         // Set zoom and fallback level uniforms
-        const GLint zoom_loc = glGetUniformLocation(tile_shader_program_, "uZoomLevel");
-        glUniform1i(zoom_loc, current_zoom);
+        glUniform1i(uniform_locs_.zoom_level, current_zoom);
 
         const int num_fallback = std::min(kMaxFallbackLevels, current_zoom + 1);
-        const GLint fallback_loc = glGetUniformLocation(tile_shader_program_, "uNumFallbackLevels");
-        glUniform1i(fallback_loc, num_fallback);
+        glUniform1i(uniform_locs_.num_fallback_levels, num_fallback);
 
         // Bind tile pool texture array to unit 0
         glActiveTexture(GL_TEXTURE0);
@@ -328,20 +338,10 @@ public:
         }
         glBindTexture(GL_TEXTURE_2D_ARRAY, pool_texture_id);
 
-        const GLint pool_loc = glGetUniformLocation(tile_shader_program_, "uTilePool");
-        glUniform1i(pool_loc, 0);
+        glUniform1i(uniform_locs_.tile_pool, 0);
 
-        // Bind indirection textures for zoom Z through Z-(N-1) to units 1..N
-        const char* indirection_names[] = {
-            "uIndirection0", "uIndirection1", "uIndirection2",
-            "uIndirection3", "uIndirection4"
-        };
-        const char* offset_names[] = {
-            "uIndirectionOffset0", "uIndirectionOffset1", "uIndirectionOffset2",
-            "uIndirectionOffset3", "uIndirectionOffset4"
-        };
-
-        // Always bind ALL 5 indirection units to valid GL_TEXTURE_2D targets.
+        // Bind indirection textures for zoom Z through Z-(N-1) to units 1..N.
+        // Always bind ALL 5 units to valid GL_TEXTURE_2D targets.
         // Unused levels get the dummy 1x1 texture (kInvalidLayer).
         // This prevents undefined behavior from sampler/target type mismatch
         // (usampler2D pointing at GL_TEXTURE_2D_ARRAY on unit 0).
@@ -361,12 +361,8 @@ public:
             }
 
             glBindTexture(GL_TEXTURE_2D, indirection_id);
-
-            const GLint ind_loc = glGetUniformLocation(tile_shader_program_, indirection_names[level]);
-            glUniform1i(ind_loc, tex_unit);
-
-            const GLint off_loc = glGetUniformLocation(tile_shader_program_, offset_names[level]);
-            glUniform2i(off_loc, offset.x, offset.y);
+            glUniform1i(uniform_locs_.indirection[level], tex_unit);
+            glUniform2i(uniform_locs_.indirection_offset[level], offset.x, offset.y);
         }
 
         // Render globe mesh with atlas texture
@@ -383,7 +379,7 @@ public:
         }
         
         stats_.rendered_tiles = visible_tiles_.size();
-        stats_.texture_binds = 1; // Only one texture bind with atlas
+        stats_.texture_binds = 1 + kMaxFallbackLevels;  // tile pool + indirection textures
     }
     
     TileRenderStats GetStats() const override {
@@ -437,6 +433,20 @@ private:
     
     // OpenGL objects
     std::uint32_t tile_shader_program_ = 0;
+
+    // Cached uniform locations (populated after shader compilation)
+    struct UniformLocations {
+        GLint view = -1;
+        GLint projection = -1;
+        GLint model = -1;
+        GLint light_pos = -1;
+        GLint light_color = -1;
+        GLint zoom_level = -1;
+        GLint num_fallback_levels = -1;
+        GLint tile_pool = -1;
+        GLint indirection[5] = {-1, -1, -1, -1, -1};
+        GLint indirection_offset[5] = {-1, -1, -1, -1, -1};
+    } uniform_locs_;
     std::uint32_t globe_vao_ = 0;
     std::uint32_t globe_vbo_ = 0;
     std::uint32_t globe_ebo_ = 0;
@@ -489,7 +499,6 @@ uniform ivec2 uIndirectionOffset3;
 uniform ivec2 uIndirectionOffset4;
 uniform vec3 uLightPos;
 uniform vec3 uLightColor;
-uniform vec3 uViewPos;
 
 vec2 worldToGeo(vec3 pos) {
     vec3 n = normalize(pos);
@@ -561,6 +570,29 @@ void main() {
         if (tile_shader_program_ == 0) {
             spdlog::error("Failed to create tile atlas shader program");
             return false;
+        }
+
+        // Cache uniform locations
+        uniform_locs_.view = glGetUniformLocation(tile_shader_program_, "uView");
+        uniform_locs_.projection = glGetUniformLocation(tile_shader_program_, "uProjection");
+        uniform_locs_.model = glGetUniformLocation(tile_shader_program_, "uModel");
+        uniform_locs_.light_pos = glGetUniformLocation(tile_shader_program_, "uLightPos");
+        uniform_locs_.light_color = glGetUniformLocation(tile_shader_program_, "uLightColor");
+        uniform_locs_.zoom_level = glGetUniformLocation(tile_shader_program_, "uZoomLevel");
+        uniform_locs_.num_fallback_levels = glGetUniformLocation(tile_shader_program_, "uNumFallbackLevels");
+        uniform_locs_.tile_pool = glGetUniformLocation(tile_shader_program_, "uTilePool");
+
+        const char* indirection_names[] = {
+            "uIndirection0", "uIndirection1", "uIndirection2",
+            "uIndirection3", "uIndirection4"
+        };
+        const char* offset_names[] = {
+            "uIndirectionOffset0", "uIndirectionOffset1", "uIndirectionOffset2",
+            "uIndirectionOffset3", "uIndirectionOffset4"
+        };
+        for (int i = 0; i < kMaxFallbackLevels; ++i) {
+            uniform_locs_.indirection[i] = glGetUniformLocation(tile_shader_program_, indirection_names[i]);
+            uniform_locs_.indirection_offset[i] = glGetUniformLocation(tile_shader_program_, offset_names[i]);
         }
 
         spdlog::info("Tile renderer OpenGL state initialized (mesh will be uploaded when provided)");

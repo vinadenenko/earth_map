@@ -174,20 +174,88 @@ TEST_F(IndirectionTextureManagerTest, WindowedMode_RecenterClearsOldData) {
     EXPECT_EQ(manager_->GetTileLayer(tile), IndirectionTextureManager::kInvalidLayer);
 }
 
-TEST_F(IndirectionTextureManagerTest, WindowedMode_NearbyRecenterClearsAndRequiresReupload) {
+TEST_F(IndirectionTextureManagerTest, WindowedMode_NearbyRecenterPreservesOverlappingData) {
     manager_->UpdateWindowCenter(15, 16000, 12000);
 
+    // Set a tile that will remain in the window after a small shift
     TileCoordinates tile(16000, 12000, 15);
     manager_->SetTileLayer(tile, 77);
 
-    // Move just 10 tiles — data is cleared (simple implementation)
-    // Callers must re-upload tile layers after re-centering
+    // Move 10 tiles — tile (16000, 12000) is still within the new window
+    // (new center 16010,12010 → offset ~15754,11754; tile is still inside)
     manager_->UpdateWindowCenter(15, 16010, 12010);
-    EXPECT_EQ(manager_->GetTileLayer(tile), IndirectionTextureManager::kInvalidLayer);
 
-    // After re-uploading, the tile is accessible again
-    manager_->SetTileLayer(tile, 77);
+    // Overlapping tile should survive the shift
     EXPECT_EQ(manager_->GetTileLayer(tile), 77u);
+}
+
+TEST_F(IndirectionTextureManagerTest, WindowedMode_NearbyRecenterClearsExposedStrips) {
+    manager_->UpdateWindowCenter(15, 16000, 12000);
+
+    // Set a tile near the edge that will fall outside after shift
+    // Window offset = (16000 - 256, 12000 - 256) = (15744, 11744)
+    // Tile at (15744, 11744) is at texel (0, 0)
+    TileCoordinates edge_tile(15744, 11744, 15);
+    manager_->SetTileLayer(edge_tile, 88);
+    ASSERT_EQ(manager_->GetTileLayer(edge_tile), 88u);
+
+    // Shift right by 10 tiles: new offset = (15754, 11754)
+    // edge_tile at (15744, 11744) → local = (15744-15754, ...) = (-10, -10) → outside
+    manager_->UpdateWindowCenter(15, 16010, 12010);
+
+    EXPECT_EQ(manager_->GetTileLayer(edge_tile), IndirectionTextureManager::kInvalidLayer);
+}
+
+TEST_F(IndirectionTextureManagerTest, WindowedMode_ShiftXOnly_PreservesData) {
+    manager_->UpdateWindowCenter(15, 16000, 12000);
+
+    TileCoordinates tile(16000, 12000, 15);
+    manager_->SetTileLayer(tile, 42);
+
+    // Shift X only (center moves right by 5)
+    manager_->UpdateWindowCenter(15, 16005, 12000);
+
+    // Tile should survive (still in window)
+    EXPECT_EQ(manager_->GetTileLayer(tile), 42u);
+}
+
+TEST_F(IndirectionTextureManagerTest, WindowedMode_ShiftYOnly_PreservesData) {
+    manager_->UpdateWindowCenter(15, 16000, 12000);
+
+    TileCoordinates tile(16000, 12000, 15);
+    manager_->SetTileLayer(tile, 55);
+
+    // Shift Y only (center moves down by 5)
+    manager_->UpdateWindowCenter(15, 16000, 12005);
+
+    EXPECT_EQ(manager_->GetTileLayer(tile), 55u);
+}
+
+TEST_F(IndirectionTextureManagerTest, WindowedMode_NegativeShift_PreservesData) {
+    manager_->UpdateWindowCenter(15, 16000, 12000);
+
+    TileCoordinates tile(16000, 12000, 15);
+    manager_->SetTileLayer(tile, 33);
+
+    // Shift in negative direction (center moves left and up by 5)
+    manager_->UpdateWindowCenter(15, 15995, 11995);
+
+    EXPECT_EQ(manager_->GetTileLayer(tile), 33u);
+}
+
+TEST_F(IndirectionTextureManagerTest, WindowedMode_MultipleSequentialShifts) {
+    manager_->UpdateWindowCenter(15, 16000, 12000);
+
+    TileCoordinates tile(16000, 12000, 15);
+    manager_->SetTileLayer(tile, 99);
+
+    // Apply 3 successive small shifts
+    manager_->UpdateWindowCenter(15, 16003, 12003);
+    manager_->UpdateWindowCenter(15, 16006, 12006);
+    manager_->UpdateWindowCenter(15, 16009, 12009);
+
+    // Tile should survive all shifts (total delta = 9, well within window)
+    EXPECT_EQ(manager_->GetTileLayer(tile), 99u);
 }
 
 TEST_F(IndirectionTextureManagerTest, WindowedMode_MultipleZoomsCombine) {

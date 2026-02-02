@@ -4,7 +4,6 @@
 #include <earth_map/math/tile_mathematics.h>
 #include <optional>
 #include <vector>
-#include <thread>
 
 namespace earth_map::tests {
 
@@ -120,8 +119,14 @@ TEST_F(TileTexturePoolTest, UploadRejectsMismatchedSize) {
 TEST_F(TileTexturePoolTest, UploadRejectsWrongChannelCount) {
     TileCoordinates tile(0, 0, 5);
     auto pixel_data = CreateTestPixelData(256, 256, 3);
+
+    const auto free_before = pool_->GetFreeLayers();
     int layer = pool_->UploadTile(tile, pixel_data.data(), 256, 256, 3);
+
     EXPECT_EQ(layer, -1);
+    EXPECT_EQ(pool_->GetFreeLayers(), free_before);
+    EXPECT_FALSE(pool_->IsTileLoaded(tile));
+    EXPECT_EQ(pool_->GetOccupiedLayers(), 0u);
 }
 
 // ============================================================================
@@ -194,18 +199,16 @@ TEST_F(TileTexturePoolTest, UploadWhenFull_ReturnsFailure) {
 TEST_F(TileTexturePoolTest, GetEvictionCandidate_ReturnsLRUTile) {
     auto pixel_data = CreateTestPixelData(256, 256, 4);
 
-    // Upload 3 tiles with time gaps
+    // Upload 3 tiles — first uploaded = least recently used
     TileCoordinates tile_a(0, 0, 5);
     TileCoordinates tile_b(1, 1, 5);
     TileCoordinates tile_c(2, 2, 5);
 
     pool_->UploadTile(tile_a, pixel_data.data(), 256, 256, 4);
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
     pool_->UploadTile(tile_b, pixel_data.data(), 256, 256, 4);
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
     pool_->UploadTile(tile_c, pixel_data.data(), 256, 256, 4);
 
-    // LRU candidate should be tile_a (oldest)
+    // LRU candidate should be tile_a (first uploaded, never touched since)
     auto candidate = pool_->GetEvictionCandidate();
     ASSERT_TRUE(candidate.has_value());
     EXPECT_EQ(candidate->x, tile_a.x);
@@ -220,11 +223,9 @@ TEST_F(TileTexturePoolTest, GetEvictionCandidate_RespectsTouch) {
     TileCoordinates tile_b(1, 1, 5);
 
     pool_->UploadTile(tile_a, pixel_data.data(), 256, 256, 4);
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
     pool_->UploadTile(tile_b, pixel_data.data(), 256, 256, 4);
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
 
-    // Touch tile_a — now tile_b is oldest
+    // Touch tile_a — moves it to front, now tile_b is LRU
     pool_->TouchTile(tile_a);
 
     auto candidate = pool_->GetEvictionCandidate();
@@ -236,6 +237,30 @@ TEST_F(TileTexturePoolTest, GetEvictionCandidate_RespectsTouch) {
 TEST_F(TileTexturePoolTest, GetEvictionCandidate_EmptyPool) {
     auto candidate = pool_->GetEvictionCandidate();
     EXPECT_FALSE(candidate.has_value());
+}
+
+TEST_F(TileTexturePoolTest, LRU_EvictAndReinsert_OrderCorrect) {
+    auto pixel_data = CreateTestPixelData(256, 256, 4);
+
+    TileCoordinates tile_a(0, 0, 5);
+    TileCoordinates tile_b(1, 1, 5);
+    TileCoordinates tile_c(2, 2, 5);
+    TileCoordinates tile_d(3, 3, 5);
+
+    // Upload A, B, C
+    pool_->UploadTile(tile_a, pixel_data.data(), 256, 256, 4);
+    pool_->UploadTile(tile_b, pixel_data.data(), 256, 256, 4);
+    pool_->UploadTile(tile_c, pixel_data.data(), 256, 256, 4);
+
+    // Evict A (LRU), insert D in its place
+    pool_->EvictTile(tile_a);
+    pool_->UploadTile(tile_d, pixel_data.data(), 256, 256, 4);
+
+    // LRU should be B (oldest surviving), not D (newest)
+    auto candidate = pool_->GetEvictionCandidate();
+    ASSERT_TRUE(candidate.has_value());
+    EXPECT_EQ(candidate->x, tile_b.x);
+    EXPECT_EQ(candidate->y, tile_b.y);
 }
 
 // ============================================================================
@@ -328,7 +353,6 @@ TEST(TilePoolIndirectionIntegration, EvictionClearsIndirection) {
         int layer = pool->UploadTile(tile, pixel_data.data(), 256, 256, 4);
         ASSERT_GE(layer, 0);
         indirection.SetTileLayer(tile, static_cast<std::uint16_t>(layer));
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
 
     // Verify all indirection entries are set

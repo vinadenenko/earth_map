@@ -20,6 +20,7 @@
 #include <earth_map/math/tile_mathematics.h>
 #include <chrono>
 #include <cstdint>
+#include <list>
 #include <memory>
 #include <optional>
 #include <queue>
@@ -43,6 +44,8 @@ public:
      *
      * @param tile_size Tile dimensions in pixels (tiles are square)
      * @param max_layers Maximum number of layers in the texture array
+     * It means 'how many tiles can be stored in GPU VRAM before LRU eviction.
+     * To calculate GPU VRAM usage: 256×256×4×512 (tile_width * tile_height * channels * max_layers) = 128 MB
      * @param skip_gl_init Skip OpenGL initialization (for testing)
      */
     explicit TileTexturePool(
@@ -114,6 +117,14 @@ public:
     std::size_t GetFreeLayers() const { return free_layers_.size(); }
 
     /**
+     * @brief Get the last-used timestamp for a tile
+     *
+     * @return Time point of last access, or time_point::min() if not loaded
+     */
+    std::chrono::steady_clock::time_point GetLastUsedTime(
+        const TileCoordinates& coords) const;
+
+    /**
      * @brief Get the LRU eviction candidate
      *
      * Returns the coordinates of the least-recently-used tile in the pool.
@@ -129,6 +140,8 @@ private:
         bool occupied = false;
         std::chrono::steady_clock::time_point last_used;
         int layer_index = -1;
+        /// Iterator into lru_order_ for O(1) splice/erase. Valid only when occupied.
+        std::list<int>::iterator lru_it;
 
         LayerSlot() = default;
         explicit LayerSlot(int index)
@@ -137,7 +150,6 @@ private:
 
     void CreateTextureArray();
     int AllocateLayer();
-    int FindEvictionCandidate() const;
     void FreeLayer(int layer_index);
 
     std::uint32_t texture_array_id_ = 0;
@@ -148,6 +160,9 @@ private:
     std::vector<LayerSlot> layers_;
     std::queue<int> free_layers_;
     std::unordered_map<TileCoordinates, int, TileCoordinatesHash> coord_to_layer_;
+
+    /// LRU order: front = most recently used, back = eviction candidate
+    std::list<int> lru_order_;
 };
 
 } // namespace earth_map
