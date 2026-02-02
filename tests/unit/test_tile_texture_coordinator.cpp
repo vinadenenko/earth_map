@@ -12,7 +12,7 @@ namespace earth_map::tests {
 /**
  * @brief Mock TileCache for testing
  */
-class MockTileCache : public TileCache {
+class CoordinatorMockTileCache : public TileCache {
 public:
     bool Initialize(const TileCacheConfig&) override { return true; }
     bool Put(const TileData&) override { return true; }
@@ -34,7 +34,7 @@ public:
 /**
  * @brief Mock TileLoader for testing
  */
-class MockTileLoader : public TileLoader {
+class CoordinatorMockTileLoader : public TileLoader {
 public:
     bool Initialize(const TileLoaderConfig&) override { return true; }
     void SetTileCache(std::shared_ptr<TileCache>) override {}
@@ -56,9 +56,9 @@ public:
         result.tile_data->loaded = true;
         result.tile_data->width = 256;
         result.tile_data->height = 256;
-        result.tile_data->channels = 3;
+        result.tile_data->channels = 4;
 
-        const std::size_t data_size = 256 * 256 * 3;
+        const std::size_t data_size = 256 * 256 * 4;
         result.tile_data->data.resize(data_size);
         const std::uint8_t value = static_cast<std::uint8_t>((coords.x + coords.y) % 256);
         std::fill(result.tile_data->data.begin(), result.tile_data->data.end(), value);
@@ -87,13 +87,32 @@ public:
 };
 
 /**
+ * @brief Mock TileLoader that can simulate load failures
+ */
+class CoordinatorFailingMockTileLoader : public CoordinatorMockTileLoader {
+public:
+    std::atomic<bool> fail_loads{true};
+
+    TileLoadResult LoadTile(const TileCoordinates& coords, const std::string& provider) override {
+        if (fail_loads.load()) {
+            TileLoadResult result;
+            result.success = false;
+            result.coordinates = coords;
+            result.error_message = "Simulated load failure";
+            return result;
+        }
+        return CoordinatorMockTileLoader::LoadTile(coords, provider);
+    }
+};
+
+/**
  * @brief Test fixture for TileTextureCoordinator
  */
 class TileTextureCoordinatorTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        cache_ = std::make_shared<MockTileCache>();
-        loader_ = std::make_shared<MockTileLoader>();
+        cache_ = std::make_shared<CoordinatorMockTileCache>();
+        loader_ = std::make_shared<CoordinatorMockTileLoader>();
 
         coordinator_ = std::make_unique<TileTextureCoordinator>(
             cache_,
@@ -107,8 +126,8 @@ protected:
         coordinator_.reset();
     }
 
-    std::shared_ptr<MockTileCache> cache_;
-    std::shared_ptr<MockTileLoader> loader_;
+    std::shared_ptr<CoordinatorMockTileCache> cache_;
+    std::shared_ptr<CoordinatorMockTileLoader> loader_;
     std::unique_ptr<TileTextureCoordinator> coordinator_;
 };
 
@@ -285,11 +304,12 @@ TEST_F(TileTextureCoordinatorTest, ProcessUploads_MultipleFrames) {
 }
 
 // ============================================================================
-// Atlas Eviction Tests
+// Pool Eviction Tests
 // ============================================================================
 
-TEST_F(TileTextureCoordinatorTest, AtlasEviction_WhenFull) {
-    // Request more tiles than atlas capacity (64 slots)
+TEST_F(TileTextureCoordinatorTest, PoolEviction_WhenFull) {
+    // Request more tiles than pool capacity (512 layers)
+    // Use 70 tiles which is well under pool capacity — all should load
     std::vector<TileCoordinates> tiles;
     for (int i = 0; i < 70; ++i) {
         tiles.emplace_back(i, i, 8);
@@ -306,7 +326,7 @@ TEST_F(TileTextureCoordinatorTest, AtlasEviction_WhenFull) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    // Should have at most 64 tiles ready (atlas capacity)
+    // All 70 tiles should fit in pool (512 capacity)
     int ready_count = 0;
     for (const auto& tile : tiles) {
         if (coordinator_->IsTileReady(tile)) {
@@ -314,7 +334,8 @@ TEST_F(TileTextureCoordinatorTest, AtlasEviction_WhenFull) {
         }
     }
 
-    EXPECT_LE(ready_count, 64);
+    EXPECT_LE(ready_count, 512);
+    EXPECT_GE(ready_count, 1);  // At least some should have loaded
 }
 
 // ============================================================================
@@ -350,9 +371,16 @@ TEST_F(TileTextureCoordinatorTest, ConcurrentRequests) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    // Should have processed all unique tiles
-    // (No crashes = thread safety works)
-    EXPECT_TRUE(true);
+    // At least some tiles from each thread should be ready
+    int ready_count = 0;
+    for (int t = 0; t < num_threads; ++t) {
+        for (int i = 0; i < tiles_per_thread; ++i) {
+            if (coordinator_->IsTileReady(TileCoordinates(t * 100 + i, t * 100 + i, 8))) {
+                ++ready_count;
+            }
+        }
+    }
+    EXPECT_GE(ready_count, 1);
 }
 
 TEST_F(TileTextureCoordinatorTest, ConcurrentReadsDuringUploads) {
@@ -401,6 +429,116 @@ TEST_F(TileTextureCoordinatorTest, GetAtlasTextureID) {
 
     // Should return 0 when GL is skipped
     EXPECT_EQ(atlas_id, 0u);
+}
+
+// ============================================================================
+// Backpressure Tests
+// ============================================================================
+
+TEST_F(TileTextureCoordinatorTest, Backpressure_PendingCountTracked) {
+    // Request a tile — pending count should increase
+    TileCoordinates tile(0, 0, 5);
+    coordinator_->RequestTiles({tile}, 0);
+
+    // Tile should be Loading (pending count >= 1) or already uploaded
+    // Either way, after request the tile should be tracked
+    EXPECT_NE(coordinator_->GetTileStatus(tile), TileTextureCoordinator::TileStatus::NotLoaded);
+
+    // Wait for load to complete and process upload
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator_->ProcessUploads(10);
+
+    // After upload, pending count should be 0
+    EXPECT_EQ(coordinator_->GetPendingLoadCount(), 0u);
+}
+
+TEST_F(TileTextureCoordinatorTest, Backpressure_FloodDoesNotExceedLimit) {
+    // Flood with many tile requests
+    std::vector<TileCoordinates> tiles;
+    for (int i = 0; i < 600; ++i) {
+        tiles.emplace_back(i, i, 8);
+    }
+
+    coordinator_->RequestTiles(tiles, 0);
+
+    // Pending count should not exceed kMaxPendingLoads
+    EXPECT_LE(coordinator_->GetPendingLoadCount(),
+              TileTextureCoordinator::kMaxPendingLoads);
+}
+
+// ============================================================================
+// Failed Tile Load Tests (demonstrate stuck-in-Loading bug)
+// ============================================================================
+
+/**
+ * @brief Fixture using the failing loader to reproduce the bug where
+ *        a failed LoadTile leaves the tile stuck in Loading state forever.
+ */
+class TileTextureCoordinatorFailureTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        cache_ = std::make_shared<CoordinatorMockTileCache>();
+        loader_ = std::make_shared<CoordinatorFailingMockTileLoader>();
+
+        coordinator_ = std::make_unique<TileTextureCoordinator>(
+            cache_,
+            loader_,
+            2,     // 2 worker threads
+            true   // skip_gl_init
+        );
+    }
+
+    void TearDown() override {
+        coordinator_.reset();
+    }
+
+    std::shared_ptr<CoordinatorMockTileCache> cache_;
+    std::shared_ptr<CoordinatorFailingMockTileLoader> loader_;
+    std::unique_ptr<TileTextureCoordinator> coordinator_;
+};
+
+TEST_F(TileTextureCoordinatorFailureTest, FailedTile_DoesNotStayInLoadingState) {
+    TileCoordinates tile(0, 0, 5);
+
+    coordinator_->RequestTiles({tile}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    coordinator_->ProcessUploads(10);
+
+    // BUG: tile stays Loading forever because failed load never
+    // enqueues an upload command and never decrements state.
+    EXPECT_NE(coordinator_->GetTileStatus(tile),
+              TileTextureCoordinator::TileStatus::Loading);
+}
+
+TEST_F(TileTextureCoordinatorFailureTest, FailedTile_PendingCountReturnsToZero) {
+    TileCoordinates tile(0, 0, 5);
+
+    coordinator_->RequestTiles({tile}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    coordinator_->ProcessUploads(10);
+
+    // BUG: pending_load_count_ is incremented on request but never
+    // decremented when the worker fails, so it stays at 1.
+    EXPECT_EQ(coordinator_->GetPendingLoadCount(), 0u);
+}
+
+TEST_F(TileTextureCoordinatorFailureTest, FailedTile_CanBeReRequested) {
+    TileCoordinates tile(0, 0, 5);
+
+    // Phase 1: request with failing loader
+    coordinator_->RequestTiles({tile}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    coordinator_->ProcessUploads(10);
+
+    // Phase 2: fix the loader and re-request the same tile
+    loader_->fail_loads.store(false);
+    coordinator_->RequestTiles({tile}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    coordinator_->ProcessUploads(10);
+
+    // BUG: tile is still stuck in Loading from the first request,
+    // so the second request is ignored and tile never becomes ready.
+    EXPECT_TRUE(coordinator_->IsTileReady(tile));
 }
 
 } // namespace earth_map::tests

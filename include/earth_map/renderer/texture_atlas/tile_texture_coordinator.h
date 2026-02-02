@@ -23,8 +23,11 @@
 #include <earth_map/data/tile_loader.h>
 #include <earth_map/renderer/texture_atlas/tile_load_worker_pool.h>
 #include <earth_map/renderer/texture_atlas/gl_upload_queue.h>
-#include <earth_map/renderer/texture_atlas/texture_atlas_manager.h>
+#include <earth_map/renderer/tile_pool/tile_texture_pool.h>
+#include <earth_map/renderer/tile_pool/indirection_texture_manager.h>
+#include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
+#include <atomic>
 #include <memory>
 #include <unordered_map>
 #include <shared_mutex>
@@ -56,6 +59,9 @@ namespace earth_map {
  */
 class TileTextureCoordinator {
 public:
+    static constexpr std::uint32_t kDefaultTileSize = 256;
+    static constexpr std::uint32_t kDefaultMaxPoolLayers = 512;
+
     /**
      * @brief Tile loading state
      */
@@ -70,7 +76,7 @@ public:
      */
     struct TileState {
         TileStatus status = TileStatus::NotLoaded;
-        int atlas_slot = -1;  ///< Atlas slot index (valid if Loaded)
+        int pool_layer = -1;  ///< Tile pool layer index (valid if Loaded)
         std::chrono::steady_clock::time_point request_time;  ///< When tile was requested
     };
 
@@ -145,14 +151,46 @@ public:
     glm::vec4 GetTileUV(const TileCoordinates& coords) const;
 
     /**
-     * @brief Get atlas texture ID
+     * @brief Get tile pool texture array ID
      *
-     * Returns the OpenGL texture ID for the atlas texture.
-     * Bind this texture before rendering tiles.
+     * Returns the OpenGL GL_TEXTURE_2D_ARRAY ID for the tile pool.
      *
      * @return OpenGL texture ID
+     */
+    std::uint32_t GetTilePoolTextureID() const;
+
+    /**
+     * @brief Get indirection texture ID for a zoom level
      *
-     * Thread Safety: Safe to call from any thread
+     * @return OpenGL texture ID, or 0 if not allocated
+     */
+    std::uint32_t GetIndirectionTextureID(int zoom) const;
+
+    /**
+     * @brief Get indirection window offset for a zoom level
+     *
+     * For full-mode zooms (0-12), returns (0,0).
+     * For windowed zooms (13+), returns the tile coordinate offset.
+     */
+    glm::ivec2 GetIndirectionOffset(int zoom) const;
+
+    /**
+     * @brief Update indirection window center for windowed zoom levels
+     *
+     * Should be called when camera moves to keep the indirection window
+     * centered on the visible area.
+     */
+    void UpdateIndirectionWindowCenter(int zoom, int center_tile_x, int center_tile_y);
+
+    /**
+     * @brief Get tile pool layer index for a tile
+     *
+     * @return Layer index, or -1 if not loaded
+     */
+    int GetTileLayerIndex(const TileCoordinates& coords) const;
+
+    /**
+     * @brief Get atlas texture ID (legacy alias for GetTilePoolTextureID)
      */
     std::uint32_t GetAtlasTextureID() const;
 
@@ -194,6 +232,16 @@ public:
      */
     TileStatus GetTileStatus(const TileCoordinates& coords) const;
 
+    /**
+     * @brief Get number of tiles currently in Loading state
+     *
+     * Thread Safety: Safe to call from any thread (atomic)
+     */
+    std::size_t GetPendingLoadCount() const { return pending_load_count_.load(); }
+
+    /// Maximum number of concurrent pending tile loads before backpressure kicks in
+    static constexpr std::size_t kMaxPendingLoads = 256;
+
 private:
     /**
      * @brief Callback when worker completes tile loading
@@ -217,8 +265,14 @@ private:
     /// GL upload queue (MPSC queue)
     std::shared_ptr<GLUploadQueue> upload_queue_;
 
-    /// Texture atlas manager (GL thread only)
-    std::unique_ptr<TextureAtlasManager> atlas_manager_;
+    /// Tile texture pool (GL_TEXTURE_2D_ARRAY, GL thread only)
+    std::unique_ptr<TileTexturePool> tile_pool_;
+
+    /// Indirection texture manager (per-zoom lookup textures, GL thread only)
+    std::unique_ptr<IndirectionTextureManager> indirection_manager_;
+
+    /// Number of tiles currently in Loading state (atomic for lock-free reads)
+    std::atomic<std::size_t> pending_load_count_{0};
 };
 
 } // namespace earth_map

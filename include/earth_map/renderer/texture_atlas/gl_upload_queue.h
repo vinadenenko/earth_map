@@ -94,9 +94,9 @@ public:
     GLUploadQueue(const GLUploadQueue&) = delete;
     GLUploadQueue& operator=(const GLUploadQueue&) = delete;
 
-    // Movable
-    GLUploadQueue(GLUploadQueue&&) noexcept = default;
-    GLUploadQueue& operator=(GLUploadQueue&&) noexcept = default;
+    // Non-movable (contains std::mutex)
+    GLUploadQueue(GLUploadQueue&&) = delete;
+    GLUploadQueue& operator=(GLUploadQueue&&) = delete;
 
     /**
      * @brief Push an upload command to the queue (thread-safe)

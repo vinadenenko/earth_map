@@ -14,10 +14,10 @@ namespace earth_map::tests {
 /**
  * @brief Mock TileCache for testing
  */
-class MockTileCache : public TileCache {
+class WorkerPoolMockTileCache : public TileCache {
 public:
-    MockTileCache() = default;
-    ~MockTileCache() override = default;
+    WorkerPoolMockTileCache() = default;
+    ~WorkerPoolMockTileCache() override = default;
 
     bool Initialize(const TileCacheConfig&) override { return true; }
     bool Put(const TileData&) override { return true; }
@@ -39,12 +39,12 @@ public:
 /**
  * @brief Mock TileLoader for testing
  */
-class MockTileLoader : public TileLoader {
+class WorkerPoolMockTileLoader : public TileLoader {
 public:
     std::atomic<int> load_count{0};
 
-    MockTileLoader() = default;
-    ~MockTileLoader() override = default;
+    WorkerPoolMockTileLoader() = default;
+    ~WorkerPoolMockTileLoader() override = default;
 
     bool Initialize(const TileLoaderConfig&) override { return true; }
     void SetTileCache(std::shared_ptr<TileCache>) override {}
@@ -71,10 +71,10 @@ public:
         result.tile_data->loaded = true;
         result.tile_data->width = 256;
         result.tile_data->height = 256;
-        result.tile_data->channels = 3;
+        result.tile_data->channels = 4;
 
-        // Create fake image data (RGB)
-        const std::size_t data_size = 256 * 256 * 3;
+        // Create fake image data (RGBA)
+        const std::size_t data_size = 256 * 256 * 4;
         result.tile_data->data.resize(data_size);
 
         // Fill with pattern based on tile coords
@@ -115,8 +115,8 @@ public:
 class TileLoadWorkerPoolTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        cache_ = std::make_shared<MockTileCache>();
-        loader_ = std::make_shared<MockTileLoader>();
+        cache_ = std::make_shared<WorkerPoolMockTileCache>();
+        loader_ = std::make_shared<WorkerPoolMockTileLoader>();
         upload_queue_ = std::make_shared<GLUploadQueue>();
 
         pool_ = std::make_unique<TileLoadWorkerPool>(
@@ -134,8 +134,8 @@ protected:
         cache_.reset();
     }
 
-    std::shared_ptr<MockTileCache> cache_;
-    std::shared_ptr<MockTileLoader> loader_;
+    std::shared_ptr<WorkerPoolMockTileCache> cache_;
+    std::shared_ptr<WorkerPoolMockTileLoader> loader_;
     std::shared_ptr<GLUploadQueue> upload_queue_;
     std::unique_ptr<TileLoadWorkerPool> pool_;
 };

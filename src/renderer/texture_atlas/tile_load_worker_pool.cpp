@@ -170,11 +170,16 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
 
         if (!load_result.success) {
             spdlog::warn("Failed to load tile {}: {}", coords.GetKey(), load_result.error_message);
+            // Enqueue an empty command so ProcessUploads sees the failure and
+            // resets the tile from Loading back to NotLoaded (via its existing
+            // upload-failed path). Without this the tile stays Loading forever.
+            upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
             return;
         }
 
         if (!load_result.tile_data) {
             spdlog::warn("Loaded tile {} but data is null", coords.GetKey());
+            upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
             return;
         }
         tile_data = *load_result.tile_data;
@@ -193,6 +198,8 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
     // Step 3: Decode image data
     if (!DecodeImage(tile_data)) {
         spdlog::warn("Failed to decode image for tile {}", coords.GetKey());
+        // Enqueue an empty command so ProcessUploads resets the tile state.
+        upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
         return;
     }
 
@@ -203,8 +210,6 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
     upload_cmd->width = tile_data.width;
     upload_cmd->height = tile_data.height;
     upload_cmd->channels = tile_data.channels;
-    // Note: We execute callback here, not on GL thread
-    // upload_cmd->on_complete = request.on_complete;
 
     // Step 5: Push to GL upload queue
     upload_queue_->Push(std::move(upload_cmd));
@@ -234,14 +239,15 @@ bool TileLoadWorkerPool::DecodeImage(TileData& tile_data) {
     int height = 0;
     int channels = 0;
 
-    // Decode image (stbi_load_from_memory handles PNG, JPEG, etc.)
+    // Decode image, forcing RGBA (4 channels) for GL_RGBA8 texture pool compatibility
+    constexpr int kDesiredChannels = 4;
     unsigned char* decoded_data = stbi_load_from_memory(
         tile_data.data.data(),
         static_cast<int>(tile_data.data.size()),
         &width,
         &height,
         &channels,
-        0  // Desired channels (0 = original)
+        kDesiredChannels
     );
 
     if (!decoded_data) {
@@ -249,6 +255,10 @@ bool TileLoadWorkerPool::DecodeImage(TileData& tile_data) {
         spdlog::warn("stb_image decode failed: {}", error ? error : "unknown error");
         return false;
     }
+
+    // stbi returns original channel count in 'channels' even when forcing,
+    // so override to the actual output channel count
+    channels = kDesiredChannels;
 
     // Update tile_data with decoded info
     tile_data.width = static_cast<std::uint32_t>(width);
