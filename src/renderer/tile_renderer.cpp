@@ -731,10 +731,27 @@ void main() {
 
         // Convert GeographicBounds to legacy BoundingBox2D format
         // BoundingBox2D uses (longitude, latitude) in x, y components
-        return BoundingBox2D(
-            glm::dvec2(geo_bounds.min.longitude, geo_bounds.min.latitude),
-            glm::dvec2(geo_bounds.max.longitude, geo_bounds.max.latitude)
-        );
+        // Original min/max
+        glm::dvec2 min(geo_bounds.min.longitude, geo_bounds.min.latitude);
+        glm::dvec2 max(geo_bounds.max.longitude, geo_bounds.max.latitude);
+
+        // // Center of the bounds
+        // glm::dvec2 center = (min + max) * 0.5;
+
+        // // Half extents
+        // glm::dvec2 half_extents = (max - min) * 0.5;
+
+        // // Scale factor: keep 20% (reduce by 80%)
+        // constexpr double scale = 0.2;
+
+        // half_extents *= scale;
+
+        // // New reduced bounds
+        // glm::dvec2 reduced_min = center - half_extents;
+        // glm::dvec2 reduced_max = center + half_extents;
+
+        // return BoundingBox2D(reduced_min, reduced_max);
+        return BoundingBox2D(min, max);
     }
     
     bool IsTileInFrustum(const TileCoordinates& tile, const Frustum& frustum) const {
