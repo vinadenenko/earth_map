@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <earth_map/renderer/tile_pool/tile_texture_pool.h>
+#include <earth_map/renderer/tile_pool/indirection_texture_manager.h>
 #include <earth_map/math/tile_mathematics.h>
+#include <optional>
 #include <vector>
 #include <thread>
 
@@ -167,67 +169,94 @@ TEST_F(TileTexturePoolTest, EvictNonExistentTile_NoOp) {
     EXPECT_EQ(pool_->GetOccupiedLayers(), 0u);
 }
 
-TEST_F(TileTexturePoolTest, UploadWhenFull_TriggersLRUEviction) {
+TEST_F(TileTexturePoolTest, UploadWhenFull_ReturnsFailure) {
     auto pixel_data = CreateTestPixelData(256, 256, 4);
 
     // Fill all 64 layers
-    std::vector<TileCoordinates> tiles;
     for (int i = 0; i < 64; ++i) {
         TileCoordinates tile(i, i, 5);
-        tiles.push_back(tile);
-        pool_->UploadTile(tile, pixel_data.data(), 256, 256, 4);
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        int layer = pool_->UploadTile(tile, pixel_data.data(), 256, 256, 4);
+        EXPECT_GE(layer, 0);
     }
 
-    // Upload one more — should evict oldest (tile 0)
+    EXPECT_EQ(pool_->GetFreeLayers(), 0u);
+    EXPECT_EQ(pool_->GetOccupiedLayers(), 64u);
+
+    // Upload one more — pool should refuse (no silent eviction)
     TileCoordinates new_tile(100, 100, 5);
     int layer = pool_->UploadTile(new_tile, pixel_data.data(), 256, 256, 4);
 
-    EXPECT_GE(layer, 0);
+    EXPECT_EQ(layer, -1);
+    EXPECT_FALSE(pool_->IsTileLoaded(new_tile));
     EXPECT_EQ(pool_->GetOccupiedLayers(), 64u);
-    EXPECT_FALSE(pool_->IsTileLoaded(tiles[0]));
-    EXPECT_TRUE(pool_->IsTileLoaded(new_tile));
-
-    // Others still loaded
-    for (int i = 1; i < 64; ++i) {
-        EXPECT_TRUE(pool_->IsTileLoaded(tiles[i]));
-    }
 }
 
-TEST_F(TileTexturePoolTest, LRU_AccessUpdatesTimestamp) {
+TEST_F(TileTexturePoolTest, GetEvictionCandidate_ReturnsLRUTile) {
     auto pixel_data = CreateTestPixelData(256, 256, 4);
 
-    std::vector<TileCoordinates> tiles;
-    for (int i = 0; i < 64; ++i) {
-        TileCoordinates tile(i, i, 5);
-        tiles.push_back(tile);
-        pool_->UploadTile(tile, pixel_data.data(), 256, 256, 4);
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
-    }
+    // Upload 3 tiles with time gaps
+    TileCoordinates tile_a(0, 0, 5);
+    TileCoordinates tile_b(1, 1, 5);
+    TileCoordinates tile_c(2, 2, 5);
 
-    // Touch tile 0 to update its timestamp
-    pool_->TouchTile(tiles[0]);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    pool_->UploadTile(tile_a, pixel_data.data(), 256, 256, 4);
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    pool_->UploadTile(tile_b, pixel_data.data(), 256, 256, 4);
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    pool_->UploadTile(tile_c, pixel_data.data(), 256, 256, 4);
 
-    // Upload new tile — should evict tile 1 (now oldest), not tile 0
-    TileCoordinates new_tile(100, 100, 5);
-    pool_->UploadTile(new_tile, pixel_data.data(), 256, 256, 4);
+    // LRU candidate should be tile_a (oldest)
+    auto candidate = pool_->GetEvictionCandidate();
+    ASSERT_TRUE(candidate.has_value());
+    EXPECT_EQ(candidate->x, tile_a.x);
+    EXPECT_EQ(candidate->y, tile_a.y);
+    EXPECT_EQ(candidate->zoom, tile_a.zoom);
+}
 
-    EXPECT_TRUE(pool_->IsTileLoaded(tiles[0]));
-    EXPECT_FALSE(pool_->IsTileLoaded(tiles[1]));
+TEST_F(TileTexturePoolTest, GetEvictionCandidate_RespectsTouch) {
+    auto pixel_data = CreateTestPixelData(256, 256, 4);
+
+    TileCoordinates tile_a(0, 0, 5);
+    TileCoordinates tile_b(1, 1, 5);
+
+    pool_->UploadTile(tile_a, pixel_data.data(), 256, 256, 4);
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    pool_->UploadTile(tile_b, pixel_data.data(), 256, 256, 4);
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+
+    // Touch tile_a — now tile_b is oldest
+    pool_->TouchTile(tile_a);
+
+    auto candidate = pool_->GetEvictionCandidate();
+    ASSERT_TRUE(candidate.has_value());
+    EXPECT_EQ(candidate->x, tile_b.x);
+    EXPECT_EQ(candidate->y, tile_b.y);
+}
+
+TEST_F(TileTexturePoolTest, GetEvictionCandidate_EmptyPool) {
+    auto candidate = pool_->GetEvictionCandidate();
+    EXPECT_FALSE(candidate.has_value());
 }
 
 // ============================================================================
 // Stress Tests
 // ============================================================================
 
-TEST_F(TileTexturePoolTest, ManyUploadsAndEvictions) {
+TEST_F(TileTexturePoolTest, ManyUploadsWithExplicitEviction) {
     auto pixel_data = CreateTestPixelData(256, 256, 4);
 
     for (int i = 0; i < 200; ++i) {
-        TileCoordinates tile(i % 128, i % 128, 8);
+        TileCoordinates tile(i, 0, 8);
         int layer = pool_->UploadTile(tile, pixel_data.data(), 256, 256, 4);
-        EXPECT_GE(layer, 0);
+
+        if (layer < 0) {
+            // Pool full — evict explicitly, then retry
+            auto candidate = pool_->GetEvictionCandidate();
+            ASSERT_TRUE(candidate.has_value());
+            pool_->EvictTile(*candidate);
+            layer = pool_->UploadTile(tile, pixel_data.data(), 256, 256, 4);
+            EXPECT_GE(layer, 0);
+        }
     }
 
     EXPECT_EQ(pool_->GetOccupiedLayers(), 64u);
@@ -262,7 +291,7 @@ TEST_F(TileTexturePoolTest, CustomPoolSize) {
     EXPECT_EQ(custom_pool->GetFreeLayers(), 128u);
 }
 
-TEST_F(TileTexturePoolTest, SmallPool) {
+TEST_F(TileTexturePoolTest, SmallPool_FullReturnsFailure) {
     auto small_pool = std::make_unique<TileTexturePool>(256, 4, true);
     auto pixel_data = CreateTestPixelData(256, 256, 4);
 
@@ -274,11 +303,83 @@ TEST_F(TileTexturePoolTest, SmallPool) {
 
     EXPECT_EQ(small_pool->GetFreeLayers(), 0u);
 
-    // One more triggers eviction
+    // One more should fail (no silent eviction)
     TileCoordinates tile(10, 0, 5);
     int layer = small_pool->UploadTile(tile, pixel_data.data(), 256, 256, 4);
-    EXPECT_GE(layer, 0);
+    EXPECT_EQ(layer, -1);
     EXPECT_EQ(small_pool->GetOccupiedLayers(), 4u);
+}
+
+// ============================================================================
+// Integration: Pool + Indirection eviction coordination
+// ============================================================================
+
+TEST(TilePoolIndirectionIntegration, EvictionClearsIndirection) {
+    // Simulates what the coordinator must do: when pool is full,
+    // evict LRU tile and clear its indirection entry.
+    auto pool = std::make_unique<TileTexturePool>(256, 4, true);
+    IndirectionTextureManager indirection(true);
+
+    auto pixel_data = std::vector<std::uint8_t>(256 * 256 * 4, 128);
+
+    // Fill pool with 4 tiles at zoom 5
+    for (int i = 0; i < 4; ++i) {
+        TileCoordinates tile(i, 0, 5);
+        int layer = pool->UploadTile(tile, pixel_data.data(), 256, 256, 4);
+        ASSERT_GE(layer, 0);
+        indirection.SetTileLayer(tile, static_cast<std::uint16_t>(layer));
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+
+    // Verify all indirection entries are set
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_NE(indirection.GetTileLayer(TileCoordinates(i, 0, 5)),
+                  IndirectionTextureManager::kInvalidLayer);
+    }
+
+    // Pool is full — attempt to upload a 5th tile
+    TileCoordinates new_tile(10, 0, 5);
+    int layer = pool->UploadTile(new_tile, pixel_data.data(), 256, 256, 4);
+    EXPECT_EQ(layer, -1);  // Pool refuses
+
+    // Coordinator's job: evict LRU, clear indirection, retry
+    auto candidate = pool->GetEvictionCandidate();
+    ASSERT_TRUE(candidate.has_value());
+
+    // Tile (0,0,5) should be the LRU candidate (uploaded first)
+    EXPECT_EQ(candidate->x, 0);
+    EXPECT_EQ(candidate->y, 0);
+    EXPECT_EQ(candidate->zoom, 5);
+
+    // Clear indirection BEFORE evicting from pool
+    indirection.ClearTile(*candidate);
+    pool->EvictTile(*candidate);
+
+    // Verify evicted tile's indirection is cleared
+    EXPECT_EQ(indirection.GetTileLayer(*candidate),
+              IndirectionTextureManager::kInvalidLayer);
+
+    // Retry upload — should succeed
+    layer = pool->UploadTile(new_tile, pixel_data.data(), 256, 256, 4);
+    EXPECT_GE(layer, 0);
+
+    // Set indirection for new tile
+    indirection.SetTileLayer(new_tile, static_cast<std::uint16_t>(layer));
+    EXPECT_NE(indirection.GetTileLayer(new_tile),
+              IndirectionTextureManager::kInvalidLayer);
+
+    // Old tile (0,0,5) is gone from both pool and indirection
+    EXPECT_FALSE(pool->IsTileLoaded(*candidate));
+    EXPECT_EQ(indirection.GetTileLayer(*candidate),
+              IndirectionTextureManager::kInvalidLayer);
+
+    // Other tiles still intact
+    for (int i = 1; i < 4; ++i) {
+        TileCoordinates tile(i, 0, 5);
+        EXPECT_TRUE(pool->IsTileLoaded(tile));
+        EXPECT_NE(indirection.GetTileLayer(tile),
+                  IndirectionTextureManager::kInvalidLayer);
+    }
 }
 
 } // namespace earth_map::tests

@@ -73,21 +73,8 @@ int TileTexturePool::AllocateLayer() {
         return layer;
     }
 
-    const int eviction_layer = FindEvictionCandidate();
-    if (eviction_layer < 0) {
-        spdlog::error("TileTexturePool: failed to find eviction candidate");
-        return -1;
-    }
-
-    LayerSlot& slot = layers_[eviction_layer];
-    if (slot.occupied) {
-        spdlog::debug("TileTexturePool: evicting tile {} from layer {} (LRU)",
-                      slot.coords.GetKey(), eviction_layer);
-        coord_to_layer_.erase(slot.coords);
-        slot.occupied = false;
-    }
-
-    return eviction_layer;
+    // Pool is full — caller must evict explicitly via EvictTile()
+    return -1;
 }
 
 int TileTexturePool::FindEvictionCandidate() const {
@@ -213,6 +200,14 @@ int TileTexturePool::GetLayerIndex(const TileCoordinates& coords) const {
         return -1;
     }
     return it->second;
+}
+
+std::optional<TileCoordinates> TileTexturePool::GetEvictionCandidate() const {
+    const int layer = FindEvictionCandidate();
+    if (layer < 0) {
+        return std::nullopt;
+    }
+    return layers_[layer].coords;
 }
 
 void TileTexturePool::TouchTile(const TileCoordinates& coords) {

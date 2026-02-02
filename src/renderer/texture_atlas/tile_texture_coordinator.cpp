@@ -154,6 +154,31 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
             cmd->channels
         );
 
+        // Pool full — evict LRU tile and retry
+        if (layer < 0 && tile_pool_->GetFreeLayers() == 0) {
+            auto candidate = tile_pool_->GetEvictionCandidate();
+            if (candidate.has_value()) {
+                indirection_manager_->ClearTile(*candidate);
+                tile_pool_->EvictTile(*candidate);
+
+                {
+                    std::unique_lock<std::shared_mutex> lock(state_mutex_);
+                    tile_states_.erase(*candidate);
+                }
+
+                spdlog::debug("Evicted LRU tile {} to make room for {}",
+                              candidate->GetKey(), cmd->coords.GetKey());
+
+                layer = tile_pool_->UploadTile(
+                    cmd->coords,
+                    cmd->pixel_data.data(),
+                    cmd->width,
+                    cmd->height,
+                    cmd->channels
+                );
+            }
+        }
+
         if (layer >= 0) {
             // Update indirection texture
             indirection_manager_->SetTileLayer(

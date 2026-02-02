@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <unordered_map>
 #include <vector>
@@ -111,6 +112,16 @@ public:
 
     /** @brief Get number of free layers */
     std::size_t GetFreeLayers() const { return free_layers_.size(); }
+
+    /**
+     * @brief Get the LRU eviction candidate
+     *
+     * Returns the coordinates of the least-recently-used tile in the pool.
+     * Does NOT evict — the caller must call EvictTile() explicitly.
+     *
+     * @return Tile coordinates, or nullopt if pool is empty
+     */
+    std::optional<TileCoordinates> GetEvictionCandidate() const;
 
 private:
     struct LayerSlot {
