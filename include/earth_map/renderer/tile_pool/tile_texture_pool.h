@@ -44,6 +44,8 @@ public:
      *
      * @param tile_size Tile dimensions in pixels (tiles are square)
      * @param max_layers Maximum number of layers in the texture array
+     * It means 'how many tiles can be stored in GPU VRAM before LRU eviction.
+     * To calculate GPU VRAM usage: 256×256×4×512 (tile_width * tile_height * channels * max_layers) = 128 MB
      * @param skip_gl_init Skip OpenGL initialization (for testing)
      */
     explicit TileTexturePool(

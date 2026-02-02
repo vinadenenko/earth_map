@@ -97,7 +97,7 @@ public:
 
         // Process GL uploads from worker threads (must be on GL thread)
         if (texture_coordinator_) {
-            texture_coordinator_->ProcessUploads(5);  // Upload up to 5 tiles per frame for 60 FPS
+            texture_coordinator_->ProcessUploads(100);  // Upload up to 5 tiles per frame for 60 FPS (changed)
         }
 
     }
