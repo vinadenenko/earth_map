@@ -614,7 +614,7 @@ protected:
         else if (mouse_dragging_ && active_mouse_button_ == 0) {
             if (movement_mode_ == MovementMode::ORBIT) {
                 // Orbital camera controls
-                float sensitivity = 0.5f;
+                float sensitivity = 0.1f;
 
                 // Rotate around target
                 glm::vec3 offset = position_ - target_;
@@ -704,8 +704,11 @@ protected:
             // Keep in [0, 1]
             normalized = std::clamp(normalized, 0.0f, 1.0f);
 
-            // Ease out near the globe (square or cube)
-            float slow_factor = normalized * normalized;
+            // Ease zoom-in near the surface (squared) to avoid overshooting.
+            // Zoom-out uses linear factor so the camera can always pull away.
+            const float slow_factor = (event.scroll_delta > 0.0f)
+                ? normalized * normalized
+                : normalized;
 
             // Convert scroll into distance delta
             float zoom_delta = event.scroll_delta * zoom_factor * slow_factor;
