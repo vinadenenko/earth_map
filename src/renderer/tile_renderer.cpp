@@ -31,6 +31,17 @@ constexpr int kDefaultZoomLevel = 2;
 constexpr int kMaxFallbackLevels = 5;
 constexpr glm::vec3 kDefaultLightPosition{2.0f, 2.0f, 2.0f};
 
+constexpr int kMinZoom = 0;
+constexpr int kMaxZoom = 21;
+
+// Derived so that minimum camera altitude (100 m) maps to kMaxZoom.
+// K = (MIN_ALTITUDE_METERS / EARTH_MEAN_RADIUS) × 2^kMaxZoom ≈ 32.9
+// Every doubling of altitude decreases zoom by 1, matching the tile pyramid.
+constexpr float kZoomAltitudeScale =
+    (constants::camera_constraints::MIN_ALTITUDE_METERS
+     / static_cast<float>(constants::geodetic::EARTH_MEAN_RADIUS))
+    * static_cast<float>(1u << kMaxZoom);
+
 } // namespace
 
 /**
@@ -181,6 +192,8 @@ public:
                 camera_position, view_matrix, projection_matrix);
             const std::vector<TileCoordinates> candidate_tiles =
                 tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
+
+            spdlog::info("Tag. Candidate tiles: {} with n = {} and zoom level = {}", candidate_tiles.size(), n, zoom_level);
 
             const std::size_t max_tiles_for_frame =
                 static_cast<std::size_t>(config_.max_visible_tiles);
@@ -719,35 +732,21 @@ void main() {
             tile_shader_program_ = 0;
         }
     }
-    
     int CalculateOptimalZoom(float camera_distance) const {
-        // Realistic zoom calculation based on camera distance from globe surface
-        // Distance from camera to sphere center minus earth radius (1.0f in normalized coords)
         const float altitude = camera_distance - 1.0f;
 
-        // Map altitude to zoom levels (0-18 max for OSM)
-        // Camera distance is in normalized units where Earth radius = 1.0
-        // altitude ~0.01 = very close (surface), altitude ~2.0 = far (full globe view)
-
-        // Logarithmic mapping: lower altitude = higher zoom
-        // altitude = 0.01 -> zoom = 10 (close up)
-        // altitude = 2.0 -> zoom = 2 (full globe)
-        // altitude = 10.0 -> zoom = 0 (very far)
-
-        // DO NOT REMOVE THIS. IT AFFECTS NOTHING, THE ENTIRE EARTH WILL BE RENREDER AT ZOOM LEVEL 2 with just 16 TILES. IT IS NEEDED TO NOT OVERLOAD NETWORK
-        return 2;
-
         if (altitude <= 0.0f) {
-            return 10;  // Maximum zoom when on/below surface
+            return kMaxZoom;
         }
 
-        // Use logarithmic scale: zoom = max_zoom - log2(altitude + 1) * scale_factor
-        const float max_zoom = 10.0f;
-        const float scale_factor = 3.0f;  // Adjust to tune zoom sensitivity
-        int zoom = static_cast<int>(max_zoom - std::log2(altitude + 1.0f) * scale_factor);
+        // Single logarithmic mapping: zoom = log2(K / altitude).
+        // K (kZoomAltitudeScale) is calibrated so that min camera altitude
+        // maps to kMaxZoom. Each doubling of altitude drops zoom by 1,
+        // matching the tile pyramid where each level doubles tile count.
+        const float zoom = std::log2(kZoomAltitudeScale / altitude);
 
-        // Clamp to valid range [0, 10]
-        return std::clamp(zoom, 0, 10);
+        spdlog::info("Tag. Picked zoom: {} for camera distance: {}", zoom, camera_distance);
+        return std::clamp(static_cast<int>(zoom), kMinZoom, kMaxZoom);
     }
     
     BoundingBox2D CalculateVisibleGeographicBounds(const glm::vec3& camera_position,

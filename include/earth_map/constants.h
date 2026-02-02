@@ -244,7 +244,7 @@ namespace tiles {
     constexpr int MIN_ZOOM_LEVEL = 0;
 
     /// Maximum tile zoom level
-    constexpr int MAX_ZOOM_LEVEL = 18;
+    constexpr int MAX_ZOOM_LEVEL = 21;
 
     /// Default tile zoom level
     constexpr int DEFAULT_ZOOM_LEVEL = 2;

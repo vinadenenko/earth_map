@@ -681,7 +681,7 @@ protected:
     bool HandleMouseScroll(const InputEvent& event) {
         // Zoom factor: how much to zoom per scroll tick
         // Positive scroll = zoom in (decrease distance), negative = zoom out (increase distance)
-        float zoom_factor = 0.1f;
+        float zoom_factor = 0.5f;
 
         if (movement_mode_ == MovementMode::ORBIT) {
             // Zoom in orbital mode
@@ -689,12 +689,29 @@ protected:
             float current_distance = glm::length(offset);
 
             // Calculate zoom speed based on current distance (zoom faster when far, slower when close)
-            float zoom_speed = 1.0f - (event.scroll_delta * zoom_factor);
-            float new_distance = current_distance * zoom_speed;
+            // float zoom_speed = 1.0f - (event.scroll_delta * zoom_factor);
+            // float new_distance = current_distance * zoom_speed;
 
             // Apply constraints (in normalized units)
             float min_distance = constants::camera_constraints::MIN_DISTANCE_NORMALIZED;
             float max_distance = constants::camera_constraints::MAX_DISTANCE_NORMALIZED;
+            // new_distance = std::clamp(new_distance, min_distance, max_distance);
+
+            float normalized =
+                (current_distance - min_distance) /
+                (max_distance - min_distance);
+
+            // Keep in [0, 1]
+            normalized = std::clamp(normalized, 0.0f, 1.0f);
+
+            // Ease out near the globe (square or cube)
+            float slow_factor = normalized * normalized;
+
+            // Convert scroll into distance delta
+            float zoom_delta = event.scroll_delta * zoom_factor * slow_factor;
+
+            // Apply additively (not multiplicatively)
+            float new_distance = current_distance - zoom_delta;
             new_distance = std::clamp(new_distance, min_distance, max_distance);
 
             // Only update if distance actually changed (not clamped)
