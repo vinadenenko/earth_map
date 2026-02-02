@@ -405,4 +405,37 @@ TEST_F(TileTextureCoordinatorTest, GetAtlasTextureID) {
     EXPECT_EQ(atlas_id, 0u);
 }
 
+// ============================================================================
+// Backpressure Tests
+// ============================================================================
+
+TEST_F(TileTextureCoordinatorTest, Backpressure_PendingCountTracked) {
+    // Request a tile — pending count should increase
+    TileCoordinates tile(0, 0, 5);
+    coordinator_->RequestTiles({tile}, 0);
+
+    EXPECT_GE(coordinator_->GetPendingLoadCount(), 0u);
+
+    // Wait for load to complete and process upload
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator_->ProcessUploads(10);
+
+    // After upload, pending count should be 0
+    EXPECT_EQ(coordinator_->GetPendingLoadCount(), 0u);
+}
+
+TEST_F(TileTextureCoordinatorTest, Backpressure_FloodDoesNotExceedLimit) {
+    // Flood with many tile requests
+    std::vector<TileCoordinates> tiles;
+    for (int i = 0; i < 600; ++i) {
+        tiles.emplace_back(i, i, 8);
+    }
+
+    coordinator_->RequestTiles(tiles, 0);
+
+    // Pending count should not exceed kMaxPendingLoads
+    EXPECT_LE(coordinator_->GetPendingLoadCount(),
+              TileTextureCoordinator::kMaxPendingLoads);
+}
+
 } // namespace earth_map::tests

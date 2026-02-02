@@ -27,6 +27,7 @@
 #include <earth_map/renderer/tile_pool/indirection_texture_manager.h>
 #include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
+#include <atomic>
 #include <memory>
 #include <unordered_map>
 #include <shared_mutex>
@@ -228,6 +229,16 @@ public:
      */
     TileStatus GetTileStatus(const TileCoordinates& coords) const;
 
+    /**
+     * @brief Get number of tiles currently in Loading state
+     *
+     * Thread Safety: Safe to call from any thread (atomic)
+     */
+    std::size_t GetPendingLoadCount() const { return pending_load_count_.load(); }
+
+    /// Maximum number of concurrent pending tile loads before backpressure kicks in
+    static constexpr std::size_t kMaxPendingLoads = 256;
+
 private:
     /**
      * @brief Callback when worker completes tile loading
@@ -256,6 +267,9 @@ private:
 
     /// Indirection texture manager (per-zoom lookup textures, GL thread only)
     std::unique_ptr<IndirectionTextureManager> indirection_manager_;
+
+    /// Number of tiles currently in Loading state (atomic for lock-free reads)
+    std::atomic<std::size_t> pending_load_count_{0};
 };
 
 } // namespace earth_map

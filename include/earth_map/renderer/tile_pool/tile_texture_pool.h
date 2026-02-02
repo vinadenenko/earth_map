@@ -20,6 +20,7 @@
 #include <earth_map/math/tile_mathematics.h>
 #include <chrono>
 #include <cstdint>
+#include <list>
 #include <memory>
 #include <optional>
 #include <queue>
@@ -137,6 +138,8 @@ private:
         bool occupied = false;
         std::chrono::steady_clock::time_point last_used;
         int layer_index = -1;
+        /// Iterator into lru_order_ for O(1) splice/erase. Valid only when occupied.
+        std::list<int>::iterator lru_it;
 
         LayerSlot() = default;
         explicit LayerSlot(int index)
@@ -145,7 +148,6 @@ private:
 
     void CreateTextureArray();
     int AllocateLayer();
-    int FindEvictionCandidate() const;
     void FreeLayer(int layer_index);
 
     std::uint32_t texture_array_id_ = 0;
@@ -156,6 +158,9 @@ private:
     std::vector<LayerSlot> layers_;
     std::queue<int> free_layers_;
     std::unordered_map<TileCoordinates, int, TileCoordinatesHash> coord_to_layer_;
+
+    /// LRU order: front = most recently used, back = eviction candidate
+    std::list<int> lru_order_;
 };
 
 } // namespace earth_map

@@ -235,6 +235,37 @@ glm::ivec2 IndirectionTextureManager::GetWindowOffset(int zoom) const {
     return it->second.window_offset;
 }
 
+void IndirectionTextureManager::ShiftWindowData(
+    ZoomTexture& zt, int dx, int dy) {
+
+    const int w = static_cast<int>(zt.width);
+    const int h = static_cast<int>(zt.height);
+
+    // Create a new buffer initialized to kInvalidLayer
+    std::vector<std::uint16_t> new_data(w * h, kInvalidLayer);
+
+    // Copy overlapping region from old data to new positions.
+    // Old texel (ox, oy) maps to new texel (ox - dx, oy - dy).
+    // Source region in old buffer: the part that maps to valid new positions.
+    const int src_x0 = std::max(0, dx);
+    const int src_y0 = std::max(0, dy);
+    const int src_x1 = std::min(w, w + dx);
+    const int src_y1 = std::min(h, h + dy);
+
+    for (int oy = src_y0; oy < src_y1; ++oy) {
+        const int ny = oy - dy;
+        const int copy_width = src_x1 - src_x0;
+        if (copy_width > 0) {
+            std::memcpy(
+                &new_data[ny * w + (src_x0 - dx)],
+                &zt.data[oy * w + src_x0],
+                copy_width * sizeof(std::uint16_t));
+        }
+    }
+
+    zt.data = std::move(new_data);
+}
+
 void IndirectionTextureManager::UpdateWindowCenter(
     int zoom, int center_tile_x, int center_tile_y) {
 
@@ -258,32 +289,40 @@ void IndirectionTextureManager::UpdateWindowCenter(
     const glm::ivec2 old_offset = zt.window_offset;
     const glm::ivec2 delta = new_offset - old_offset;
 
-    // If the shift is small enough that the old and new windows overlap
-    // significantly, we could do a smart copy. For simplicity and correctness,
-    // if the delta exceeds half the window size, clear everything.
-    // Otherwise, keep data (tiles that are still in the window remain valid).
-    if (std::abs(delta.x) > half || std::abs(delta.y) > half) {
-        // Large jump — clear all data
+    if (delta.x == 0 && delta.y == 0) {
+        return;  // No change
+    }
+
+    const int w = static_cast<int>(zt.width);
+    const int h = static_cast<int>(zt.height);
+
+    if (std::abs(delta.x) >= w || std::abs(delta.y) >= h) {
+        // No overlap — clear everything
         ClearZoomTextureData(zt);
         zt.window_offset = new_offset;
-    } else {
-        // Small shift — just update offset. Tiles that were within the old
-        // window and are still within the new window retain their data because
-        // we use absolute tile coords for lookup. Tiles that are now outside
-        // need no explicit clearing since they won't be accessed.
-        // However, tiles in the new area that weren't in the old window
-        // need their texels cleared to kInvalidLayer.
+        return;
+    }
 
-        // Approach: clear the entire data and let callers re-set tile layers.
-        // This is safe but suboptimal. At 512x512 x 2 bytes = 512KB, clearing
-        // is fast (~0.1ms).
-        //
-        // For a more optimal approach, we'd only clear the newly exposed rows/cols.
-        // Deferring that optimization.
-        if (delta.x != 0 || delta.y != 0) {
-            ClearZoomTextureData(zt);
-        }
-        zt.window_offset = new_offset;
+    // Smart shift: move overlapping data, clear newly exposed strips.
+    //
+    // The texel at position (lx, ly) stores the layer for tile
+    // (lx + offset.x, ly + offset.y). When offset shifts by (dx, dy),
+    // the data that was at texel (lx, ly) now belongs at texel (lx - dx, ly - dy).
+    // We shift the buffer accordingly and clear the exposed strips.
+
+    ShiftWindowData(zt, delta.x, delta.y);
+    zt.window_offset = new_offset;
+
+    // Upload entire buffer to GPU (the shifted data + cleared strips)
+    if (!skip_gl_init_ && zt.texture_id != 0) {
+        glBindTexture(GL_TEXTURE_2D, zt.texture_id);
+        glTexSubImage2D(
+            GL_TEXTURE_2D, 0, 0, 0,
+            static_cast<GLsizei>(zt.width),
+            static_cast<GLsizei>(zt.height),
+            GL_RED_INTEGER, GL_UNSIGNED_SHORT,
+            zt.data.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
     }
 }
 

@@ -75,15 +75,27 @@ void TileTextureCoordinator::RequestTiles(
         return;
     }
 
-    // Step 2: Mark tiles as Loading and submit to worker pool (write lock)
+    // Step 2: Apply backpressure — skip if too many tiles are already pending
+    if (pending_load_count_.load() >= kMaxPendingLoads) {
+        spdlog::debug("Backpressure: {} pending loads >= limit {}, dropping {} requests",
+                      pending_load_count_.load(), kMaxPendingLoads, to_load.size());
+        return;
+    }
+
+    // Step 3: Mark tiles as Loading and submit to worker pool (write lock)
     {
         std::unique_lock<std::shared_mutex> lock(state_mutex_);
 
         for (const auto& coords : to_load) {
+            if (pending_load_count_.load() >= kMaxPendingLoads) {
+                break;
+            }
+
             auto& state = tile_states_[coords];
             if (state.status == TileStatus::NotLoaded) {
                 state.status = TileStatus::Loading;
                 state.request_time = std::chrono::steady_clock::now();
+                pending_load_count_.fetch_add(1);
 
                 worker_pool_->SubmitRequest(coords, priority,
                     [this](const TileCoordinates& loaded_coords) {
@@ -187,18 +199,26 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
                 cmd->coords,
                 static_cast<std::uint16_t>(layer));
 
-            // Update state to Loaded
+            // Update state to Loaded and decrement pending counter
             std::unique_lock<std::shared_mutex> lock(state_mutex_);
 
             auto it = tile_states_.find(cmd->coords);
-            if (it != tile_states_.end()) {
+            if (it != tile_states_.end() && it->second.status == TileStatus::Loading) {
                 it->second.status = TileStatus::Loaded;
                 it->second.pool_layer = layer;
+                pending_load_count_.fetch_sub(1);
 
                 spdlog::trace("Tile {} uploaded to pool layer {}",
                              cmd->coords.GetKey(), layer);
             }
         } else {
+            // Upload failed — remove from pending state
+            std::unique_lock<std::shared_mutex> lock(state_mutex_);
+            auto it = tile_states_.find(cmd->coords);
+            if (it != tile_states_.end() && it->second.status == TileStatus::Loading) {
+                tile_states_.erase(it);
+                pending_load_count_.fetch_sub(1);
+            }
             spdlog::warn("Failed to upload tile {} to pool", cmd->coords.GetKey());
         }
 
