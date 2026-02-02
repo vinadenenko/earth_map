@@ -173,7 +173,8 @@ public:
         const int zoom_level = CalculateOptimalZoom(camera_distance);
         
         // Collect visible tile coordinates
-        const int32_t n = 1 << zoom_level;
+        // Using int64_t to avoid overflow, because with zoom_level 20, n equals 1048576 and n * n gives 0 with int32_t
+        const int64_t n = 1 << zoom_level;
         std::vector<TileCoordinates> visible_tile_coords;
 
         if (n * n <= 256) {
