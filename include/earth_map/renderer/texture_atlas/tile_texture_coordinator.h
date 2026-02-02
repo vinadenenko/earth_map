@@ -59,6 +59,9 @@ namespace earth_map {
  */
 class TileTextureCoordinator {
 public:
+    static constexpr std::uint32_t kDefaultTileSize = 256;
+    static constexpr std::uint32_t kDefaultMaxPoolLayers = 512;
+
     /**
      * @brief Tile loading state
      */

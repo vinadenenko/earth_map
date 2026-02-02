@@ -352,9 +352,16 @@ TEST_F(TileTextureCoordinatorTest, ConcurrentRequests) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    // Should have processed all unique tiles
-    // (No crashes = thread safety works)
-    EXPECT_TRUE(true);
+    // At least some tiles from each thread should be ready
+    int ready_count = 0;
+    for (int t = 0; t < num_threads; ++t) {
+        for (int i = 0; i < tiles_per_thread; ++i) {
+            if (coordinator_->IsTileReady(TileCoordinates(t * 100 + i, t * 100 + i, 8))) {
+                ++ready_count;
+            }
+        }
+    }
+    EXPECT_GE(ready_count, 1);
 }
 
 TEST_F(TileTextureCoordinatorTest, ConcurrentReadsDuringUploads) {
@@ -414,7 +421,9 @@ TEST_F(TileTextureCoordinatorTest, Backpressure_PendingCountTracked) {
     TileCoordinates tile(0, 0, 5);
     coordinator_->RequestTiles({tile}, 0);
 
-    EXPECT_GE(coordinator_->GetPendingLoadCount(), 0u);
+    // Tile should be Loading (pending count >= 1) or already uploaded
+    // Either way, after request the tile should be tracked
+    EXPECT_NE(coordinator_->GetTileStatus(tile), TileTextureCoordinator::TileStatus::NotLoaded);
 
     // Wait for load to complete and process upload
     std::this_thread::sleep_for(std::chrono::milliseconds(100));

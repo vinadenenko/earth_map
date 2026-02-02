@@ -24,10 +24,15 @@ TileTextureCoordinator::TileTextureCoordinator(
 
     // Create tile texture pool (replaces atlas for tile rendering)
     tile_pool_ = std::make_unique<TileTexturePool>(
-        256,   // tile_size
-        512,   // max_layers
+        kDefaultTileSize,
+        kDefaultMaxPoolLayers,
         skip_gl_init
     );
+
+    if (tile_pool_->GetMaxLayers() >= IndirectionTextureManager::kInvalidLayer) {
+        throw std::invalid_argument(
+            "Pool max_layers must be less than indirection sentinel value (0xFFFF)");
+    }
 
     // Create indirection texture manager
     indirection_manager_ = std::make_unique<IndirectionTextureManager>(skip_gl_init);
@@ -75,7 +80,10 @@ void TileTextureCoordinator::RequestTiles(
         return;
     }
 
-    // Step 2: Apply backpressure — skip if too many tiles are already pending
+    // Step 2: Apply backpressure — skip if too many tiles are already pending.
+    // Note: This check is outside the write lock, so multiple threads may pass
+    // it simultaneously. The per-item check inside the lock (below) provides a
+    // tighter bound. The overshoot is bounded by to_load.size() per thread.
     if (pending_load_count_.load() >= kMaxPendingLoads) {
         spdlog::debug("Backpressure: {} pending loads >= limit {}, dropping {} requests",
                       pending_load_count_.load(), kMaxPendingLoads, to_load.size());
@@ -117,7 +125,9 @@ bool TileTextureCoordinator::IsTileReady(const TileCoordinates& coords) const {
 glm::vec4 TileTextureCoordinator::GetTileUV(const TileCoordinates& coords) const {
     // With texture arrays, each tile uses full [0,1] UV range.
     // Return (0,0,1,1) if loaded, (0,0,0,0) if not.
-    if (IsTileReady(coords)) {
+    std::shared_lock<std::shared_mutex> lock(state_mutex_);
+    auto it = tile_states_.find(coords);
+    if (it != tile_states_.end() && it->second.status == TileStatus::Loaded) {
         return glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
     }
     return glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -256,7 +266,14 @@ std::size_t TileTextureCoordinator::EvictUnusedTiles(std::chrono::seconds max_ag
 
     std::unique_lock<std::shared_mutex> lock(state_mutex_);
 
+    std::size_t evicted = 0;
     for (const auto& coords : to_evict) {
+        // Re-check state — may have changed between lock upgrade
+        auto it = tile_states_.find(coords);
+        if (it == tile_states_.end() || it->second.status != TileStatus::Loaded) {
+            continue;
+        }
+
         // Clear from indirection texture
         indirection_manager_->ClearTile(coords);
 
@@ -264,12 +281,13 @@ std::size_t TileTextureCoordinator::EvictUnusedTiles(std::chrono::seconds max_ag
         tile_pool_->EvictTile(coords);
 
         // Remove from state map
-        tile_states_.erase(coords);
+        tile_states_.erase(it);
+        ++evicted;
 
         spdlog::debug("Evicted old tile {}", coords.GetKey());
     }
 
-    return to_evict.size();
+    return evicted;
 }
 
 TileTextureCoordinator::TileStatus

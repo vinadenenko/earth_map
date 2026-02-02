@@ -110,6 +110,12 @@ int TileTexturePool::UploadTile(
         return -1;
     }
 
+    if (channels != 4) {
+        spdlog::warn("TileTexturePool::UploadTile: expected 4 channels (RGBA), got {}",
+                     channels);
+        return -1;
+    }
+
     // Check if already loaded (update in place)
     auto it = coord_to_layer_.find(coords);
     int layer_index;
@@ -132,12 +138,6 @@ int TileTexturePool::UploadTile(
     }
 
     layers_[layer_index].last_used = std::chrono::steady_clock::now();
-
-    if (channels != 4) {
-        spdlog::warn("TileTexturePool::UploadTile: expected 4 channels (RGBA), got {}",
-                     channels);
-        return -1;
-    }
 
     // Upload to GL
     if (!skip_gl_init_ && texture_array_id_ != 0) {

@@ -206,6 +206,58 @@ TEST_F(IndirectionTextureManagerTest, WindowedMode_NearbyRecenterClearsExposedSt
     EXPECT_EQ(manager_->GetTileLayer(edge_tile), IndirectionTextureManager::kInvalidLayer);
 }
 
+TEST_F(IndirectionTextureManagerTest, WindowedMode_ShiftXOnly_PreservesData) {
+    manager_->UpdateWindowCenter(15, 16000, 12000);
+
+    TileCoordinates tile(16000, 12000, 15);
+    manager_->SetTileLayer(tile, 42);
+
+    // Shift X only (center moves right by 5)
+    manager_->UpdateWindowCenter(15, 16005, 12000);
+
+    // Tile should survive (still in window)
+    EXPECT_EQ(manager_->GetTileLayer(tile), 42u);
+}
+
+TEST_F(IndirectionTextureManagerTest, WindowedMode_ShiftYOnly_PreservesData) {
+    manager_->UpdateWindowCenter(15, 16000, 12000);
+
+    TileCoordinates tile(16000, 12000, 15);
+    manager_->SetTileLayer(tile, 55);
+
+    // Shift Y only (center moves down by 5)
+    manager_->UpdateWindowCenter(15, 16000, 12005);
+
+    EXPECT_EQ(manager_->GetTileLayer(tile), 55u);
+}
+
+TEST_F(IndirectionTextureManagerTest, WindowedMode_NegativeShift_PreservesData) {
+    manager_->UpdateWindowCenter(15, 16000, 12000);
+
+    TileCoordinates tile(16000, 12000, 15);
+    manager_->SetTileLayer(tile, 33);
+
+    // Shift in negative direction (center moves left and up by 5)
+    manager_->UpdateWindowCenter(15, 15995, 11995);
+
+    EXPECT_EQ(manager_->GetTileLayer(tile), 33u);
+}
+
+TEST_F(IndirectionTextureManagerTest, WindowedMode_MultipleSequentialShifts) {
+    manager_->UpdateWindowCenter(15, 16000, 12000);
+
+    TileCoordinates tile(16000, 12000, 15);
+    manager_->SetTileLayer(tile, 99);
+
+    // Apply 3 successive small shifts
+    manager_->UpdateWindowCenter(15, 16003, 12003);
+    manager_->UpdateWindowCenter(15, 16006, 12006);
+    manager_->UpdateWindowCenter(15, 16009, 12009);
+
+    // Tile should survive all shifts (total delta = 9, well within window)
+    EXPECT_EQ(manager_->GetTileLayer(tile), 99u);
+}
+
 TEST_F(IndirectionTextureManagerTest, WindowedMode_MultipleZoomsCombine) {
     // One full, one windowed
     TileCoordinates full_tile(3, 2, 4);

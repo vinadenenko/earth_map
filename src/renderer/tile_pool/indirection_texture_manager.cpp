@@ -52,6 +52,11 @@ IndirectionTextureManager::~IndirectionTextureManager() {
 }
 
 void IndirectionTextureManager::CreateZoomTexture(int zoom) {
+    if (zoom < 0 || zoom > 30) {
+        spdlog::error("IndirectionTextureManager: zoom {} out of valid range [0, 30]", zoom);
+        return;
+    }
+
     ZoomTexture zt;
     zt.zoom = zoom;
     zt.windowed = IsWindowedMode(zoom);

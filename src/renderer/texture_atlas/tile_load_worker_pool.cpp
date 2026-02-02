@@ -203,8 +203,6 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
     upload_cmd->width = tile_data.width;
     upload_cmd->height = tile_data.height;
     upload_cmd->channels = tile_data.channels;
-    // Note: We execute callback here, not on GL thread
-    // upload_cmd->on_complete = request.on_complete;
 
     // Step 5: Push to GL upload queue
     upload_queue_->Push(std::move(upload_cmd));
