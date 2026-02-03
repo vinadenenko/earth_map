@@ -851,13 +851,17 @@ protected:
         glm::vec2 current_pos(event.x, event.y);
         glm::vec2 delta = current_pos - last_mouse_pos_;
 
+        // Altitude-proportional sensitivity: precise at low altitude, responsive at high
+        float altitude = glm::length(position_) - 1.0f;
+        float altitude_factor = std::max(altitude, 0.001f);
+
         CameraState state = GetCurrentState();
 
         // Middle mouse button: Tilt and rotate camera (pitch and heading)
         if (middle_mouse_dragging_ && active_mouse_button_ == 2) {
             if (movement_mode_ == MovementMode::ORBIT) {
                 // Tilt mode: change pitch (up/down drag) and heading (left/right drag)
-                float sensitivity = 0.3f;
+                float sensitivity = altitude_factor * 0.3f;
 
                 state.heading -= delta.x * sensitivity;
                 state.pitch -= delta.y * sensitivity;
@@ -886,14 +890,15 @@ protected:
                 SetFromState(state);
             } else {
                 // Free mode: adjust pitch and heading via Rotate
-                Rotate(-delta.x * 0.2f, -delta.y * 0.2f);
+                float sensitivity = altitude_factor * 0.2f;
+                Rotate(-delta.x * sensitivity, -delta.y * sensitivity);
             }
         }
         // Left mouse button: Standard orbit/rotation
         else if (mouse_dragging_ && active_mouse_button_ == 0) {
             if (movement_mode_ == MovementMode::ORBIT) {
                 // Orbital camera controls
-                float sensitivity = 0.1f;
+                float sensitivity = altitude_factor * 0.1f;
 
                 // Rotate around target
                 glm::vec3 offset = position_ - target_;
@@ -913,7 +918,7 @@ protected:
                 SetFromState(state);
             } else {
                 // Free camera controls - use rotation impulses
-                float sensitivity = 0.2f;
+                float sensitivity = altitude_factor * 0.2f;
                 rotation_x_ = -delta.x * sensitivity;
                 rotation_y_ = -delta.y * sensitivity;
             }
