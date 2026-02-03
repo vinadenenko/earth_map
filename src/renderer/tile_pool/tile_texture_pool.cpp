@@ -46,7 +46,7 @@ void TileTexturePool::CreateTextureArray() {
     glTexImage3D(
         GL_TEXTURE_2D_ARRAY,
         0,
-        GL_RGBA8,
+        GL_SRGB8_ALPHA8,
         static_cast<GLsizei>(tile_size_),
         static_cast<GLsizei>(tile_size_),
         static_cast<GLsizei>(max_layers_),
