@@ -123,6 +123,7 @@ public:
     void Update(float delta_time) override {
         UpdateAnimation(delta_time);
         UpdateMovement(delta_time);
+        UpdateClippingPlanes();
         UpdateViewMatrix();
     }
     
@@ -683,6 +684,26 @@ protected:
         roll_ = state.roll;
     }
 
+    /**
+     * @brief Update clipping planes based on altitude.
+     *
+     * Near plane must be smaller than distance-to-surface, otherwise
+     * the globe gets clipped. We use 10% of altitude as near plane.
+     */
+    void UpdateClippingPlanes() {
+        float altitude = glm::length(position_) - 1.0f;
+
+        // Near plane = 10% of altitude, with minimum to avoid precision issues
+        float adaptive_near = std::max(
+            altitude * 0.1f,
+            constants::camera::MIN_NEAR_PLANE_NORMALIZED
+        );
+
+        // Far plane stays large
+        near_plane_ = adaptive_near;
+        // far_plane_ unchanged
+    }
+
     void UpdateViewMatrix() {
         glm::vec3 computed_target;
 
@@ -966,10 +987,11 @@ protected:
         CameraState state = GetCurrentState();
         state.position = glm::normalize(state.position) * new_distance;
         SetFromState(state);
+        UpdateClippingPlanes();
         UpdateViewMatrix();
         return true;
     }
-    
+
     bool HandleKeyPress(const InputEvent& event) {
         // Track held state for continuous movement
         held_keys_.insert(event.key);
