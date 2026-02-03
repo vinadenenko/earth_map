@@ -12,6 +12,7 @@
 #include <cmath>
 #include <algorithm>
 #include <chrono>
+#include <set>
 
 namespace earth_map {
 
@@ -393,25 +394,18 @@ public:
 
         CameraState state = GetCurrentState();
 
-        if (movement_mode_ == MovementMode::ORBIT) {
-            // ORBIT mode: scale distance from target (globe center for globe view)
-            glm::vec3 offset = state.position - target_;
-            float current_distance = glm::length(offset);
+        // Both ORBIT and FREE modes: zoom relative to ORIGIN (globe center).
+        // This ensures ApplyState() distance constraints work correctly,
+        // since ApplyState always checks distance from origin.
+        // In ORBIT mode, target_ should always be origin anyway.
+        float current_distance = glm::length(state.position);
 
-            if (current_distance > 0.0001f) {
-                float new_distance = current_distance * factor;
-                state.position = target_ + glm::normalize(offset) * new_distance;
-            }
-        } else {
-            // FREE mode: scale distance from origin
-            float current_distance = glm::length(state.position);
-
-            if (current_distance > 0.0001f) {
-                state.position = glm::normalize(state.position) * (current_distance * factor);
-            }
+        if (current_distance > 0.0001f) {
+            float new_distance = current_distance * factor;
+            state.position = glm::normalize(state.position) * new_distance;
         }
 
-        // ApplyState enforces distance constraints
+        // ApplyState enforces distance constraints relative to origin
         ApplyState(state);
         SetFromState(state);
         UpdateViewMatrix();
@@ -606,6 +600,9 @@ protected:
     int active_mouse_button_ = -1;  // Track which button is active
     glm::vec2 last_mouse_pos_{0.0f};
     uint64_t last_mouse_time_ = 0;
+
+    // Key held state tracking for continuous WASD movement
+    std::set<int> held_keys_;
     
     // Matrices
     glm::mat4 view_matrix_ = glm::mat4(1.0f);
@@ -794,17 +791,33 @@ protected:
         ApplyState(state);
         SetFromState(state);
 
-        // Apply decay to movement impulses (from scroll wheel)
-        // This prevents continuous movement after scroll
+        // Apply decay to movement impulses only when keys are NOT held.
+        // This allows continuous movement while holding WASD, but smooth
+        // stopping with momentum when released.
         float decay_rate = 10.0f;  // Higher = faster decay
-        movement_forward_ *= std::exp(-decay_rate * delta_time);
-        movement_right_ *= std::exp(-decay_rate * delta_time);
-        movement_up_ *= std::exp(-decay_rate * delta_time);
 
-        // Zero out very small values
-        if (std::abs(movement_forward_) < 0.001f) movement_forward_ = 0.0f;
-        if (std::abs(movement_right_) < 0.001f) movement_right_ = 0.0f;
-        if (std::abs(movement_up_) < 0.001f) movement_up_ = 0.0f;
+        // Check if forward/backward keys are held
+        bool forward_held = held_keys_.count('W') || held_keys_.count('S') ||
+                           held_keys_.count(265) || held_keys_.count(264);
+        if (!forward_held) {
+            movement_forward_ *= std::exp(-decay_rate * delta_time);
+            if (std::abs(movement_forward_) < 0.001f) movement_forward_ = 0.0f;
+        }
+
+        // Check if left/right keys are held
+        bool right_held = held_keys_.count('A') || held_keys_.count('D') ||
+                         held_keys_.count(263) || held_keys_.count(262);
+        if (!right_held) {
+            movement_right_ *= std::exp(-decay_rate * delta_time);
+            if (std::abs(movement_right_) < 0.001f) movement_right_ = 0.0f;
+        }
+
+        // Check if up/down keys are held
+        bool up_held = held_keys_.count('Q') || held_keys_.count('E');
+        if (!up_held) {
+            movement_up_ *= std::exp(-decay_rate * delta_time);
+            if (std::abs(movement_up_) < 0.001f) movement_up_ = 0.0f;
+        }
 
         // Update target based on orientation
         glm::quat q = glm::quat(glm::radians(glm::vec3(pitch_, heading_, roll_)));
@@ -940,6 +953,9 @@ protected:
     }
     
     bool HandleKeyPress(const InputEvent& event) {
+        // Track held state for continuous movement
+        held_keys_.insert(event.key);
+
         switch (event.key) {
             case 'W':
             case 265: // Up arrow
@@ -969,6 +985,9 @@ protected:
     }
     
     bool HandleKeyRelease(const InputEvent& event) {
+        // Clear held state
+        held_keys_.erase(event.key);
+
         switch (event.key) {
             case 'W':
             case 'S':
@@ -1035,51 +1054,57 @@ protected:
             float t = (-b - std::sqrt(discriminant)) / (2.0f * a);
             glm::vec3 hit_point = ray_origin + ray_dir * t;
 
-            // Animate camera to look at this point
+            // Google Earth style: fly camera to position ABOVE the clicked point
+            // while keeping target_ at origin (globe center) for consistent orbit behavior
             if (movement_mode_ == MovementMode::ORBIT) {
-                // Set new target to clicked point
-                glm::vec3 new_target = hit_point;
+                // Convert hit point to spherical coordinates (lat/lon on normalized sphere)
+                // hit_point is on sphere with radius 1.0
+                float lat = std::asin(std::clamp(hit_point.y, -1.0f, 1.0f));  // -π/2 to π/2
+                float lon = std::atan2(hit_point.x, hit_point.z);  // -π to π
 
-                // Calculate new camera position: maintain current distance but point at new target
-                glm::vec3 current_offset = position_ - target_;
-                float current_distance = glm::length(current_offset);
+                // Calculate new camera position ABOVE this point
+                float current_altitude = glm::length(position_) - 1.0f;  // Current altitude above surface
+                float target_altitude = std::max(current_altitude * 0.5f, 0.02f);  // Zoom in, min ~130km
+                float new_distance = 1.0f + target_altitude;
 
-                // Zoom in to a closer distance (50% of current distance, but not too close)
-                float zoom_factor = 0.4f;
-                float new_distance = std::max(current_distance * zoom_factor,
-                                             constants::camera_constraints::MIN_DISTANCE_NORMALIZED * 2.0f);
+                // Position camera directly above the clicked point (radially outward)
+                glm::vec3 new_position;
+                new_position.x = new_distance * std::cos(lat) * std::sin(lon);
+                new_position.y = new_distance * std::sin(lat);
+                new_position.z = new_distance * std::cos(lat) * std::cos(lon);
 
-                // Calculate new position: from target toward camera direction
-                glm::vec3 to_camera = glm::normalize(position_ - new_target);
-                glm::vec3 new_position = new_target + to_camera * new_distance;
+                // IMPORTANT: target_ stays at origin for consistent constraint enforcement!
+                // Calculate new orientation to look at globe center
+                glm::vec3 direction = glm::normalize(-new_position);  // Look toward origin
+                float new_heading = glm::degrees(std::atan2(direction.x, direction.z));
+                float new_pitch = glm::degrees(std::asin(std::clamp(direction.y, -1.0f, 1.0f)));
+                new_pitch = std::clamp(new_pitch, constraints_.min_pitch, constraints_.max_pitch);
 
-                // Animate to new position and target
+                // Animate to new position and orientation
                 animation_.start_position = position_;
                 animation_.target_position = new_position;
                 animation_.start_orientation = glm::vec3(heading_, pitch_, roll_);
-                animation_.target_orientation = animation_.start_orientation;  // Keep orientation
-                animation_.duration = 0.8f;  // Smooth animation
+                animation_.target_orientation = glm::vec3(new_heading, new_pitch, 0.0f);
+                animation_.duration = 0.8f;
                 animation_.elapsed = 0.0f;
                 animation_.active = true;
                 animation_.easing_function = Easing::EaseInOutCubic;
 
-                // Update target immediately so camera knows where to look during animation
-                target_ = new_target;
+                // target_ remains at origin - do NOT change it!
 
-                spdlog::info("Double-click: zooming to position ({:.3f}, {:.3f}, {:.3f})",
-                           new_target.x, new_target.y, new_target.z);
+                spdlog::info("Double-click: flying above ({:.2f}°, {:.2f}°) at altitude {:.4f}",
+                           glm::degrees(lat), glm::degrees(lon), target_altitude);
             }
         } else {
-            // Ray missed the globe - just zoom in toward current target
+            // Ray missed the globe - just zoom in toward globe center
             if (movement_mode_ == MovementMode::ORBIT) {
-                glm::vec3 offset = position_ - target_;
-                float new_distance = glm::length(offset) * 0.5f;
+                float current_distance = glm::length(position_);
+                float new_distance = current_distance * 0.5f;
 
                 // Apply min distance constraint
                 new_distance = std::max(new_distance, constants::camera_constraints::MIN_DISTANCE_NORMALIZED);
 
-                offset = glm::normalize(offset) * new_distance;
-                glm::vec3 new_position = target_ + offset;
+                glm::vec3 new_position = glm::normalize(position_) * new_distance;
 
                 AnimateToPosition(new_position, 0.5f);
             }
