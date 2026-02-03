@@ -143,7 +143,9 @@ namespace camera {
     //--------------------------------------------------------------------------
 
     /// Default camera distance multiplier (distance = radius * multiplier)
-    constexpr float DEFAULT_CAMERA_DISTANCE_MULTIPLIER = 3.0f;
+    /// Note: Must be consistent with MAX_DISTANCE_NORMALIZED constraint.
+    /// MAX_ALTITUDE = 10,000 km → max_distance ≈ 2.57. Using 2.5 for margin.
+    constexpr float DEFAULT_CAMERA_DISTANCE_MULTIPLIER = 2.5f;
 
     /// Default camera distance in normalized units
     constexpr float DEFAULT_CAMERA_DISTANCE_NORMALIZED =

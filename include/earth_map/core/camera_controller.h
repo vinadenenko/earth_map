@@ -229,6 +229,56 @@ public:
      */
     virtual bool ProcessInput(const InputEvent& event) = 0;
 
+    // =========================================================================
+    // High-Level Camera Control API
+    // =========================================================================
+
+    /**
+     * @brief Zoom camera by multiplicative factor
+     *
+     * @param factor Zoom factor. < 1.0 = zoom in, > 1.0 = zoom out.
+     * @see Camera::Zoom for detailed documentation
+     */
+    virtual void Zoom(float factor) = 0;
+
+    /**
+     * @brief Pan camera by screen-space offset
+     *
+     * @param screen_dx Horizontal offset
+     * @param screen_dy Vertical offset
+     * @see Camera::Pan for detailed documentation
+     */
+    virtual void Pan(float screen_dx, float screen_dy) = 0;
+
+    /**
+     * @brief Rotate camera orientation by delta angles
+     *
+     * @param delta_heading Heading change in degrees
+     * @param delta_pitch Pitch change in degrees
+     * @see Camera::Rotate for detailed documentation
+     */
+    virtual void Rotate(float delta_heading, float delta_pitch) = 0;
+
+    /**
+     * @brief Animated flight to geographic location
+     *
+     * @param longitude Target longitude in degrees
+     * @param latitude Target latitude in degrees
+     * @param altitude_meters Target altitude in meters
+     * @param duration_seconds Animation duration (default: 2.0)
+     * @see Camera::FlyTo for detailed documentation
+     */
+    virtual void FlyTo(double longitude, double latitude, double altitude_meters,
+                       float duration_seconds = 2.0f) = 0;
+
+    /**
+     * @brief Point camera at target location
+     *
+     * @param target Target point in world space
+     * @see Camera::LookAt for detailed documentation
+     */
+    virtual void LookAt(const glm::vec3& target) = 0;
+
 protected:
     /**
      * @brief Protected constructor

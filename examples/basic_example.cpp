@@ -37,15 +37,10 @@ static bool show_overlay = true;
 static double last_click_time = 0.0;
 static constexpr double DOUBLE_CLICK_THRESHOLD = 0.3; // seconds
 
-// Movement state for WASD controls
-struct MovementState {
-    bool forward = false;
-    bool backward = false;
-    bool left = false;
-    bool right = false;
-    bool up = false;
-    bool down = false;
-} movement_state;
+// Movement state is now handled entirely by the library's Camera class.
+// WASD key events are forwarded via ProcessInput() which sets internal
+// movement impulses, and UpdateMovement() applies them with constraint
+// enforcement. No external movement_state needed.
 
 // Helper function to print camera controls
 void print_help() {
@@ -138,49 +133,39 @@ void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int
                 glfwSetWindowShouldClose(window, true);
                 break;
 
-            // Movement keys (only in FREE mode)
+            // Movement keys — forward to library via ProcessInput
+            // The camera's HandleKeyPress/HandleKeyRelease set internal movement
+            // impulses which UpdateMovement() applies with constraint enforcement.
             case GLFW_KEY_W:
-                movement_state.forward = true;
-                break;
             case GLFW_KEY_S:
-                movement_state.backward = true;
-                break;
             case GLFW_KEY_A:
-                movement_state.left = true;
-                break;
             case GLFW_KEY_D:
-                movement_state.right = true;
-                break;
             case GLFW_KEY_Q:
-                movement_state.up = true;
+            case GLFW_KEY_E: {
+                earth_map::InputEvent event;
+                event.type = earth_map::InputEvent::Type::KEY_PRESS;
+                event.key = key;
+                camera->ProcessInput(event);
                 break;
-            case GLFW_KEY_E:
-                movement_state.down = true;
-                break;
+            }
         }
     }
 
-    // Handle key release events
+    // Handle key release events — forward WASD to library
     if (action == GLFW_RELEASE) {
         switch (key) {
             case GLFW_KEY_W:
-                movement_state.forward = false;
-                break;
             case GLFW_KEY_S:
-                movement_state.backward = false;
-                break;
             case GLFW_KEY_A:
-                movement_state.left = false;
-                break;
             case GLFW_KEY_D:
-                movement_state.right = false;
-                break;
             case GLFW_KEY_Q:
-                movement_state.up = false;
+            case GLFW_KEY_E: {
+                earth_map::InputEvent event;
+                event.type = earth_map::InputEvent::Type::KEY_RELEASE;
+                event.key = key;
+                camera->ProcessInput(event);
                 break;
-            case GLFW_KEY_E:
-                movement_state.down = false;
-                break;
+            }
         }
     }
 }
@@ -491,9 +476,6 @@ int main() {
         int frame_count = 0;
         auto last_overlay_time = last_time;
 
-        // Movement speed in meters/second
-        const float movement_speed = 0.5f;
-
         while (!glfwWindowShouldClose(window)) {
             // Calculate delta time
             auto current_time = std::chrono::high_resolution_clock::now();
@@ -502,50 +484,11 @@ int main() {
             // delta_time = glm::min(delta_time, max_delta_time);
             last_time = current_time;
 
-            // Update camera
+            // Update camera — all movement is handled internally by the library
+            // via ProcessInput() key events and UpdateMovement() with constraint
+            // enforcement. No manual position manipulation needed.
             auto camera = earth_map_instance->GetCameraController();
             if (camera) {
-                // Apply WASD movement in FREE mode
-                auto mode = camera->GetMovementMode();
-                if (mode == earth_map::CameraController::MovementMode::FREE) {
-                    glm::vec3 movement(0.0f);
-
-                    if (movement_state.forward) movement.z -= 1.0f;
-                    if (movement_state.backward) movement.z += 1.0f;
-                    if (movement_state.left) movement.x -= 1.0f;
-                    if (movement_state.right) movement.x += 1.0f;
-                    if (movement_state.up) movement.y += 1.0f;
-                    if (movement_state.down) movement.y -= 1.0f;
-
-                    if (glm::length(movement) > 0.0f) {
-                        movement = glm::normalize(movement);
-
-                        // Transform movement to camera space
-                        auto orient = camera->GetOrientation();
-                        float heading_rad = glm::radians(orient.x);
-                        float pitch_rad = glm::radians(orient.y);
-
-                        // Calculate camera axes
-                        glm::vec3 forward;
-                        forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
-                        forward.y = std::sin(pitch_rad);
-                        forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
-                        forward = glm::normalize(forward);
-
-                        glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0, 1, 0)));
-                        glm::vec3 up = glm::vec3(0, 1, 0);
-
-                        // Apply movement in camera space
-                        glm::vec3 movement_world =
-                            forward * movement.z +
-                            right * movement.x +
-                            up * movement.y;
-
-                        glm::vec3 new_pos = camera->GetPosition() + movement_world * movement_speed * delta_time;
-                        camera->SetPosition(new_pos);
-                    }
-                }
-
                 camera->Update(delta_time);
             }
 

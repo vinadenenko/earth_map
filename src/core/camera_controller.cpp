@@ -173,6 +173,28 @@ public:
         return camera_->ProcessInput(event);
     }
 
+    // High-Level API - forward to underlying Camera
+    void Zoom(float factor) override {
+        camera_->Zoom(factor);
+    }
+
+    void Pan(float screen_dx, float screen_dy) override {
+        camera_->Pan(screen_dx, screen_dy);
+    }
+
+    void Rotate(float delta_heading, float delta_pitch) override {
+        camera_->Rotate(delta_heading, delta_pitch);
+    }
+
+    void FlyTo(double longitude, double latitude, double altitude_meters,
+               float duration_seconds) override {
+        camera_->FlyTo(longitude, latitude, altitude_meters, duration_seconds);
+    }
+
+    void LookAt(const glm::vec3& target) override {
+        camera_->LookAt(target);
+    }
+
 private:
     Configuration config_;
     bool initialized_ = false;

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <earth_map/renderer/camera.h>
 #include <earth_map/earth_map.h>
+#include <earth_map/constants.h>
 #include <glm/glm.hpp>
 #include <memory>
 
@@ -34,27 +35,49 @@ TEST_F(CameraTest, Initialization) {
 }
 
 TEST_F(CameraTest, PositionControl) {
-    // Test setting position
-    glm::vec3 test_pos(100.0f, 200.0f, 300.0f);
+    // Test setting position within valid range (normalized units, distance ~2.0)
+    glm::vec3 test_pos(0.0f, 0.0f, 2.0f);
     camera_->SetPosition(test_pos);
-    
+
     glm::vec3 actual_pos = camera_->GetPosition();
     EXPECT_FLOAT_EQ(actual_pos.x, test_pos.x);
     EXPECT_FLOAT_EQ(actual_pos.y, test_pos.y);
     EXPECT_FLOAT_EQ(actual_pos.z, test_pos.z);
 }
 
+TEST_F(CameraTest, PositionControl_ConstraintEnforcement) {
+    // Test that position outside valid range is clamped
+    // Distance 374 exceeds MAX_DISTANCE_NORMALIZED (~2.57)
+    glm::vec3 invalid_pos(100.0f, 200.0f, 300.0f);
+    camera_->SetPosition(invalid_pos);
+
+    glm::vec3 actual_pos = camera_->GetPosition();
+    float distance = glm::length(actual_pos);
+
+    // Should be clamped to MAX_DISTANCE_NORMALIZED
+    EXPECT_LE(distance, earth_map::constants::camera_constraints::MAX_DISTANCE_NORMALIZED + 0.001f);
+    // Direction should be preserved
+    glm::vec3 expected_dir = glm::normalize(invalid_pos);
+    glm::vec3 actual_dir = glm::normalize(actual_pos);
+    EXPECT_NEAR(actual_dir.x, expected_dir.x, 0.01f);
+    EXPECT_NEAR(actual_dir.y, expected_dir.y, 0.01f);
+    EXPECT_NEAR(actual_dir.z, expected_dir.z, 0.01f);
+}
+
 TEST_F(CameraTest, GeographicPositionControl) {
     // Test setting geographic position
+    // Camera uses normalized units (globe radius = 1.0)
     double longitude = -122.4194;
     double latitude = 37.7749;
-    double altitude = 1000.0;
-    
+    double altitude = 100000.0;  // 100km above surface
+
     camera_->SetGeographicPosition(longitude, latitude, altitude);
-    
-    // Just test that the position is set (actual conversion tested in coordinate system tests)
+
+    // Position should be slightly above surface (distance > 1.0 in normalized units)
     glm::vec3 pos = camera_->GetPosition();
-    EXPECT_GT(glm::length(pos), 6000000.0f); // Should be around Earth radius
+    float distance = glm::length(pos);
+    EXPECT_GT(distance, 1.0f);
+    EXPECT_LE(distance, earth_map::constants::camera_constraints::MAX_DISTANCE_NORMALIZED);
 }
 
 TEST_F(CameraTest, OrientationControl) {
@@ -160,10 +183,9 @@ TEST_F(CameraTest, Constraints) {
 }
 
 TEST_F(CameraTest, AnimationControl) {
-    // Test basic animation
-    glm::vec3 start_pos(0.0f, 0.0f, 10.0f);
-    // glm::vec3 target_pos(10.0f, 0.0f, 10.0f);
-    
+    // Test basic animation - use valid positions within constraint range
+    glm::vec3 start_pos(0.0f, 0.0f, 2.0f);
+
     camera_->SetPosition(start_pos);
     EXPECT_EQ(camera_->GetPosition(), start_pos);
     EXPECT_FALSE(camera_->IsAnimating());

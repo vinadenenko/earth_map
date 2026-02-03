@@ -16,6 +16,19 @@
 namespace earth_map {
 
 /**
+ * @brief Internal camera state for validation
+ *
+ * All state mutations flow through ApplyState() which validates
+ * and clamps this struct to enforce camera constraints.
+ */
+struct CameraState {
+    glm::vec3 position{0.0f};
+    float heading = 0.0f;
+    float pitch = 0.0f;
+    float roll = 0.0f;
+};
+
+/**
  * @brief Easing functions for smooth camera animation
  */
 namespace Easing {
@@ -116,12 +129,19 @@ public:
         using namespace earth_map::coordinates;
         Geographic geo(latitude, longitude, altitude);
         World world = CoordinateMapper::GeographicToWorld(geo);
-        position_ = world.position;
+
+        CameraState state = GetCurrentState();
+        state.position = world.position;
+        ApplyState(state);
+        SetFromState(state);
         UpdateViewMatrix();
     }
-    
+
     void SetPosition(const glm::vec3& position) override {
-        position_ = position;
+        CameraState state = GetCurrentState();
+        state.position = position;
+        ApplyState(state);
+        SetFromState(state);
         UpdateViewMatrix();
     }
     
@@ -144,15 +164,19 @@ public:
 
         // Calculate heading (yaw) from x,z components
         // atan2(x, z) gives angle in XZ plane
-        heading_ = glm::degrees(std::atan2(direction.x, direction.z));
+        float new_heading = glm::degrees(std::atan2(direction.x, direction.z));
 
         // Calculate pitch from y component
         // Clamp direction.y to [-1, 1] to handle numerical errors
         float clamped_y = std::clamp(direction.y, -1.0f, 1.0f);
-        pitch_ = glm::degrees(std::asin(clamped_y));
+        float new_pitch = glm::degrees(std::asin(clamped_y));
 
-        // Apply constraints
-        pitch_ = std::clamp(pitch_, constraints_.min_pitch, constraints_.max_pitch);
+        // Apply constraints via ApplyState
+        CameraState state = GetCurrentState();
+        state.heading = new_heading;
+        state.pitch = new_pitch;
+        ApplyState(state);
+        SetFromState(state);
 
         UpdateViewMatrix();
     }
@@ -178,10 +202,12 @@ public:
     }
     
     void SetOrientation(double heading, double pitch, double roll) override {
-        heading_ = static_cast<float>(std::fmod(heading, 360.0));
-        pitch_ = static_cast<float>(std::clamp(pitch, static_cast<double>(constraints_.min_pitch), 
-                                              static_cast<double>(constraints_.max_pitch)));
-        roll_ = static_cast<float>(std::fmod(roll, 360.0));
+        CameraState state = GetCurrentState();
+        state.heading = static_cast<float>(heading);
+        state.pitch = static_cast<float>(pitch);
+        state.roll = static_cast<float>(roll);
+        ApplyState(state);
+        SetFromState(state);
         UpdateViewMatrix();
     }
     
@@ -355,7 +381,144 @@ public:
     void StopAnimations() override {
         animation_.Reset();
     }
-    
+
+    // =========================================================================
+    // High-Level Camera Control API Implementation
+    // =========================================================================
+
+    void Zoom(float factor) override {
+        if (factor <= 0.0f) {
+            return;  // Invalid factor
+        }
+
+        CameraState state = GetCurrentState();
+
+        if (movement_mode_ == MovementMode::ORBIT) {
+            // ORBIT mode: scale distance from target (globe center for globe view)
+            glm::vec3 offset = state.position - target_;
+            float current_distance = glm::length(offset);
+
+            if (current_distance > 0.0001f) {
+                float new_distance = current_distance * factor;
+                state.position = target_ + glm::normalize(offset) * new_distance;
+            }
+        } else {
+            // FREE mode: scale distance from origin
+            float current_distance = glm::length(state.position);
+
+            if (current_distance > 0.0001f) {
+                state.position = glm::normalize(state.position) * (current_distance * factor);
+            }
+        }
+
+        // ApplyState enforces distance constraints
+        ApplyState(state);
+        SetFromState(state);
+        UpdateViewMatrix();
+    }
+
+    void Pan(float screen_dx, float screen_dy) override {
+        CameraState state = GetCurrentState();
+
+        // Sensitivity scales with altitude for consistent feel
+        float distance = glm::length(state.position);
+        float sensitivity = distance * 0.001f;
+
+        if (movement_mode_ == MovementMode::ORBIT) {
+            // ORBIT mode: rotate view around the globe
+            // Horizontal movement changes heading (longitude-like)
+            // Vertical movement changes pitch (latitude-like)
+            state.heading -= screen_dx * sensitivity * 10.0f;
+            state.pitch -= screen_dy * sensitivity * 10.0f;
+        } else {
+            // FREE mode: translate camera position
+            glm::vec3 right = GetRightVector();
+            glm::vec3 up = GetUpVector();
+
+            state.position += right * screen_dx * sensitivity;
+            state.position -= up * screen_dy * sensitivity;  // Screen Y is inverted
+        }
+
+        ApplyState(state);
+        SetFromState(state);
+        UpdateViewMatrix();
+    }
+
+    void Rotate(float delta_heading, float delta_pitch) override {
+        CameraState state = GetCurrentState();
+
+        state.heading += delta_heading;
+        state.pitch += delta_pitch;
+
+        // ApplyState handles pitch clamping and heading normalization
+        ApplyState(state);
+        SetFromState(state);
+        UpdateViewMatrix();
+    }
+
+    void FlyTo(double longitude, double latitude, double altitude_meters,
+               float duration_seconds) override {
+        using namespace earth_map::coordinates;
+
+        // Clamp altitude to constraints before starting animation
+        double clamped_altitude = std::clamp(
+            altitude_meters,
+            static_cast<double>(constraints_.min_altitude),
+            static_cast<double>(constraints_.max_altitude)
+        );
+
+        Geographic geo(latitude, longitude, clamped_altitude);
+        World world = CoordinateMapper::GeographicToWorld(geo);
+
+        // Validate target position with ApplyState
+        CameraState target_state;
+        target_state.position = world.position;
+        target_state.heading = heading_;  // Keep current orientation initially
+        target_state.pitch = pitch_;
+        target_state.roll = roll_;
+        ApplyState(target_state);
+
+        // Calculate orientation to look at globe center from new position
+        glm::vec3 direction = glm::normalize(glm::vec3(0.0f) - target_state.position);
+        float target_heading = glm::degrees(std::atan2(direction.x, direction.z));
+        float target_pitch = glm::degrees(std::asin(std::clamp(direction.y, -1.0f, 1.0f)));
+        target_pitch = std::clamp(target_pitch, constraints_.min_pitch, constraints_.max_pitch);
+
+        // Set up animation
+        animation_.start_position = position_;
+        animation_.target_position = target_state.position;
+        animation_.start_orientation = glm::vec3(heading_, pitch_, roll_);
+        animation_.target_orientation = glm::vec3(target_heading, target_pitch, 0.0f);
+        animation_.duration = duration_seconds;
+        animation_.elapsed = 0.0f;
+        animation_.active = true;
+        animation_.easing_function = Easing::EaseInOutCubic;
+    }
+
+    void LookAt(const glm::vec3& target) override {
+        // Calculate direction from position to target
+        glm::vec3 direction = glm::normalize(target - position_);
+
+        CameraState state = GetCurrentState();
+
+        // Calculate heading (yaw) from x,z components
+        state.heading = glm::degrees(std::atan2(direction.x, direction.z));
+
+        // Calculate pitch from y component
+        float clamped_y = std::clamp(direction.y, -1.0f, 1.0f);
+        state.pitch = glm::degrees(std::asin(clamped_y));
+
+        ApplyState(state);
+        SetFromState(state);
+
+        // In ORBIT mode, also set the target
+        if (movement_mode_ == MovementMode::ORBIT) {
+            target_ = target;
+        }
+
+        UpdateViewMatrix();
+    }
+
     glm::vec3 GetForwardVector() const override {
         // Calculate forward from orientation (consistent with UpdateViewMatrix)
         float heading_rad = glm::radians(heading_);
@@ -447,6 +610,82 @@ protected:
     // Matrices
     glm::mat4 view_matrix_ = glm::mat4(1.0f);
     
+    /**
+     * @brief Single enforcement point for all camera constraints.
+     *
+     * Validates and clamps the given state to respect:
+     * - Distance from origin: [MIN_DISTANCE_NORMALIZED, MAX_DISTANCE_NORMALIZED]
+     * - Pitch: [-89°, 89°]
+     * - Heading/roll: normalized to [0°, 360°)
+     *
+     * @param state Camera state to validate (modified in place)
+     * @return true if state was clamped (constraint was hit)
+     */
+    bool ApplyState(CameraState& state) {
+        bool clamped = false;
+
+        // Enforce distance constraints
+        const float min_distance = constants::camera_constraints::MIN_DISTANCE_NORMALIZED;
+        const float max_distance = constants::camera_constraints::MAX_DISTANCE_NORMALIZED;
+        const float distance = glm::length(state.position);
+
+        if (distance < min_distance) {
+            state.position = glm::normalize(state.position) * min_distance;
+            clamped = true;
+        } else if (distance > max_distance) {
+            state.position = glm::normalize(state.position) * max_distance;
+            clamped = true;
+        }
+
+        // Handle zero-length position (shouldn't happen, but defensive)
+        if (distance < 0.0001f) {
+            state.position = glm::vec3(0.0f, 0.0f, min_distance);
+            clamped = true;
+        }
+
+        // Enforce pitch constraints
+        const float min_pitch = constraints_.min_pitch;
+        const float max_pitch = constraints_.max_pitch;
+        if (state.pitch < min_pitch) {
+            state.pitch = min_pitch;
+            clamped = true;
+        } else if (state.pitch > max_pitch) {
+            state.pitch = max_pitch;
+            clamped = true;
+        }
+
+        // Normalize heading to [0°, 360°)
+        state.heading = std::fmod(state.heading, 360.0f);
+        if (state.heading < 0.0f) {
+            state.heading += 360.0f;
+        }
+
+        // Normalize roll to [0°, 360°)
+        state.roll = std::fmod(state.roll, 360.0f);
+        if (state.roll < 0.0f) {
+            state.roll += 360.0f;
+        }
+
+        return clamped;
+    }
+
+    /**
+     * @brief Get current state as CameraState struct
+     */
+    CameraState GetCurrentState() const {
+        return CameraState{position_, heading_, pitch_, roll_};
+    }
+
+    /**
+     * @brief Apply validated state to internal members
+     */
+    void SetFromState(const CameraState& state) {
+        position_ = state.position;
+        heading_ = state.heading;
+        pitch_ = state.pitch;
+        roll_ = state.roll;
+    }
+
     void UpdateViewMatrix() {
         glm::vec3 computed_target;
 
@@ -473,31 +712,36 @@ protected:
         if (!animation_.active) {
             return;
         }
-        
+
         animation_.elapsed += delta_time;
-        
+
+        CameraState state;
+
         if (animation_.IsComplete()) {
             // Apply final values
-            position_ = animation_.target_position;
-            heading_ = animation_.target_orientation.x;
-            pitch_ = animation_.target_orientation.y;
-            roll_ = animation_.target_orientation.z;
+            state.position = animation_.target_position;
+            state.heading = animation_.target_orientation.x;
+            state.pitch = animation_.target_orientation.y;
+            state.roll = animation_.target_orientation.z;
             animation_.Reset();
-            return;
+        } else {
+            // Apply interpolated values
+            float progress = animation_.GetProgress();
+            float eased_progress = animation_.easing_function(progress);
+
+            state.position = glm::mix(animation_.start_position, animation_.target_position, eased_progress);
+
+            glm::vec3 current_orientation = glm::mix(animation_.start_orientation,
+                                                   animation_.target_orientation,
+                                                   eased_progress);
+            state.heading = current_orientation.x;
+            state.pitch = current_orientation.y;
+            state.roll = current_orientation.z;
         }
-        
-        // Apply interpolated values
-        float progress = animation_.GetProgress();
-        float eased_progress = animation_.easing_function(progress);
-        
-        position_ = glm::mix(animation_.start_position, animation_.target_position, eased_progress);
-        
-        glm::vec3 current_orientation = glm::mix(animation_.start_orientation, 
-                                               animation_.target_orientation, 
-                                               eased_progress);
-        heading_ = current_orientation.x;
-        pitch_ = current_orientation.y;
-        roll_ = current_orientation.z;
+
+        // Enforce constraints on every animation frame
+        ApplyState(state);
+        SetFromState(state);
     }
     
     void UpdateMovement(float delta_time) {
@@ -521,30 +765,34 @@ protected:
 
         float rot_speed = constraints_.max_rotation_speed;
 
+        // Build new state from current + deltas
+        CameraState state = GetCurrentState();
+
         // Update position
         if (glm::abs(movement_forward_) > 0.01f) {
-            position_ += forward * movement_forward_ * adaptive_speed * delta_time;
+            state.position += forward * movement_forward_ * adaptive_speed * delta_time;
         }
         if (glm::abs(movement_right_) > 0.01f) {
-            position_ += right * movement_right_ * adaptive_speed * delta_time;
+            state.position += right * movement_right_ * adaptive_speed * delta_time;
         }
         if (glm::abs(movement_up_) > 0.01f) {
-            position_ += up * movement_up_ * adaptive_speed * delta_time;
+            state.position += up * movement_up_ * adaptive_speed * delta_time;
         }
-        
+
         // Update orientation
         if (glm::abs(rotation_x_) > 0.01f) {
-            heading_ += rotation_x_ * rot_speed * delta_time;
-            heading_ = std::fmod(heading_, 360.0f);
+            state.heading += rotation_x_ * rot_speed * delta_time;
         }
         if (glm::abs(rotation_y_) > 0.01f) {
-            pitch_ += rotation_y_ * rot_speed * delta_time;
-            pitch_ = std::clamp(pitch_, constraints_.min_pitch, constraints_.max_pitch);
+            state.pitch += rotation_y_ * rot_speed * delta_time;
         }
         if (glm::abs(rotation_z_) > 0.01f) {
-            roll_ += rotation_z_ * rot_speed * delta_time;
-            roll_ = std::fmod(roll_, 360.0f);
+            state.roll += rotation_z_ * rot_speed * delta_time;
         }
+
+        // Enforce all constraints via single enforcement point
+        ApplyState(state);
+        SetFromState(state);
 
         // Apply decay to movement impulses (from scroll wheel)
         // This prevents continuous movement after scroll
@@ -572,19 +820,20 @@ protected:
         glm::vec2 current_pos(event.x, event.y);
         glm::vec2 delta = current_pos - last_mouse_pos_;
 
+        CameraState state = GetCurrentState();
+
         // Middle mouse button: Tilt and rotate camera (pitch and heading)
         if (middle_mouse_dragging_ && active_mouse_button_ == 2) {
             if (movement_mode_ == MovementMode::ORBIT) {
                 // Tilt mode: change pitch (up/down drag) and heading (left/right drag)
                 float sensitivity = 0.3f;
 
-                // Horizontal drag: rotate heading around the target
-                heading_ -= delta.x * sensitivity;
-                heading_ = std::fmod(heading_, 360.0f);
+                state.heading -= delta.x * sensitivity;
+                state.pitch -= delta.y * sensitivity;
 
-                // Vertical drag: tilt pitch
-                pitch_ -= delta.y * sensitivity;
-                pitch_ = std::clamp(pitch_, constraints_.min_pitch, constraints_.max_pitch);
+                // Apply constraints
+                ApplyState(state);
+                SetFromState(state);
 
                 // Recalculate camera position based on new heading and pitch
                 glm::vec3 offset = position_ - target_;
@@ -599,15 +848,14 @@ protected:
                 offset.y = distance * std::sin(pitch_rad);
                 offset.z = distance * std::cos(pitch_rad) * std::cos(heading_rad);
 
-                position_ = target_ + offset;
+                // Apply position with constraints
+                state = GetCurrentState();
+                state.position = target_ + offset;
+                ApplyState(state);
+                SetFromState(state);
             } else {
-                // Free mode: adjust pitch and heading
-                float sensitivity = 0.2f;
-                heading_ -= delta.x * sensitivity;
-                heading_ = std::fmod(heading_, 360.0f);
-
-                pitch_ -= delta.y * sensitivity;
-                pitch_ = std::clamp(pitch_, constraints_.min_pitch, constraints_.max_pitch);
+                // Free mode: adjust pitch and heading via Rotate
+                Rotate(-delta.x * 0.2f, -delta.y * 0.2f);
             }
         }
         // Left mouse button: Standard orbit/rotation
@@ -628,15 +876,19 @@ protected:
                 glm::quat vert_rot = glm::angleAxis(delta.y * sensitivity * 0.01f, right);
                 offset = vert_rot * offset;
 
-                position_ = target_ + offset;
+                // Apply with constraints
+                state.position = target_ + offset;
+                ApplyState(state);
+                SetFromState(state);
             } else {
-                // Free camera controls
+                // Free camera controls - use rotation impulses
                 float sensitivity = 0.2f;
                 rotation_x_ = -delta.x * sensitivity;
                 rotation_y_ = -delta.y * sensitivity;
             }
         }
 
+        UpdateViewMatrix();
         last_mouse_pos_ = current_pos;
         last_mouse_time_ = event.timestamp;
         return true;
@@ -679,55 +931,11 @@ protected:
     }
     
     bool HandleMouseScroll(const InputEvent& event) {
-        // Zoom factor: how much to zoom per scroll tick
-        // Positive scroll = zoom in (decrease distance), negative = zoom out (increase distance)
-        float zoom_factor = 0.5f;
-
-        if (movement_mode_ == MovementMode::ORBIT) {
-            // Zoom in orbital mode
-            glm::vec3 offset = position_ - target_;
-            float current_distance = glm::length(offset);
-
-            // Calculate zoom speed based on current distance (zoom faster when far, slower when close)
-            // float zoom_speed = 1.0f - (event.scroll_delta * zoom_factor);
-            // float new_distance = current_distance * zoom_speed;
-
-            // Apply constraints (in normalized units)
-            float min_distance = constants::camera_constraints::MIN_DISTANCE_NORMALIZED;
-            float max_distance = constants::camera_constraints::MAX_DISTANCE_NORMALIZED;
-            // new_distance = std::clamp(new_distance, min_distance, max_distance);
-
-            float normalized =
-                (current_distance - min_distance) /
-                (max_distance - min_distance);
-
-            // Keep in [0, 1]
-            normalized = std::clamp(normalized, 0.0f, 1.0f);
-
-            // Ease zoom-in near the surface (squared) to avoid overshooting.
-            // Zoom-out uses linear factor so the camera can always pull away.
-            const float slow_factor = (event.scroll_delta > 0.0f)
-                ? normalized * normalized
-                : normalized;
-
-            // Convert scroll into distance delta
-            float zoom_delta = event.scroll_delta * zoom_factor * slow_factor;
-
-            // Apply additively (not multiplicatively)
-            float new_distance = current_distance - zoom_delta;
-            new_distance = std::clamp(new_distance, min_distance, max_distance);
-
-            // Only update if distance actually changed (not clamped)
-            if (std::abs(new_distance - current_distance) > 0.0001f) {
-                offset = glm::normalize(offset) * new_distance;
-                position_ = target_ + offset;
-            }
-        } else {
-            // Move forward/backward in free mode using scroll
-            // Convert scroll to movement impulse
-            movement_forward_ = event.scroll_delta * 2.0f;
-        }
-
+        // Use high-level Zoom API which handles all constraint enforcement.
+        // Positive scroll = zoom in (smaller factor), negative = zoom out (larger factor)
+        constexpr float kZoomRatio = 0.1f;
+        float factor = 1.0f - event.scroll_delta * kZoomRatio;
+        Zoom(factor);
         return true;
     }
     

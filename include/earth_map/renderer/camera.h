@@ -358,11 +358,87 @@ public:
     
     /**
      * @brief Stop all animations
-     * 
+     *
      * Immediately stops all camera animations and holds current state.
      */
     virtual void StopAnimations() = 0;
-    
+
+    // =========================================================================
+    // High-Level Camera Control API
+    // =========================================================================
+
+    /**
+     * @brief Zoom camera by multiplicative factor
+     *
+     * Multiplicative zoom that works consistently at all distances.
+     * Each call scales the camera distance from globe center by the given factor.
+     *
+     * @param factor Zoom factor. Values < 1.0 zoom in (closer), > 1.0 zoom out (farther).
+     *               E.g., 0.9 = 10% closer, 1.1 = 10% farther.
+     *
+     * @note Distance is automatically clamped to [MIN_DISTANCE, MAX_DISTANCE].
+     *       This method never causes stuck states or violates constraints.
+     */
+    virtual void Zoom(float factor) = 0;
+
+    /**
+     * @brief Pan camera by screen-space offset
+     *
+     * Moves the camera view by the given screen-space delta.
+     * In ORBIT mode: rotates the view around the globe.
+     * In FREE mode: translates the camera position.
+     *
+     * @param screen_dx Horizontal offset (positive = pan right)
+     * @param screen_dy Vertical offset (positive = pan down)
+     *
+     * @note All constraints are enforced. Pan at minimum altitude will
+     *       be clamped to not penetrate the globe surface.
+     */
+    virtual void Pan(float screen_dx, float screen_dy) = 0;
+
+    /**
+     * @brief Rotate camera orientation by delta angles
+     *
+     * Applies incremental rotation to camera heading and pitch.
+     *
+     * @param delta_heading Heading change in degrees (positive = turn right)
+     * @param delta_pitch Pitch change in degrees (positive = look up)
+     *
+     * @note Pitch is automatically clamped to [-89°, 89°].
+     *       Heading wraps around at 360°.
+     */
+    virtual void Rotate(float delta_heading, float delta_pitch) = 0;
+
+    /**
+     * @brief Animated flight to geographic location
+     *
+     * Smoothly animates the camera to the specified geographic position
+     * over the given duration using eased interpolation.
+     *
+     * @param longitude Target longitude in degrees (-180 to 180)
+     * @param latitude Target latitude in degrees (-90 to 90)
+     * @param altitude_meters Target altitude in meters above sea level
+     * @param duration_seconds Animation duration in seconds (default: 2.0)
+     *
+     * @note Altitude is clamped to [MIN_ALTITUDE, MAX_ALTITUDE] constraints.
+     *       The animation path may be adjusted to respect constraints.
+     */
+    virtual void FlyTo(double longitude, double latitude, double altitude_meters,
+                       float duration_seconds = 2.0f) = 0;
+
+    /**
+     * @brief Point camera at target location
+     *
+     * Orients the camera to look at the specified world-space position
+     * without changing the camera's position.
+     *
+     * @param target Target point in world space to look at
+     *
+     * @note In ORBIT mode, this also sets the orbit center.
+     *       Pitch is clamped to constraints.
+     */
+    virtual void LookAt(const glm::vec3& target) = 0;
+
     /**
      * @brief Get forward vector
      * 
