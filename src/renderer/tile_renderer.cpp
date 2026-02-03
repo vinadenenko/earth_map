@@ -515,19 +515,32 @@ uniform vec3 uLightPos;
 uniform vec3 uLightColor;
 
 vec2 worldToGeo(vec3 pos) {
+    const float PI = 3.14159265358979323846;
     vec3 n = normalize(pos);
-    return vec2(atan(n.x, n.z) * 180.0 / 3.14159265359,
-                asin(n.y) * 180.0 / 3.14159265359);
+    return vec2(atan(n.x, n.z) * 180.0 / PI,
+                asin(n.y) * 180.0 / PI);
 }
 
 void geoToTileAndFrac(vec2 geo, int zoom, out ivec2 tile, out vec2 frac) {
-    const float PI = 3.14159265359;
-    int n = 1 << zoom;
-    float fx = ((geo.x + 180.0) / 360.0) * float(n);
+    const float PI = 3.14159265358979323846;
+
+    // Compute normalized coordinates (0-1 range) first to preserve precision.
+    // Scaling by n happens last to avoid large intermediate float values
+    // that lose precision at high zoom levels (n = 524288 at zoom 19).
+    float norm_x = (geo.x + 180.0) / 360.0;
     float lat_rad = clamp(geo.y, -85.0511, 85.0511) * PI / 180.0;
-    float fy = ((1.0 - log(tan(PI / 4.0 + lat_rad / 2.0)) / PI) / 2.0) * float(n);
-    tile = ivec2(clamp(int(floor(fx)), 0, n - 1), clamp(int(floor(fy)), 0, n - 1));
-    frac = vec2(fract(fx), fract(fy));
+    float norm_y = (1.0 - log(tan(PI / 4.0 + lat_rad / 2.0)) / PI) / 2.0;
+
+    // Scale by tile count at this zoom level
+    int n = 1 << zoom;
+    float fx = norm_x * float(n);
+    float fy = norm_y * float(n);
+
+    tile = ivec2(clamp(int(floor(fx)), 0, n - 1),
+                 clamp(int(floor(fy)), 0, n - 1));
+
+    // Use subtraction instead of fract() to avoid precision loss on large values
+    frac = vec2(fx - floor(fx), fy - floor(fy));
 }
 
 uint safeFetch(usampler2D tex, ivec2 coord) {
@@ -566,7 +579,11 @@ void main() {
         uint layerIdx = lookupLayer(level, tile);
 
         if (layerIdx != 0xFFFFu) {
-            vec4 texColor = texture(uTilePool, vec3(frac, float(layerIdx)));
+            // Clamp UV to prevent GL_LINEAR filtering from sampling outside tile boundaries.
+            // Half-texel inset prevents bleeding from adjacent tiles in the texture array.
+            const float kHalfTexel = 0.5 / 256.0;
+            vec2 clamped_frac = clamp(frac, kHalfTexel, 1.0 - kHalfTexel);
+            vec4 texColor = texture(uTilePool, vec3(clamped_frac, float(layerIdx)));
             FragColor = vec4((ambient + diffuse) * texColor.rgb, texColor.a);
             return;
         }
