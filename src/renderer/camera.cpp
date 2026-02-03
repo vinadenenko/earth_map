@@ -748,17 +748,14 @@ protected:
 
         glm::vec3 forward = GetForwardVector();
         glm::vec3 right = GetRightVector();
-        glm::vec3 up = GetUpVector();
+        glm::vec3 up_vec = GetUpVector();
 
-        // Convert speed from meters/second to normalized units/second
-        // Camera is in normalized space (radius = 1.0), but constraints are in meters
-        float speed_meters = constraints_.max_movement_speed;  // meters/second
-        float speed_normalized = constants::conversion::MetersToNormalized(speed_meters);
-
-        // Scale movement speed based on altitude (faster when higher, slower when closer to surface)
-        float distance_from_origin = glm::length(position_);
-        float altitude_factor = std::max(0.1f, distance_from_origin - 1.0f);  // Relative to normalized radius
-        float adaptive_speed = speed_normalized * (1.0f + altitude_factor * 2.0f);
+        // Altitude-proportional speed (in normalized units directly).
+        // At altitude 1.0, move 2.0 units/sec (fast traversal)
+        // At altitude 0.01, move 0.02 units/sec (precise control near surface)
+        // Minimum speed ensures movement is always visible
+        float altitude = glm::length(position_) - 1.0f;
+        float speed = std::max(altitude, 0.001f) * 2.0f;
 
         float rot_speed = constraints_.max_rotation_speed;
 
@@ -767,13 +764,13 @@ protected:
 
         // Update position
         if (glm::abs(movement_forward_) > 0.01f) {
-            state.position += forward * movement_forward_ * adaptive_speed * delta_time;
+            state.position += forward * movement_forward_ * speed * delta_time;
         }
         if (glm::abs(movement_right_) > 0.01f) {
-            state.position += right * movement_right_ * adaptive_speed * delta_time;
+            state.position += right * movement_right_ * speed * delta_time;
         }
         if (glm::abs(movement_up_) > 0.01f) {
-            state.position += up * movement_up_ * adaptive_speed * delta_time;
+            state.position += up_vec * movement_up_ * speed * delta_time;
         }
 
         // Update orientation
@@ -944,11 +941,32 @@ protected:
     }
     
     bool HandleMouseScroll(const InputEvent& event) {
-        // Use high-level Zoom API which handles all constraint enforcement.
-        // Positive scroll = zoom in (smaller factor), negative = zoom out (larger factor)
-        constexpr float kZoomRatio = 0.1f;
-        float factor = 1.0f - event.scroll_delta * kZoomRatio;
-        Zoom(factor);
+        // Altitude-proportional zoom: step is a fraction of remaining altitude.
+        // This ensures smooth zoom at all altitudes without overshooting surface.
+        // At high altitude: large steps (responsive)
+        // At low altitude: small steps (precise, never overshoots)
+
+        float distance = glm::length(position_);
+        float altitude = distance - 1.0f;  // Height above surface (normalized units)
+
+        // Zoom step is 30% of remaining altitude
+        constexpr float kZoomFraction = 0.3f;
+        float zoom_step = altitude * kZoomFraction;
+
+        // Positive scroll = zoom in (reduce altitude)
+        float new_altitude = altitude - event.scroll_delta * zoom_step;
+
+        // Clamp to valid range
+        constexpr float kMinAltitude = constants::camera_constraints::MIN_DISTANCE_NORMALIZED - 1.0f;
+        constexpr float kMaxAltitude = constants::camera_constraints::MAX_DISTANCE_NORMALIZED - 1.0f;
+        new_altitude = std::clamp(new_altitude, kMinAltitude, kMaxAltitude);
+
+        float new_distance = 1.0f + new_altitude;
+
+        CameraState state = GetCurrentState();
+        state.position = glm::normalize(state.position) * new_distance;
+        SetFromState(state);
+        UpdateViewMatrix();
         return true;
     }
     
