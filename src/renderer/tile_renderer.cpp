@@ -207,24 +207,34 @@ public:
             }
         }
 
-        // Update indirection window center for windowed zoom levels (13+).
-        // Converts camera position to tile coordinates at the current zoom.
+        // Update indirection window centers for ALL fallback zoom levels (13+).
+        // At high zoom, fallback levels also use windowed mode and need their
+        // window centers kept in sync with the camera position. Without this,
+        // fallback lookups fail because their windows point to stale positions.
         if (texture_coordinator_ && zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom) {
             const glm::vec3 cam_dir = glm::normalize(camera_position);
             const double lon = glm::degrees(std::atan2(
                 static_cast<double>(cam_dir.x), static_cast<double>(cam_dir.z)));
             const double lat = glm::degrees(std::asin(
                 static_cast<double>(cam_dir.y)));
-            const int n = 1 << zoom_level;
-            const int center_x = std::clamp(
-                static_cast<int>(((lon + 180.0) / 360.0) * n), 0, n - 1);
             const double lat_rad = glm::radians(glm::clamp(lat, -85.0511, 85.0511));
-            const int center_y = std::clamp(
-                static_cast<int>(
-                    ((1.0 - std::log(std::tan(M_PI / 4.0 + lat_rad / 2.0)) / M_PI) / 2.0) * n),
-                0, n - 1);
-            texture_coordinator_->UpdateIndirectionWindowCenter(
-                zoom_level, center_x, center_y);
+
+            // Update window centers for current zoom and all fallback levels
+            for (int level = 0; level < kMaxFallbackLevels; ++level) {
+                const int z = zoom_level - level;
+                if (z <= IndirectionTextureManager::kMaxFullIndirectionZoom) {
+                    break;  // Full mode (zoom <= 12), no windowing needed
+                }
+
+                const int tile_n = 1 << z;
+                const int cx = std::clamp(
+                    static_cast<int>(((lon + 180.0) / 360.0) * tile_n), 0, tile_n - 1);
+                const int cy = std::clamp(
+                    static_cast<int>(
+                        ((1.0 - std::log(std::tan(M_PI / 4.0 + lat_rad / 2.0)) / M_PI) / 2.0) * tile_n),
+                    0, tile_n - 1);
+                texture_coordinator_->UpdateIndirectionWindowCenter(z, cx, cy);
+            }
         }
 
         // Request all visible tiles from texture coordinator (idempotent, lock-free)

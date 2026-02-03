@@ -159,7 +159,9 @@ void IndirectionTextureManager::SetTileLayer(
     ZoomTexture& zt = it->second;
 
     if (!IsTileInWindow(zt, coords.x, coords.y)) {
-        return;  // Outside window — silently ignore
+        spdlog::debug("SetTileLayer: tile {} outside window (offset={},{} size={})",
+                      coords.GetKey(), zt.window_offset.x, zt.window_offset.y, zt.width);
+        return;
     }
 
     const glm::ivec2 texel = TileToTexel(zt, coords.x, coords.y);
