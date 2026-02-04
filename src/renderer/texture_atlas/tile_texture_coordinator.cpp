@@ -171,9 +171,6 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
         }
 
         processed_count++;
-        spdlog::info("[UPLOAD] Processing tile {}: {} bytes, {}x{}, {} ch",
-                     cmd->coords.GetKey(), cmd->pixel_data.size(),
-                     cmd->width, cmd->height, static_cast<int>(cmd->channels));
 
         // Upload to tile pool
         int layer = tile_pool_->UploadTile(
@@ -210,9 +207,6 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
         }
 
         if (layer >= 0) {
-            spdlog::info("[UPLOAD] Tile {} uploaded to pool layer {}",
-                        cmd->coords.GetKey(), layer);
-            
             // Update indirection texture
             indirection_manager_->SetTileLayer(
                 cmd->coords,
@@ -244,10 +238,6 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
         if (cmd->on_complete) {
             cmd->on_complete(cmd->coords);
         }
-    }
-    
-    if (processed_count > 0) {
-        spdlog::info("[UPLOAD] Processed {} tiles this frame", processed_count);
     }
 }
 

@@ -387,9 +387,6 @@ public:
             glBindTexture(GL_TEXTURE_2D, indirection_id);
             glUniform1i(uniform_locs_.indirection[level], tex_unit);
             glUniform2i(uniform_locs_.indirection_offset[level], offset.x, offset.y);
-            
-            spdlog::info("[RENDER] Zoom {} indirection offset: ({}, {}), tex_id: {}, unit: {}",
-                        zoom, offset.x, offset.y, indirection_id, tex_unit);
         }
 
         // Render globe mesh with atlas texture
