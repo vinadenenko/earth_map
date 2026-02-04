@@ -148,6 +148,9 @@ glm::ivec2 IndirectionTextureManager::TileToTexel(
 void IndirectionTextureManager::SetTileLayer(
     const TileCoordinates& coords, std::uint16_t layer_index) {
 
+    spdlog::info("[INDIRECTION] SetTileLayer called for {} at zoom {} -> layer {}",
+                 coords.GetKey(), coords.zoom, layer_index);
+
     const int zoom = coords.zoom;
     auto it = zoom_textures_.find(zoom);
 
@@ -159,10 +162,28 @@ void IndirectionTextureManager::SetTileLayer(
     ZoomTexture& zt = it->second;
 
     if (!IsTileInWindow(zt, coords.x, coords.y)) {
-        spdlog::debug("SetTileLayer: tile {} outside window (offset={},{} size={})",
-                      coords.GetKey(), zt.window_offset.x, zt.window_offset.y, zt.width);
-        return;
+        // Tile arrived outside current window - re-center window to include it
+        // This prevents dropping valid tiles when camera moves during download
+        if (zt.windowed) {
+            spdlog::debug("SetTileLayer: tile {} outside window (offset={},{} size={}), re-centering",
+                          coords.GetKey(), zt.window_offset.x, zt.window_offset.y, zt.width);
+            UpdateWindowCenter(zoom, coords.x, coords.y);
+            // After re-centering, tile should be in window
+            if (!IsTileInWindow(zt, coords.x, coords.y)) {
+                spdlog::warn("SetTileLayer: tile {} still outside window after re-center, dropping",
+                             coords.GetKey());
+                return;
+            }
+        } else {
+            // Full mode - tile coordinates out of bounds, something is wrong
+            spdlog::warn("SetTileLayer: tile {} out of bounds for full mode zoom {}",
+                         coords.GetKey(), zoom);
+            return;
+        }
     }
+
+    spdlog::info("[INDIRECTION] Tile {} mapped to texel ({}, {}) in window offset ({}, {})",
+                 coords.GetKey(), coords.x, coords.y, zt.window_offset.x, zt.window_offset.y);
 
     const glm::ivec2 texel = TileToTexel(zt, coords.x, coords.y);
     const std::size_t idx = texel.y * zt.width + texel.x;

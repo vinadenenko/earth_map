@@ -387,6 +387,9 @@ public:
             glBindTexture(GL_TEXTURE_2D, indirection_id);
             glUniform1i(uniform_locs_.indirection[level], tex_unit);
             glUniform2i(uniform_locs_.indirection_offset[level], offset.x, offset.y);
+            
+            spdlog::info("[RENDER] Zoom {} indirection offset: ({}, {}), tex_id: {}, unit: {}",
+                        zoom, offset.x, offset.y, indirection_id, tex_unit);
         }
 
         // Render globe mesh with atlas texture
@@ -568,6 +571,18 @@ uint lookupLayer(int level, ivec2 tile) {
     else                 return safeFetch(uIndirection4, tile - uIndirectionOffset4);
 }
 
+// Diagnostic visualization: shows which fallback level is being used
+// Uncomment to enable (1 = diagnostic mode, 0 = normal rendering)
+const int kDiagnosticMode = 1;
+
+// Fallback level colors (RGB)
+const vec3 kColorLevel0 = vec3(0.0, 1.0, 0.0);  // Green = exact zoom
+const vec3 kColorLevel1 = vec3(1.0, 1.0, 0.0);  // Yellow = parent
+const vec3 kColorLevel2 = vec3(1.0, 0.5, 0.0);  // Orange = grandparent  
+const vec3 kColorLevel3 = vec3(1.0, 0.0, 0.0);  // Red = great-grandparent
+const vec3 kColorLevel4 = vec3(1.0, 0.0, 1.0);  // Magenta = great-great-grandparent
+const vec3 kColorMissing = vec3(0.5, 0.5, 0.5); // Gray = no tile found
+
 void main() {
     float ambientStrength = 0.25;
     vec3 ambient = ambientStrength * uLightColor;
@@ -594,12 +609,27 @@ void main() {
             const float kHalfTexel = 0.5 / 256.0;
             vec2 clamped_frac = clamp(frac, kHalfTexel, 1.0 - kHalfTexel);
             vec4 texColor = texture(uTilePool, vec3(clamped_frac, float(layerIdx)));
-            FragColor = vec4((ambient + diffuse) * texColor.rgb, texColor.a);
+            
+            // Apply diagnostic overlay if enabled
+            vec3 finalColor = (ambient + diffuse) * texColor.rgb;
+            if (kDiagnosticMode == 1) {
+                vec3 diagColor;
+                if (level == 0) diagColor = kColorLevel0;
+                else if (level == 1) diagColor = kColorLevel1;
+                else if (level == 2) diagColor = kColorLevel2;
+                else if (level == 3) diagColor = kColorLevel3;
+                else diagColor = kColorLevel4;
+                
+                // Blend tile color with diagnostic color (50/50 blend)
+                finalColor = mix(finalColor, diagColor, 0.5);
+            }
+            
+            FragColor = vec4(finalColor, texColor.a);
             return;
         }
     }
 
-    vec3 baseColor = vec3(0.85, 0.82, 0.75);
+    vec3 baseColor = kDiagnosticMode == 1 ? kColorMissing : vec3(0.85, 0.82, 0.75);
     FragColor = vec4((ambient + diffuse) * baseColor, 1.0);
 }
 )";
