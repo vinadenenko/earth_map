@@ -400,50 +400,6 @@ TEST_F(TileManagementTest, TileIndexStatistics) {
 }
 
 // Integration Tests
-TEST_F(TileManagementTest, TileManagerIntegration) {
-    // Create components
-    TileCacheConfig cache_config;
-    cache_config.disk_cache_directory = test_dir_.string() + "/integration_cache";
-    auto cache = CreateTileCache(cache_config);
-    ASSERT_TRUE(cache->Initialize(cache_config));
-    
-    TileLoaderConfig loader_config;
-    auto loader = CreateTileLoader(loader_config);
-    ASSERT_TRUE(loader->Initialize(loader_config));
-    auto cache_shared = std::shared_ptr<earth_map::TileCache>(cache.release());
-    loader->SetTileCache(cache_shared);
-    
-    // Test that cache is still valid
-    ASSERT_TRUE(cache_shared != nullptr);
-    
-    TileIndexConfig index_config;
-    auto index = CreateTileIndex(index_config);
-    ASSERT_TRUE(index->Initialize(index_config));
-    
-    TileManagerConfig manager_config;
-    auto manager = CreateTileManager(manager_config);
-    ASSERT_TRUE(manager->Initialize(manager_config));
-    
-    // Test basic workflow
-    TileCoordinates coords = CreateTestTile(100, 200, 10);
-    
-    // Load tile through loader
-    auto load_result = loader->LoadTile(coords);
-    ASSERT_TRUE(load_result.success);
-    
-    // Check it's in cache
-    EXPECT_TRUE(cache_shared->Contains(coords));
-    
-    // Add to index
-    EXPECT_TRUE(index->Insert(coords));
-    EXPECT_TRUE(index->Contains(coords));
-    
-    // Query from index
-    auto index_tiles = index->Query(
-        TileMathematics::GetTileBounds(coords), 10);
-    EXPECT_EQ(index_tiles.size(), 1);
-    EXPECT_EQ(index_tiles[0], coords);
-}
 
 TEST_F(TileManagementTest, ConcurrencyTest) {
     TileCacheConfig config;

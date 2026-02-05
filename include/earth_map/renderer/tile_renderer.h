@@ -101,13 +101,6 @@ public:
      * Finalizes tile rendering
      */
     virtual void EndFrame() = 0;
-    
-    /**
-     * @brief Set tile manager for texture access
-     *
-     * @param tile_manager Pointer to tile manager (non-owning)
-     */
-    virtual void SetTileManager(TileManager* tile_manager) = 0;
 
     /**
      * @brief Set texture coordinator for tile texture management

@@ -186,53 +186,54 @@ LODResult BasicLODManager::CalculateTriangleLOD(
     return result;
 }
 
-LODResult BasicLODManager::CalculateTileLOD(const Tile& tile,
+LODResult BasicLODManager::CalculateTileLOD(const Tile& /*tile*/,
                                             const glm::vec3& /*camera_position*/,
                                             const glm::mat4& /*view_matrix*/,
                                             const glm::mat4& /*projection_matrix*/,
                                             const glm::vec2& /*viewport_size*/) const {
-    LODResult result;
+    // LODResult result;
     
-    // Use pre-calculated screen error from tile manager
-    result.screen_error = tile.screen_error;
+    // // Use pre-calculated screen error from tile manager
+    // result.screen_error = tile.screen_error;
     
-    // Calculate distance from camera to tile center
-    // BoundingBox2D bounds = tile.geographic_bounds; // Unused for now
-    // glm::vec2 tile_center = (bounds.min + bounds.max) * 0.5f; // Unused for now
+    // // Calculate distance from camera to tile center
+    // // BoundingBox2D bounds = tile.geographic_bounds; // Unused for now
+    // // glm::vec2 tile_center = (bounds.min + bounds.max) * 0.5f; // Unused for now
     
-    // Simple distance calculation (should be improved with proper geographic distance)
-    float distance = tile.camera_distance;
+    // // Simple distance calculation (should be improved with proper geographic distance)
+    // float distance = tile.camera_distance;
     
-    // Distance-based LOD
-    std::uint8_t distance_lod = CalculateDistanceBasedLOD(distance);
+    // // Distance-based LOD
+    // std::uint8_t distance_lod = CalculateDistanceBasedLOD(distance);
     
-    // Apply hysteresis
-    result.lod_level = ApplyHysteresis(current_lod_level_, distance_lod);
+    // // Apply hysteresis
+    // result.lod_level = ApplyHysteresis(current_lod_level_, distance_lod);
     
-    // Estimate GPU time (tiles are typically more efficient than individual triangles)
-    std::size_t estimated_triangles = std::pow(2, static_cast<std::size_t>(result.lod_level)) * 2;  // Rough estimate
-    result.gpu_time_ms = EstimateGPUTime(estimated_triangles, estimated_triangles * 3, result.lod_level);
+    // // Estimate GPU time (tiles are typically more efficient than individual triangles)
+    // std::size_t estimated_triangles = std::pow(2, static_cast<std::size_t>(result.lod_level)) * 2;  // Rough estimate
+    // result.gpu_time_ms = EstimateGPUTime(estimated_triangles, estimated_triangles * 3, result.lod_level);
     
-    // Calculate performance impact
-    if (params_.max_gpu_time > 0.0f) {
-        result.performance_impact = result.gpu_time_ms / params_.max_gpu_time;
-    } else {
-        result.performance_impact = 0.0f;
-    }
+    // // Calculate performance impact
+    // if (params_.max_gpu_time > 0.0f) {
+    //     result.performance_impact = result.gpu_time_ms / params_.max_gpu_time;
+    // } else {
+    //     result.performance_impact = 0.0f;
+    // }
     
-    // Check if LOD meets screen error requirements
-    if (result.screen_error <= params_.max_screen_error) {
-        result.valid = true;
-    } else {
-        result.valid = false;
-        // LOD is too coarse, need higher detail
-        result.lod_level = std::max(result.lod_level, static_cast<std::uint8_t>(1));
-    }
+    // // Check if LOD meets screen error requirements
+    // if (result.screen_error <= params_.max_screen_error) {
+    //     result.valid = true;
+    // } else {
+    //     result.valid = false;
+    //     // LOD is too coarse, need higher detail
+    //     result.lod_level = std::max(result.lod_level, static_cast<std::uint8_t>(1));
+    // }
     
-    result.performance_impact = CalculatePerformanceBasedLOD(result.lod_level, 
-                                                        result.performance_impact);
+    // result.performance_impact = CalculatePerformanceBasedLOD(result.lod_level,
+    //                                                     result.performance_impact);
     
-    return result;
+    // return result;
+    return {};
 }
 
 void BasicLODManager::Update() {

@@ -60,7 +60,6 @@ private:
     std::unique_ptr<Renderer> renderer_;      ///< Rendering engine
     std::unique_ptr<SceneManager> scene_manager_; ///< Scene management
     std::unique_ptr<CameraController> camera_controller_; ///< Camera control
-    std::unique_ptr<TileManager> tile_manager_; ///< Tile management
     std::unique_ptr<TileTextureCoordinator> texture_coordinator_; ///< Texture atlas coordinator (new lock-free architecture)
     bool initialized_ = false;                 ///< Initialization status
     bool mini_map_enabled_ = false;            ///< Mini-map display enabled
