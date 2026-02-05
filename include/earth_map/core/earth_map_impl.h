@@ -12,7 +12,6 @@
 #include <earth_map/renderer/renderer.h>
 #include <earth_map/core/scene_manager.h>
 #include <earth_map/core/camera_controller.h>
-#include <earth_map/data/tile_manager.h>
 #include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
 #include <memory>
 

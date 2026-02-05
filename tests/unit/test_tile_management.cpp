@@ -10,7 +10,6 @@
 #include <earth_map/data/tile_cache.h>
 #include <earth_map/data/tile_loader.h>
 #include <earth_map/data/tile_index.h>
-#include <earth_map/data/tile_manager.h>
 #include <memory>
 #include <filesystem>
 #include <spdlog/spdlog.h>

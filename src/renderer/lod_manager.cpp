@@ -5,7 +5,6 @@
 
 #include <earth_map/renderer/lod_manager.h>
 #include <earth_map/renderer/globe_mesh.h>
-#include <earth_map/data/tile_manager.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 #include <cmath>

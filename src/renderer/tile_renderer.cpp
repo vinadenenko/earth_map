@@ -153,8 +153,7 @@ public:
 
     void UpdateVisibleTiles(const glm::mat4& view_matrix,
                         const glm::mat4& projection_matrix,
-                        const glm::vec3& camera_position,
-                        const Frustum& /*frustum*/) override {
+                        const glm::vec3& camera_position) override {
         if (!initialized_) {
             return;
         }

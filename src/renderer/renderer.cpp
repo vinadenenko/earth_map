@@ -256,8 +256,7 @@ public:
     }
     
     void RenderScene(const glm::mat4& view_matrix,
-                    const glm::mat4& projection_matrix,
-                    const Frustum& frustum) override {
+                    const glm::mat4& projection_matrix) override {
         if (!initialized_) {
             return;
         }
@@ -268,7 +267,7 @@ public:
         if (tile_renderer_) {
             tile_renderer_->BeginFrame();
             tile_renderer_->UpdateVisibleTiles(view_matrix, projection_matrix,
-                                                 camera_controller_->GetPosition(), frustum);
+                                                 camera_controller_->GetPosition());
             tile_renderer_->RenderTiles(view_matrix, projection_matrix);
             tile_renderer_->EndFrame();
         } else {
@@ -418,24 +417,21 @@ public:
         // Get view and projection matrices from camera controller
         glm::mat4 view;
         glm::mat4 projection;
-        Frustum frustum;
 
         if (camera_controller_) {
             float aspect_ratio = static_cast<float>(config_.screen_width) / config_.screen_height;
             view = camera_controller_->GetViewMatrix();
             projection = camera_controller_->GetProjectionMatrix(aspect_ratio);
-            frustum = camera_controller_->GetFrustum(aspect_ratio);
         } else {
             // Fallback to simple view and projection if no camera
             view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -3.0f));
             projection = glm::perspective(glm::radians(constants::camera::DEFAULT_FOV),
                                           static_cast<float>(config_.screen_width) / config_.screen_height,
                                           0.1f, 100.0f);
-            frustum = Frustum(projection * view);
         }
 
         spdlog::debug("Renderer::Render() - RenderScene");
-        RenderScene(view, projection, frustum);
+        RenderScene(view, projection);
 
         // Render mini-map overlay
         if (mini_map_enabled_ && mini_map_renderer_ && camera_controller_) {

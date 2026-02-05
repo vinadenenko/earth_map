@@ -3,7 +3,6 @@
 #include <earth_map/renderer/renderer.h>
 #include <earth_map/core/scene_manager.h>
 #include <earth_map/core/camera_controller.h>
-#include <earth_map/data/tile_manager.h>
 #include <earth_map/platform/library_info.h>
 #include <spdlog/spdlog.h>
 #include <stdexcept>

@@ -256,11 +256,6 @@ public:
         return GetProjectionMatrix(aspect_ratio) * GetViewMatrix();
     }
     
-    Frustum GetFrustum(float aspect_ratio) const override {
-        glm::mat4 view_projection = GetViewProjectionMatrix(aspect_ratio);
-        return Frustum(view_projection);
-    }
-    
     void SetProjectionType(CameraProjectionType projection_type) override {
         projection_type_ = projection_type;
     }
