@@ -163,11 +163,14 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
         return;
     }
 
+    int processed_count = 0;
     for (int i = 0; i < max_uploads_per_frame; ++i) {
         auto cmd = upload_queue_->TryPop();
         if (!cmd) {
             break;
         }
+
+        processed_count++;
 
         // Upload to tile pool
         int layer = tile_pool_->UploadTile(

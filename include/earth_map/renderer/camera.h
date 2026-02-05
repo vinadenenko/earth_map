@@ -252,14 +252,6 @@ public:
     virtual glm::mat4 GetViewProjectionMatrix(float aspect_ratio) const = 0;
     
     /**
-     * @brief Get view frustum
-     * 
-     * @param aspect_ratio Viewport aspect ratio (width/height)
-     * @return Frustum Current camera frustum for culling
-     */
-    virtual Frustum GetFrustum(float aspect_ratio) const = 0;
-    
-    /**
      * @brief Set projection type
      * 
      * @param projection_type Camera projection type

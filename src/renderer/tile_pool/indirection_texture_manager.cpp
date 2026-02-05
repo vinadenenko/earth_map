@@ -159,7 +159,13 @@ void IndirectionTextureManager::SetTileLayer(
     ZoomTexture& zt = it->second;
 
     if (!IsTileInWindow(zt, coords.x, coords.y)) {
-        return;  // Outside window — silently ignore
+        // Tile is outside current window. Don't re-center here - that creates a race
+        // condition with UpdateVisibleTiles(). The tile will be re-requested next frame
+        // when UpdateVisibleTiles() has properly positioned the window around the camera.
+        // This is the "camera-only window ownership" architecture pattern.
+        spdlog::debug("SetTileLayer: tile {} outside window (offset={},{} size={}), dropping",
+                      coords.GetKey(), zt.window_offset.x, zt.window_offset.y, zt.width);
+        return;
     }
 
     const glm::ivec2 texel = TileToTexel(zt, coords.x, coords.y);

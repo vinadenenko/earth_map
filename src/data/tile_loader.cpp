@@ -547,7 +547,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
         result.retry_count = attempt;
         
         if (DownloadTile(url, headers, data, status_code)) {
-            spdlog::info("Tile downloaded ok");
+            spdlog::info("Tile downloaded ok: {}", url);
             result.status_code = status_code;
             break;
         }

@@ -9,8 +9,6 @@
  */
 
 #include <earth_map/math/tile_mathematics.h>
-#include <earth_map/data/tile_manager.h>
-#include <earth_map/math/frustum.h>
 #include <glm/glm.hpp>
 #include <memory>
 #include <vector>
@@ -101,13 +99,6 @@ public:
      * Finalizes tile rendering
      */
     virtual void EndFrame() = 0;
-    
-    /**
-     * @brief Set tile manager for texture access
-     *
-     * @param tile_manager Pointer to tile manager (non-owning)
-     */
-    virtual void SetTileManager(TileManager* tile_manager) = 0;
 
     /**
      * @brief Set texture coordinator for tile texture management
@@ -135,9 +126,8 @@ public:
      * @param frustum Current camera frustum for culling
      */
     virtual void UpdateVisibleTiles(const glm::mat4& view_matrix,
-                                const glm::mat4& projection_matrix,
-                                const glm::vec3& camera_position,
-                                const Frustum& frustum) = 0;
+                                    const glm::mat4& projection_matrix,
+                                    const glm::vec3& camera_position) = 0;
     
     /**
      * @brief Render all visible tiles

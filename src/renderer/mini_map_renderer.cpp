@@ -19,48 +19,48 @@ namespace {
 // Helper function to compute ray-sphere intersection
 // Returns the farthest intersection point, or vec3(0) if no intersection
 // For visibility boundary calculation, farthest intersection represents far-side silhouette
-glm::vec3 RaySphereIntersection(const glm::vec3& ray_origin, const glm::vec3& ray_dir,
-                               const glm::vec3& sphere_center, float sphere_radius) {
-    glm::vec3 oc = ray_origin - sphere_center;
-    float a = glm::dot(ray_dir, ray_dir);
-    float b = 2.0f * glm::dot(oc, ray_dir);
-    float c = glm::dot(oc, oc) - sphere_radius * sphere_radius;
-    float discriminant = b * b - 4 * a * c;
+// glm::vec3 RaySphereIntersection(const glm::vec3& ray_origin, const glm::vec3& ray_dir,
+//                                const glm::vec3& sphere_center, float sphere_radius) {
+//     glm::vec3 oc = ray_origin - sphere_center;
+//     float a = glm::dot(ray_dir, ray_dir);
+//     float b = 2.0f * glm::dot(oc, ray_dir);
+//     float c = glm::dot(oc, oc) - sphere_radius * sphere_radius;
+//     float discriminant = b * b - 4 * a * c;
 
-    if (discriminant < 0) {
-        return glm::vec3(0.0f); // No intersection
-    }
+//     if (discriminant < 0) {
+//         return glm::vec3(0.0f); // No intersection
+//     }
 
-    // Use farthest intersection for visibility boundary (far-side silhouette)
-    float t = (-b + std::sqrt(discriminant)) / (2.0f * a);
-    if (t < 0) {
-        return glm::vec3(0.0f); // Intersection behind ray
-    }
+//     // Use farthest intersection for visibility boundary (far-side silhouette)
+//     float t = (-b + std::sqrt(discriminant)) / (2.0f * a);
+//     if (t < 0) {
+//         return glm::vec3(0.0f); // Intersection behind ray
+//     }
 
-    return ray_origin + t * ray_dir;
-}
+//     return ray_origin + t * ray_dir;
+// }
 
-// Convert world position to mini-map UV coordinates (equirectangular projection)
-glm::vec2 WorldToUV(const glm::vec3& world_pos) {
-    // Use CoordinateMapper for consistent geographic conversion (matches main globe)
-    // Create World and Geographic objects directly with manual math matching CoordinateMapper
-    glm::vec3 normalized = glm::normalize(world_pos);
+// // Convert world position to mini-map UV coordinates (equirectangular projection)
+// glm::vec2 WorldToUV(const glm::vec3& world_pos) {
+//     // Use CoordinateMapper for consistent geographic conversion (matches main globe)
+//     // Create World and Geographic objects directly with manual math matching CoordinateMapper
+//     glm::vec3 normalized = glm::normalize(world_pos);
 
-    // Use same conversion as CoordinateMapper::CartesianToGeographic
-    // lat = asin(y), lon = atan2(x, z) - Y is up, longitude 0° at +Z axis
-    double lat_rad = std::asin(std::clamp(normalized.y, -1.0f, 1.0f));
-    double lon_rad = std::atan2(normalized.x, normalized.z);
+//     // Use same conversion as CoordinateMapper::CartesianToGeographic
+//     // lat = asin(y), lon = atan2(x, z) - Y is up, longitude 0° at +Z axis
+//     double lat_rad = std::asin(std::clamp(normalized.y, -1.0f, 1.0f));
+//     double lon_rad = std::atan2(normalized.x, normalized.z);
 
-    double lat_deg = glm::degrees(lat_rad);
-    double lon_deg = glm::degrees(lon_rad);
+//     double lat_deg = glm::degrees(lat_rad);
+//     double lon_deg = glm::degrees(lon_rad);
 
-    // Convert to UV (0-1 range) - longitude from -180 to 180, latitude from -90 to 90
-    // Earth texture has north at top (V=1), south at bottom (V=0)
-    float u = (lon_deg / 360.0f + 0.5f); // Lon -180 to 180 -> U 0 to 1
-    float v = (lat_deg / 180.0f + 0.5f);  // Lat -90 to 90 -> V 0 to 1 (north at top)
+//     // Convert to UV (0-1 range) - longitude from -180 to 180, latitude from -90 to 90
+//     // Earth texture has north at top (V=1), south at bottom (V=0)
+//     float u = (lon_deg / 360.0f + 0.5f); // Lon -180 to 180 -> U 0 to 1
+//     float v = (lat_deg / 180.0f + 0.5f);  // Lat -90 to 90 -> V 0 to 1 (north at top)
 
-    return glm::vec2(u, v);
-}
+//     return glm::vec2(u, v);
+// }
 
 }
 
@@ -419,76 +419,76 @@ void MiniMapRenderer::RenderCameraPosition() {
     glDeleteVertexArrays(1, &temp_vao);
 }
 
-void MiniMapRenderer::RenderFrustum(float aspect_ratio) {
-    if (!camera_controller_) return;
+void MiniMapRenderer::RenderFrustum(float /*aspect_ratio*/) {
+    // if (!camera_controller_) return;
 
-    // Get camera frustum
-    Frustum frustum = camera_controller_->GetFrustum(aspect_ratio);
-    float near_plane = camera_controller_->GetNearPlane();
-    float far_plane = camera_controller_->GetFarPlane();
+    // // Get camera frustum
+    // Frustum frustum = camera_controller_->GetFrustum(aspect_ratio);
+    // float near_plane = camera_controller_->GetNearPlane();
+    // float far_plane = camera_controller_->GetFarPlane();
 
-    // Get frustum corners
-    auto corners = frustum.GetCorners(near_plane, far_plane);
-    glm::vec3 camera_pos = camera_controller_->GetPosition();
+    // // Get frustum corners
+    // auto corners = frustum.GetCorners(near_plane, far_plane);
+    // glm::vec3 camera_pos = camera_controller_->GetPosition();
 
-    // Far plane corners are indices 4-7
-    std::vector<glm::vec3> frustum_intersections;
+    // // Far plane corners are indices 4-7
+    // std::vector<glm::vec3> frustum_intersections;
 
-    // For each far corner, compute ray intersection with Earth
-    for (int i = 4; i < 8; ++i) {
-        glm::vec3 corner = corners[i];
-        glm::vec3 ray_dir = glm::normalize(corner - camera_pos);
-        glm::vec3 intersection = RaySphereIntersection(camera_pos, ray_dir, glm::vec3(0.0f), 1.0f);
+    // // For each far corner, compute ray intersection with Earth
+    // for (int i = 4; i < 8; ++i) {
+    //     glm::vec3 corner = corners[i];
+    //     glm::vec3 ray_dir = glm::normalize(corner - camera_pos);
+    //     glm::vec3 intersection = RaySphereIntersection(camera_pos, ray_dir, glm::vec3(0.0f), 1.0f);
 
-        if (glm::length(intersection) > 0.0f) {
-            frustum_intersections.push_back(intersection);
-        }
-    }
+    //     if (glm::length(intersection) > 0.0f) {
+    //         frustum_intersections.push_back(intersection);
+    //     }
+    // }
 
-    if (frustum_intersections.size() < 3) return; // Not enough points for rendering
+    // if (frustum_intersections.size() < 3) return; // Not enough points for rendering
 
-    // Render trapezoid outline connecting frustum intersections
-    if (frustum_intersections.size() >= 4) {
-        glUseProgram(shader_program_);
-        glUniform4f(glGetUniformLocation(shader_program_, "uColor"), 1.0f, 1.0f, 1.0f, 1.0f); // White lines
-        glUniform1i(glGetUniformLocation(shader_program_, "uUseTexture"), 0);
-        glBindTexture(GL_TEXTURE_2D, 0);
+    // // Render trapezoid outline connecting frustum intersections
+    // if (frustum_intersections.size() >= 4) {
+    //     glUseProgram(shader_program_);
+    //     glUniform4f(glGetUniformLocation(shader_program_, "uColor"), 1.0f, 1.0f, 1.0f, 1.0f); // White lines
+    //     glUniform1i(glGetUniformLocation(shader_program_, "uUseTexture"), 0);
+    //     glBindTexture(GL_TEXTURE_2D, 0);
 
-        // Set up orthographic projection (same as globe)
-        glm::mat4 projection = glm::ortho(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f);
-        glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uProjection"), 1, GL_FALSE, glm::value_ptr(projection));
+    //     // Set up orthographic projection (same as globe)
+    //     glm::mat4 projection = glm::ortho(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f);
+    //     glUniformMatrix4fv(glGetUniformLocation(shader_program_, "uProjection"), 1, GL_FALSE, glm::value_ptr(projection));
 
-        // Create trapezoid by connecting the 4 intersection points
-        std::vector<float> trapezoid_vertices;
-        for (size_t i = 0; i < frustum_intersections.size(); ++i) {
-            glm::vec2 uv1 = WorldToUV(frustum_intersections[i]);
-            glm::vec2 uv2 = WorldToUV(frustum_intersections[(i + 1) % frustum_intersections.size()]);
+    //     // Create trapezoid by connecting the 4 intersection points
+    //     std::vector<float> trapezoid_vertices;
+    //     for (size_t i = 0; i < frustum_intersections.size(); ++i) {
+    //         glm::vec2 uv1 = WorldToUV(frustum_intersections[i]);
+    //         glm::vec2 uv2 = WorldToUV(frustum_intersections[(i + 1) % frustum_intersections.size()]);
 
-            // Convert UV to NDC (-1 to 1)
-            float x1 = 2.0f * uv1.x - 1.0f;
-            float y1 = 2.0f * uv1.y - 1.0f;
-            float x2 = 2.0f * uv2.x - 1.0f;
-            float y2 = 2.0f * uv2.y - 1.0f;
+    //         // Convert UV to NDC (-1 to 1)
+    //         float x1 = 2.0f * uv1.x - 1.0f;
+    //         float y1 = 2.0f * uv1.y - 1.0f;
+    //         float x2 = 2.0f * uv2.x - 1.0f;
+    //         float y2 = 2.0f * uv2.y - 1.0f;
 
-            trapezoid_vertices.insert(trapezoid_vertices.end(), {x1, y1, 0.0f, x2, y2, 0.0f});
-        }
+    //         trapezoid_vertices.insert(trapezoid_vertices.end(), {x1, y1, 0.0f, x2, y2, 0.0f});
+    //     }
 
-        // Render trapezoid outline
-        GLuint temp_vao, temp_vbo;
-        glGenVertexArrays(1, &temp_vao);
-        glGenBuffers(1, &temp_vbo);
+    //     // Render trapezoid outline
+    //     GLuint temp_vao, temp_vbo;
+    //     glGenVertexArrays(1, &temp_vao);
+    //     glGenBuffers(1, &temp_vbo);
 
-        glBindVertexArray(temp_vao);
-        glBindBuffer(GL_ARRAY_BUFFER, temp_vbo);
-        glBufferData(GL_ARRAY_BUFFER, trapezoid_vertices.size() * sizeof(float), trapezoid_vertices.data(), GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-        glEnableVertexAttribArray(0);
+    //     glBindVertexArray(temp_vao);
+    //     glBindBuffer(GL_ARRAY_BUFFER, temp_vbo);
+    //     glBufferData(GL_ARRAY_BUFFER, trapezoid_vertices.size() * sizeof(float), trapezoid_vertices.data(), GL_STATIC_DRAW);
+    //     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+    //     glEnableVertexAttribArray(0);
 
-        glDrawArrays(GL_LINES, 0, trapezoid_vertices.size() / 3);
+    //     glDrawArrays(GL_LINES, 0, trapezoid_vertices.size() / 3);
 
-        glDeleteBuffers(1, &temp_vbo);
-        glDeleteVertexArrays(1, &temp_vao);
-    }
+    //     glDeleteBuffers(1, &temp_vbo);
+    //     glDeleteVertexArrays(1, &temp_vao);
+    // }
 }
 
 glm::vec2 MiniMapRenderer::LatLonToPixel(float latitude, float longitude) const {
