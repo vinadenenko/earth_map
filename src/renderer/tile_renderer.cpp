@@ -158,7 +158,7 @@ public:
     void UpdateVisibleTiles(const glm::mat4& view_matrix,
                         const glm::mat4& projection_matrix,
                         const glm::vec3& camera_position,
-                        const Frustum& frustum) override {
+                        const Frustum& /*frustum*/) override {
         if (!initialized_ || !tile_manager_) {
             return;
         }
@@ -188,7 +188,7 @@ public:
                 }
             }
         } else {
-            // At higher zoom, use visibility bounds and frustum culling
+            // At higher zoom, use visibility bounds from ray-cast geographic projection
             const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
                 camera_position, view_matrix, projection_matrix);
             const std::vector<TileCoordinates> candidate_tiles =
@@ -199,11 +199,12 @@ public:
             const std::size_t max_tiles_for_frame =
                 static_cast<std::size_t>(config_.max_visible_tiles);
 
-            for (const TileCoordinates& tile_coords : candidate_tiles) {
-                if (visible_tile_coords.size() >= max_tiles_for_frame) break;
-                if (IsTileInFrustum(tile_coords, frustum)) {
-                    visible_tile_coords.push_back(tile_coords);
-                }
+            if (candidate_tiles.size() <= max_tiles_for_frame) {
+                visible_tile_coords = candidate_tiles;
+            } else {
+                visible_tile_coords.assign(
+                    candidate_tiles.begin(),
+                    candidate_tiles.begin() + max_tiles_for_frame);
             }
         }
 
@@ -212,21 +213,12 @@ public:
         // the camera was at those zoom levels. Updating fallback windows with current
         // camera position would clear their tiles (if shift > 512), causing GRAY areas.
         if (texture_coordinator_ && zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom) {
-            const glm::vec3 cam_dir = glm::normalize(camera_position);
-            const double lon = glm::degrees(std::atan2(
-                static_cast<double>(cam_dir.x), static_cast<double>(cam_dir.z)));
-            const double lat = glm::degrees(std::asin(
-                static_cast<double>(cam_dir.y)));
-            const double lat_rad = glm::radians(glm::clamp(lat, -85.0511, 85.0511));
-
-            const int tile_n = 1 << zoom_level;
-            const int cx = std::clamp(
-                static_cast<int>(((lon + 180.0) / 360.0) * tile_n), 0, tile_n - 1);
-            const int cy = std::clamp(
-                static_cast<int>(
-                    ((1.0 - std::log(std::tan(M_PI / 4.0 + lat_rad / 2.0)) / M_PI) / 2.0) * tile_n),
-                0, tile_n - 1);
-            texture_coordinator_->UpdateIndirectionWindowCenter(zoom_level, cx, cy);
+            const coordinates::Geographic cam_geo =
+                coordinates::CoordinateMapper::CartesianToGeographic(camera_position);
+            const TileCoordinates center_tile =
+                coordinates::CoordinateMapper::GeographicToSphericalTile(cam_geo, zoom_level);
+            texture_coordinator_->UpdateIndirectionWindowCenter(
+                zoom_level, center_tile.x, center_tile.y);
         }
 
         // Request all visible tiles from texture coordinator (idempotent, lock-free)
@@ -830,32 +822,6 @@ void main() {
 
         // return BoundingBox2D(reduced_min, reduced_max);
         return BoundingBox2D(min, max);
-    }
-    
-    bool IsTileInFrustum(const TileCoordinates& tile, const Frustum& frustum) const {
-        // Calculate tile's geographic bounds
-        const BoundingBox2D bounds = TileMathematics::GetTileBounds(tile);
-        const glm::dvec2 center = bounds.GetCenter();
-
-        // Convert tile center to 3D position on unit sphere
-        const double lon_rad = glm::radians(center.x);
-        const double lat_rad = glm::radians(center.y);
-
-        // Calculate 3D position on unit sphere (Earth radius = 1.0)
-        const glm::vec3 tile_center = glm::vec3(
-            static_cast<float>(std::cos(lat_rad) * std::sin(lon_rad)),
-            static_cast<float>(std::sin(lat_rad)),
-            static_cast<float>(std::cos(lat_rad) * std::cos(lon_rad))
-        );
-
-        // Estimate tile radius on sphere surface based on zoom level
-        // Higher zoom = smaller tiles = smaller bounding sphere
-        // At zoom 0, tile covers 180 degrees, at zoom n, tile covers 180/2^n degrees
-        const float tile_angular_size = 180.0f / static_cast<float>(1 << tile.zoom);
-        const float tile_radius = glm::radians(tile_angular_size) * 0.5f;  // Half the angular size
-
-        // Use frustum sphere intersection test
-        return frustum.Intersects(tile_center, tile_radius);
     }
     
     float CalculateTileLOD(const TileCoordinates& tile, float /*camera_distance*/) const {
