@@ -207,13 +207,33 @@ public:
         // Fallback levels keep their existing windows - their tiles were loaded when
         // the camera was at those zoom levels. Updating fallback windows with current
         // camera position would clear their tiles (if shift > 512), causing GRAY areas.
-        if (texture_coordinator_ && zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom) {
-            const coordinates::Geographic cam_geo =
-                coordinates::CoordinateMapper::CartesianToGeographic(camera_position);
-            const TileCoordinates center_tile =
-                coordinates::CoordinateMapper::GeographicToSphericalTile(cam_geo, zoom_level);
+        //
+        // Center on the midpoint of the actual visible tile range, NOT the camera
+        // nadir. Web Mercator tile coordinates are nonlinear in latitude: the
+        // poleward side of a geographically-symmetric viewport maps to MORE tiles
+        // than the equatorward side. Using the nadir (angular center) as window
+        // center causes the poleward edge to exceed the 512-tile window, silently
+        // dropping those tiles in SetTileLayer().
+        if (texture_coordinator_ && zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom
+            && !visible_tile_coords.empty()) {
+
+            int32_t min_x = visible_tile_coords[0].x;
+            int32_t max_x = visible_tile_coords[0].x;
+            int32_t min_y = visible_tile_coords[0].y;
+            int32_t max_y = visible_tile_coords[0].y;
+
+            for (const auto& tc : visible_tile_coords) {
+                min_x = std::min(min_x, tc.x);
+                max_x = std::max(max_x, tc.x);
+                min_y = std::min(min_y, tc.y);
+                max_y = std::max(max_y, tc.y);
+            }
+
+            const int32_t center_x = (min_x + max_x) / 2;
+            const int32_t center_y = (min_y + max_y) / 2;
+
             texture_coordinator_->UpdateIndirectionWindowCenter(
-                zoom_level, center_tile.x, center_tile.y);
+                zoom_level, center_x, center_y);
         }
 
         // Request all visible tiles from texture coordinator (idempotent, lock-free)

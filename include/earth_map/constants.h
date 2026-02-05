@@ -75,7 +75,7 @@ namespace rendering {
     constexpr float NORMALIZED_GLOBE_RADIUS = 1.0f;
 
     /// Default subdivision level for globe mesh
-    constexpr int DEFAULT_GLOBE_SUBDIVISION = 6;
+    constexpr int DEFAULT_GLOBE_SUBDIVISION = 4;
 
     /// Maximum subdivision level for adaptive LOD
     constexpr int MAX_GLOBE_SUBDIVISION = 8;
