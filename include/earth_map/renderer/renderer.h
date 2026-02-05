@@ -117,8 +117,7 @@ public:
      * @param frustum Camera frustum for culling
      */
     virtual void RenderScene(const glm::mat4& view_matrix,
-                           const glm::mat4& projection_matrix,
-                           const Frustum& frustum) = 0;
+                             const glm::mat4& projection_matrix) = 0;
     
     /**
      * @brief Resize the rendering viewport
