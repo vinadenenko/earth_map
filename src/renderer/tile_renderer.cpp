@@ -153,7 +153,7 @@ public:
 
     void UpdateVisibleTiles(const glm::mat4& view_matrix,
                         const glm::mat4& projection_matrix,
-                        const glm::vec3& camera_position) override {
+                        const glm::vec3& /*camera_position*/) override {
         if (!initialized_) {
             return;
         }
@@ -161,8 +161,11 @@ public:
         // Clear previous visible tiles
         visible_tiles_.clear();
 
-        // Calculate camera distance from globe center
-        const float camera_distance = glm::length(camera_position);
+        // The submitted view matrix defines the camera for both CPU
+        // selection and the shader. Do not accept a second camera transform.
+        const glm::vec3 canonical_camera_position =
+            glm::vec3(glm::inverse(view_matrix)[3]);
+        const float camera_distance = glm::length(canonical_camera_position);
 
         // Estimate optimal zoom level based on distance
         const int zoom_level = CalculateOptimalZoom(camera_distance);
@@ -185,11 +188,9 @@ public:
         } else {
             // At higher zoom, use visibility bounds from ray-cast geographic projection
             const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
-                camera_position, view_matrix, projection_matrix);
+                canonical_camera_position, view_matrix, projection_matrix);
             const std::vector<TileCoordinates> candidate_tiles = TileMathematics::GetTilesInBounds(visible_bounds, zoom_level);
 
-
-            spdlog::info("Tag. Candidate tiles: {} with n = {} and zoom level = {}", candidate_tiles.size(), n, zoom_level);
 
             const std::size_t max_tiles_for_frame =
                 static_cast<std::size_t>(config_.max_visible_tiles);
@@ -209,7 +210,7 @@ public:
         // camera position would clear their tiles (if shift > 512), causing GRAY areas.
         if (texture_coordinator_ && zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom) {
             const coordinates::Geographic cam_geo =
-                coordinates::CoordinateMapper::CartesianToGeographic(camera_position);
+                coordinates::CoordinateMapper::CartesianToGeographic(canonical_camera_position);
             const TileCoordinates center_tile =
                 coordinates::CoordinateMapper::GeographicToSphericalTile(cam_geo, zoom_level);
             texture_coordinator_->UpdateIndirectionWindowCenter(
@@ -230,7 +231,8 @@ public:
                 tile_state.geographic_bounds = TileMathematics::GetTileBounds(tile_coords);
                 tile_state.lod_level = CalculateTileLOD(tile_coords, camera_distance);
                 tile_state.last_used = static_cast<float>(frame_counter_);
-                tile_state.load_priority = CalculateLoadPriority(tile_coords, camera_position);
+                tile_state.load_priority = CalculateLoadPriority(
+                    tile_coords, canonical_camera_position);
                 tile_state.is_visible = true;
 
                 // Get UV coordinates and ready state from coordinator
@@ -316,6 +318,26 @@ public:
         glUniformMatrix4fv(uniform_locs_.view, 1, GL_FALSE, glm::value_ptr(view_matrix));
         glUniformMatrix4fv(uniform_locs_.projection, 1, GL_FALSE, glm::value_ptr(projection_matrix));
         glUniformMatrix4fv(uniform_locs_.model, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
+
+        const glm::vec3 canonical_camera_position =
+            glm::vec3(glm::inverse(view_matrix)[3]);
+        const glm::mat3 camera_to_world = glm::mat3(glm::inverse(view_matrix));
+        const glm::vec2 projection_scale(projection_matrix[0][0],
+                                         projection_matrix[1][1]);
+        const float ray_sphere_c =
+            glm::dot(canonical_camera_position, canonical_camera_position) - 1.0f;
+        GLint viewport[4] = {0, 0, 0, 0};
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        glUniform3f(uniform_locs_.camera_position,
+                    canonical_camera_position.x, canonical_camera_position.y,
+                    canonical_camera_position.z);
+        glUniformMatrix3fv(uniform_locs_.camera_to_world, 1, GL_FALSE,
+                           glm::value_ptr(camera_to_world));
+        glUniform2f(uniform_locs_.projection_scale,
+                    projection_scale.x, projection_scale.y);
+        glUniform1f(uniform_locs_.ray_sphere_c, ray_sphere_c);
+        glUniform4i(uniform_locs_.viewport,
+                    viewport[0], viewport[1], viewport[2], viewport[3]);
 
         // Set lighting uniforms
         glUniform3f(uniform_locs_.light_pos, kDefaultLightPosition.x, kDefaultLightPosition.y, kDefaultLightPosition.z);
@@ -441,6 +463,11 @@ private:
         GLint view = -1;
         GLint projection = -1;
         GLint model = -1;
+        GLint camera_position = -1;
+        GLint camera_to_world = -1;
+        GLint projection_scale = -1;
+        GLint ray_sphere_c = -1;
+        GLint viewport = -1;
         GLint light_pos = -1;
         GLint light_color = -1;
         GLint zoom_level = -1;
@@ -499,25 +526,47 @@ uniform ivec2 uIndirectionOffset1;
 uniform ivec2 uIndirectionOffset2;
 uniform ivec2 uIndirectionOffset3;
 uniform ivec2 uIndirectionOffset4;
+uniform vec3 uCameraPosition;
+uniform mat3 uCameraToWorld;
+uniform vec2 uProjectionScale;
+uniform float uRaySphereC;
+uniform ivec4 uViewport;
 uniform vec3 uLightPos;
 uniform vec3 uLightColor;
 
-vec2 worldToGeo(vec3 pos) {
-    const float PI = 3.14159265358979323846;
-    vec3 n = normalize(pos);
-    return vec2(atan(n.x, n.z) * 180.0 / PI,
-                asin(n.y) * 180.0 / PI);
+bool canonicalSurfacePoint(out vec3 point) {
+    vec2 viewportSize = vec2(uViewport.z, uViewport.w);
+    vec2 viewportOrigin = vec2(uViewport.x, uViewport.y);
+    vec2 ndc = ((gl_FragCoord.xy - viewportOrigin) / viewportSize) * 2.0 - 1.0;
+    vec3 cameraRay = vec3(ndc / uProjectionScale, -1.0);
+    vec3 rayDirection = normalize(uCameraToWorld * cameraRay);
+    float halfB = dot(uCameraPosition, rayDirection);
+    float discriminant = halfB * halfB - uRaySphereC;
+    if (discriminant < 0.0) return false;
+
+    float root = sqrt(discriminant);
+    float farT = -halfB + root;
+    float nearT = abs(farT) > 1e-8 ? uRaySphereC / farT : -halfB - root;
+    float t = nearT > 0.0 ? nearT : farT;
+    if (t <= 0.0) return false;
+
+    point = uCameraPosition + t * rayDirection;
+    return true;
 }
 
-void geoToTileAndFrac(vec2 geo, int zoom, out ivec2 tile, out vec2 frac) {
+void surfaceToTileAndFrac(vec3 point, int zoom, out ivec2 tile, out vec2 frac) {
     const float PI = 3.14159265358979323846;
-
-    // Compute normalized coordinates (0-1 range) first to preserve precision.
-    // Scaling by n happens last to avoid large intermediate float values
-    // that lose precision at high zoom levels (n = 524288 at zoom 19).
-    float norm_x = (geo.x + 180.0) / 360.0;
-    float lat_rad = clamp(geo.y, -85.0511, 85.0511) * PI / 180.0;
-    float norm_y = (1.0 - log(tan(PI / 4.0 + lat_rad / 2.0)) / PI) / 2.0;
+    // The canonical map surface is the unit sphere hit by the view ray, not
+    // the interpolated icosphere triangle. For a unit sphere, sin(latitude)
+    // is point.y and Web Mercator can be evaluated directly as atanh(y).
+    // This removes the latitude -> degrees -> radians rounding chain.
+    const float maxMercatorSinLatitude = 0.9962721;
+    float norm_x = (atan(point.x, point.z) / PI + 1.0) * 0.5;
+    float sinLatitude = clamp(point.y,
+                              -maxMercatorSinLatitude,
+                              maxMercatorSinLatitude);
+    float norm_y = (1.0 - 0.5 * log((1.0 + sinLatitude) /
+                                    (1.0 - sinLatitude)) / PI) * 0.5;
 
     // Scale by tile count at this zoom level
     int n = 1 << zoom;
@@ -566,7 +615,12 @@ void main() {
     float diff = max(dot(norm, lightDir), 0.0);
     vec3 diffuse = diff * uLightColor;
 
-    vec2 geo = worldToGeo(FragPos);
+    vec3 surfacePoint;
+    if (!canonicalSurfacePoint(surfacePoint)) {
+        // A valid globe pixel has a forward ray/sphere hit. Retain a safe
+        // fallback only for malformed camera state.
+        surfacePoint = normalize(FragPos);
+    }
 
     for (int level = 0; level < uNumFallbackLevels; level++) {
         int zoom = uZoomLevel - level;
@@ -574,7 +628,7 @@ void main() {
 
         ivec2 tile;
         vec2 frac;
-        geoToTileAndFrac(geo, zoom, tile, frac);
+        surfaceToTileAndFrac(surfacePoint, zoom, tile, frac);
 
         uint layerIdx = lookupLayer(level, tile);
 
@@ -622,6 +676,15 @@ void main() {
         uniform_locs_.view = glGetUniformLocation(tile_shader_program_, "uView");
         uniform_locs_.projection = glGetUniformLocation(tile_shader_program_, "uProjection");
         uniform_locs_.model = glGetUniformLocation(tile_shader_program_, "uModel");
+        uniform_locs_.camera_position =
+            glGetUniformLocation(tile_shader_program_, "uCameraPosition");
+        uniform_locs_.camera_to_world =
+            glGetUniformLocation(tile_shader_program_, "uCameraToWorld");
+        uniform_locs_.projection_scale =
+            glGetUniformLocation(tile_shader_program_, "uProjectionScale");
+        uniform_locs_.ray_sphere_c =
+            glGetUniformLocation(tile_shader_program_, "uRaySphereC");
+        uniform_locs_.viewport = glGetUniformLocation(tile_shader_program_, "uViewport");
         uniform_locs_.light_pos = glGetUniformLocation(tile_shader_program_, "uLightPos");
         uniform_locs_.light_color = glGetUniformLocation(tile_shader_program_, "uLightColor");
         uniform_locs_.zoom_level = glGetUniformLocation(tile_shader_program_, "uZoomLevel");
@@ -778,7 +841,6 @@ void main() {
         // matching the tile pyramid where each level doubles tile count.
         const float zoom = std::log2(kZoomAltitudeScale / altitude);
 
-        spdlog::info("Tag. Picked zoom: {} for camera distance: {}", zoom, camera_distance);
         return std::clamp(static_cast<int>(zoom), kMinZoom, kMaxZoom);
     }
 

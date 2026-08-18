@@ -56,7 +56,7 @@ public:
      *
      * @param geo Geographic coordinates (lat, lon, alt)
      * @param radius Globe radius in world units (default: 1.0)
-     * @return 3D position on sphere surface
+     * @return 3D position at the requested altitude above the sphere surface
      */
     [[nodiscard]] static World GeographicToWorld(const Geographic& geo,
                                                   float radius = 1.0f) noexcept;
@@ -65,7 +65,7 @@ public:
      * @brief Convert 3D world position to geographic coordinates
      *
      * Projects position onto sphere and calculates lat/lon.
-     * Altitude is set to distance from sphere surface.
+     * Altitude is returned in metres above the sphere surface.
      *
      * @param world Position in world space
      * @param radius Globe radius (default: 1.0)
@@ -282,7 +282,8 @@ public:
     /**
      * @brief Convert geographic to Cartesian coordinates (low-level)
      *
-     * Converts lat/lon to 3D Cartesian coordinates using spherical coordinate system.
+     * Converts lat/lon and metre altitude to 3D Cartesian coordinates using
+     * the normalized spherical coordinate system.
      *
      * @param geo Geographic coordinates (lat, lon, altitude)
      * @param radius Sphere radius (default: 1.0 for normalized coordinates)

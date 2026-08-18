@@ -4,6 +4,7 @@
  */
 
 #include "../../include/earth_map/coordinates/coordinate_mapper.h"
+#include "../../include/earth_map/constants.h"
 #include "../../include/earth_map/math/projection.h"
 #include "../../include/earth_map/math/tile_mathematics.h"
 #include <glm/gtc/matrix_transform.hpp>
@@ -33,9 +34,11 @@ Geographic CoordinateMapper::WorldToGeographic(const World& world, float radius)
 
     Geographic geo = CartesianToGeographic(on_surface);
 
-    // Calculate altitude as distance from sphere surface
+    // Geographic altitude is expressed in metres; world coordinates are
+    // normalized to a unit-radius globe.
     float actual_distance = world.Distance();
-    geo.altitude = static_cast<double>(actual_distance - radius);
+    geo.altitude = static_cast<double>(
+        constants::conversion::NormalizedToMeters(actual_distance - radius));
 
     return geo;
 }
@@ -357,26 +360,31 @@ GeographicBounds CoordinateMapper::CalculateVisibleGeographicBounds(
         }
         ray_dir /= ray_length;  // Normalize
 
-        // Ray-sphere intersection using quadratic formula
-        // Ray: P = camera_pos + t * ray_dir
-        // Sphere: |P|² = globe_radius²
-        // Expand: |camera_pos + t * ray_dir|² = globe_radius²
-        const float a = 1.0f;  // glm::dot(ray_dir, ray_dir) = 1.0 (normalized)
-        const float b = 2.0f * glm::dot(camera_pos, ray_dir);
+        // Same half-b form as the render shader. The common
+        // (-b - sqrt(discriminant)) / 2 expression loses the near hit when
+        // the camera is close to the sphere, which becomes visible as a
+        // systematic Web-Mercator Y drift at high zoom.
+        const float half_b = glm::dot(camera_pos, ray_dir);
         const float c = glm::dot(camera_pos, camera_pos) - globe_radius * globe_radius;
-        const float discriminant = b * b - 4.0f * a * c;
+        const float discriminant = half_b * half_b - c;
 
         if (discriminant >= 0.0f) {
-            // Take the nearest intersection (smaller t, in front of camera)
-            const float sqrt_discriminant = std::sqrt(discriminant);
-            const float t1 = (-b - sqrt_discriminant) / (2.0f * a);
-            const float t2 = (-b + sqrt_discriminant) / (2.0f * a);
-
-            // Use the nearest positive t (intersection in front of camera)
-            float t = (t1 > 0.0f) ? t1 : t2;
+            const float root = std::sqrt(discriminant);
+            const float far_t = -half_b + root;
+            const float near_t = std::abs(far_t) > 1e-8f
+                ? c / far_t
+                : -half_b - root;
+            const float t = near_t > 0.0f ? near_t : far_t;
             if (t > 0.0f) {
                 glm::vec3 intersection = camera_pos + t * ray_dir;
-                Geographic geo = CartesianToGeographic(intersection);
+                // `intersection` is already on the canonical unit sphere.
+                // Do not normalize it again: the GPU uses this same surface
+                // coordinate directly for its Web-Mercator Y calculation.
+                const double latitude = glm::degrees(
+                    std::asin(std::clamp(intersection.y, -1.0f, 1.0f)));
+                const double longitude = glm::degrees(
+                    std::atan2(intersection.x, intersection.z));
+                Geographic geo(latitude, longitude, 0.0);
 
                 // Update bounds
                 min_lat = std::min(min_lat, geo.latitude);
@@ -438,11 +446,17 @@ glm::vec3 CoordinateMapper::GeographicToCartesian(const Geographic& geo, float r
     double lat_rad = glm::radians(geo.latitude);
     double lon_rad = glm::radians(geo.longitude);
 
+    // Geographic altitude is in metres, while world space uses a unit-radius
+    // globe.  Apply it radially before the spherical conversion so every
+    // Geographic -> World path uses the same length scale as the camera.
+    const float world_radius = radius + constants::conversion::MetersToNormalized(
+        static_cast<float>(geo.altitude));
+
     // Spherical to Cartesian conversion
     // Convention: lon=0° → +Z, lon=90°E → +X, lat=90°N → +Y
-    float x = radius * static_cast<float>(std::cos(lat_rad) * std::sin(lon_rad));
-    float y = radius * static_cast<float>(std::sin(lat_rad));
-    float z = radius * static_cast<float>(std::cos(lat_rad) * std::cos(lon_rad));
+    float x = world_radius * static_cast<float>(std::cos(lat_rad) * std::sin(lon_rad));
+    float y = world_radius * static_cast<float>(std::sin(lat_rad));
+    float z = world_radius * static_cast<float>(std::cos(lat_rad) * std::cos(lon_rad));
 
     return glm::vec3(x, y, z);
 }
