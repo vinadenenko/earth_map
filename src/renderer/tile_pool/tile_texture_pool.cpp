@@ -167,6 +167,11 @@ int TileTexturePool::UploadTile(
         const GLenum error = glGetError();
         if (error != GL_NO_ERROR) {
             spdlog::error("GL error during tile pool upload: {}", error);
+            // The layer was reserved before issuing GL commands.  The caller
+            // will not install an indirection entry after this failure, so the
+            // reservation must be released here rather than becoming an
+            // unreachable physical page.
+            EvictTile(coords);
             return -1;
         }
     }

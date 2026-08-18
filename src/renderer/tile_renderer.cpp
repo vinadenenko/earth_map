@@ -107,7 +107,7 @@ public:
 
         // Process GL uploads from worker threads (must be on GL thread)
         if (texture_coordinator_) {
-            texture_coordinator_->ProcessUploads(100);  // Upload up to 5 tiles per frame for 60 FPS (changed)
+            texture_coordinator_->ProcessUploads();
         }
 
     }
@@ -222,6 +222,11 @@ public:
             // Calculate priority based on camera distance (closer = lower number = higher priority)
             int priority = static_cast<int>(camera_distance * 10.0f);
             texture_coordinator_->RequestTiles(visible_tile_coords, priority);
+
+            // Keep the resident pages selected for this frame at the front of
+            // the physical-layer LRU.  This is render-thread ownership, not a
+            // worker/cache mutation.
+            texture_coordinator_->TouchTiles(visible_tile_coords);
         }
 
         // Build visible tiles list with UV coords from coordinator
@@ -595,9 +600,10 @@ uint lookupLayer(int level, ivec2 tile) {
     else                 return safeFetch(uIndirection4, tile - uIndirectionOffset4);
 }
 
-// Diagnostic visualization: shows which fallback level is being used
-// Uncomment to enable (1 = diagnostic mode, 0 = normal rendering)
-const int kDiagnosticMode = 1;
+// Diagnostic visualization: shows which fallback level is being used.
+// Keep this disabled for normal rendering; flip to 1 only while diagnosing
+// virtual-texture residency.
+const int kDiagnosticMode = 0;
 
 // Fallback level colors (RGB)
 const vec3 kColorLevel0 = vec3(0.0, 1.0, 0.0);  // Green = exact zoom

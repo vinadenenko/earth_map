@@ -35,11 +35,21 @@ TEST_F(IndirectionTextureManagerTest, TextureID_ZeroBeforeAllocation) {
 
 TEST_F(IndirectionTextureManagerTest, SetTileLayer_CreatesZoomTexture) {
     TileCoordinates tile(3, 2, 4);
-    manager_->SetTileLayer(tile, 42);
+    EXPECT_TRUE(manager_->SetTileLayer(tile, 42));
 
     auto active = manager_->GetActiveZoomLevels();
     ASSERT_EQ(active.size(), 1u);
     EXPECT_EQ(active[0], 4);
+}
+
+TEST_F(IndirectionTextureManagerTest, WindowedTileOutsideCurrentWindowIsRejected) {
+    constexpr int zoom = 13;
+    manager_->UpdateWindowCenter(zoom, 1000, 1000);
+
+    const TileCoordinates outside_window(100, 100, zoom);
+    EXPECT_FALSE(manager_->SetTileLayer(outside_window, 42));
+    EXPECT_EQ(manager_->GetTileLayer(outside_window),
+              IndirectionTextureManager::kInvalidLayer);
 }
 
 TEST_F(IndirectionTextureManagerTest, GetTileLayer_ReturnsSetValue) {

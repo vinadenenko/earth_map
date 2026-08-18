@@ -209,6 +209,14 @@ public:
     void ProcessUploads(int max_uploads_per_frame = 5);
 
     /**
+     * Marks currently selected resident pages as recently used.
+     *
+     * Must be called from the GL/render thread because it updates the physical
+     * texture-pool LRU state. It does not create GL resources or upload data.
+     */
+    void TouchTiles(const std::vector<TileCoordinates>& tiles);
+
+    /**
      * @brief Evict tiles not used recently
      *
      * Removes tiles from atlas that haven't been accessed for a given duration.

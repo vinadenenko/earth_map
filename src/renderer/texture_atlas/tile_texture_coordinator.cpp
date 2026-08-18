@@ -207,10 +207,31 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
         }
 
         if (layer >= 0) {
-            // Update indirection texture
-            indirection_manager_->SetTileLayer(
+            // A physical layer is useful only if the current GPU page-table
+            // window can address it.  Treat an out-of-window completion as a
+            // stale upload, not as a loaded tile: otherwise RequestTiles()
+            // will never retry it after the camera moves back into range.
+            const bool mapped = indirection_manager_->SetTileLayer(
                 cmd->coords,
                 static_cast<std::uint16_t>(layer));
+
+            if (!mapped) {
+                tile_pool_->EvictTile(cmd->coords);
+
+                std::unique_lock<std::shared_mutex> lock(state_mutex_);
+                auto it = tile_states_.find(cmd->coords);
+                if (it != tile_states_.end() && it->second.status == TileStatus::Loading) {
+                    tile_states_.erase(it);
+                    pending_load_count_.fetch_sub(1);
+                }
+
+                spdlog::debug("Discarded stale tile upload outside current page-table window: {}",
+                              cmd->coords.GetKey());
+                if (cmd->on_complete) {
+                    cmd->on_complete(cmd->coords);
+                }
+                continue;
+            }
 
             // Update state to Loaded and decrement pending counter
             std::unique_lock<std::shared_mutex> lock(state_mutex_);
@@ -238,6 +259,12 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
         if (cmd->on_complete) {
             cmd->on_complete(cmd->coords);
         }
+    }
+}
+
+void TileTextureCoordinator::TouchTiles(const std::vector<TileCoordinates>& tiles) {
+    for (const TileCoordinates& coords : tiles) {
+        tile_pool_->TouchTile(coords);
     }
 }
 

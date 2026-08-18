@@ -50,9 +50,13 @@ public:
      *
      * Lazily creates the indirection texture for the zoom level if needed.
      * For windowed mode (zoom > 12), the tile must fall within the current
-     * window; otherwise the call is silently ignored.
+     * window; otherwise no entry is written and false is returned.
      */
-    void SetTileLayer(const TileCoordinates& coords, std::uint16_t layer_index);
+    /**
+     * @return true when the entry is represented by the current page-table
+     * window; false when the tile is outside that window or cannot be stored.
+     */
+    bool SetTileLayer(const TileCoordinates& coords, std::uint16_t layer_index);
 
     /**
      * @brief Clear a tile entry (reset to kInvalidLayer)

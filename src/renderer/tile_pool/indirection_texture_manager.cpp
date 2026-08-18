@@ -145,7 +145,7 @@ glm::ivec2 IndirectionTextureManager::TileToTexel(
     return {tile_x, tile_y};
 }
 
-void IndirectionTextureManager::SetTileLayer(
+bool IndirectionTextureManager::SetTileLayer(
     const TileCoordinates& coords, std::uint16_t layer_index) {
 
     const int zoom = coords.zoom;
@@ -154,6 +154,9 @@ void IndirectionTextureManager::SetTileLayer(
     if (it == zoom_textures_.end()) {
         CreateZoomTexture(zoom);
         it = zoom_textures_.find(zoom);
+        if (it == zoom_textures_.end()) {
+            return false;
+        }
     }
 
     ZoomTexture& zt = it->second;
@@ -165,7 +168,7 @@ void IndirectionTextureManager::SetTileLayer(
         // This is the "camera-only window ownership" architecture pattern.
         spdlog::debug("SetTileLayer: tile {} outside window (offset={},{} size={}), dropping",
                       coords.GetKey(), zt.window_offset.x, zt.window_offset.y, zt.width);
-        return;
+        return false;
     }
 
     const glm::ivec2 texel = TileToTexel(zt, coords.x, coords.y);
@@ -182,6 +185,8 @@ void IndirectionTextureManager::SetTileLayer(
             &layer_index);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
+
+    return true;
 }
 
 void IndirectionTextureManager::ClearTile(const TileCoordinates& coords) {

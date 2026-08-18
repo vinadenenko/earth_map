@@ -213,6 +213,22 @@ TEST_F(TileTextureCoordinatorTest, IsTileReady_ReturnsTrueAfterLoad) {
     EXPECT_TRUE(coordinator_->IsTileReady(tile));
 }
 
+TEST_F(TileTextureCoordinatorTest, UploadOutsideCurrentIndirectionWindowIsDiscarded) {
+    // Simulate a worker completion for a tile that was requested before the
+    // camera moved its high-zoom page-table window elsewhere. A stale upload
+    // must not become Loaded without a GPU indirection entry.
+    const TileCoordinates stale_tile(100, 100, 13);
+    coordinator_->UpdateIndirectionWindowCenter(13, 1000, 1000);
+    coordinator_->RequestTiles({stale_tile}, 0);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator_->ProcessUploads(10);
+
+    EXPECT_EQ(coordinator_->GetTileStatus(stale_tile),
+              TileTextureCoordinator::TileStatus::NotLoaded);
+    EXPECT_EQ(coordinator_->GetTileLayerIndex(stale_tile), -1);
+}
+
 // ============================================================================
 // UV Coordinate Tests
 // ============================================================================
