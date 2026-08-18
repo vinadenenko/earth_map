@@ -70,7 +70,7 @@ class EarthMapConan(ConanFile):
         self.requires("spdlog/1.13.0")
 
         # Network requests
-        self.requires("libcurl/8.17.0")
+        self.requires("libcurl/7.87.0")
 
         # Testing framework (when tests are enabled)
         if self.options.with_tests:
