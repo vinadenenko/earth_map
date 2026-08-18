@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <earth_map/imagery/tile_matrix_set.h>
+#include <earth_map/data/tile_loader.h>
 
 #include <numbers>
 #include <unordered_set>
@@ -84,6 +85,25 @@ TEST(ImageTileKeyTest, ProviderAndMatrixSetArePartOfIdentity) {
     keys.insert(alternate_matrix);
 
     EXPECT_EQ(keys.size(), 3U);
+}
+
+TEST(TileProviderContractTest, BasicXyzProviderDeclaresSourceAndMatrixSet) {
+    const BasicXYZTileProvider provider{
+        "osm-main", "https://example.invalid/{z}/{x}/{y}.png", "", 2, 20};
+
+    EXPECT_EQ(provider.GetImagerySourceId(), "osm-main");
+    const TileMatrixSet matrix_set = provider.GetTileMatrixSet();
+    EXPECT_TRUE(matrix_set.IsValid());
+    EXPECT_EQ(matrix_set.id, "WebMercatorQuad");
+    EXPECT_EQ(matrix_set.minimum_level, 2U);
+    EXPECT_EQ(matrix_set.maximum_level, 20U);
+
+    const auto key = provider.ResolveImageTileKey(TileCoordinates{3, 5, 4});
+    ASSERT_TRUE(key.has_value());
+    EXPECT_EQ(key->imagery_source_id, "osm-main");
+    EXPECT_EQ(key->matrix_set_id, "WebMercatorQuad");
+    EXPECT_EQ(key->address, (ImageTileAddress{4, 3, 5}));
+    EXPECT_FALSE(provider.ResolveImageTileKey(TileCoordinates{0, 0, 1}).has_value());
 }
 
 TEST(PageTableWindowTest, ResolvesOnlyMatchingGenerationSourceAndLocalIntegerAddress) {

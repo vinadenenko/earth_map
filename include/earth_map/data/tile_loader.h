@@ -10,12 +10,14 @@
 
 #include <earth_map/math/tile_mathematics.h>
 #include <earth_map/data/tile_cache.h>
+#include <earth_map/imagery/tile_matrix_set.h>
 #include <string>
 #include <vector>
 #include <memory>
 #include <functional>
 #include <cstdint>
 #include <future>
+#include <utility>
 
 namespace earth_map {
 
@@ -41,6 +43,46 @@ public:
      * @brief Build URL for specific tile
      */
     virtual std::string BuildTileURL(const TileCoordinates& coords) const = 0;
+
+    /**
+     * Stable identity of the imagery content namespace.
+     *
+     * This is deliberately separate from an attribution or display string:
+     * cache and GPU residency must not alias pages from two providers that
+     * happen to use the same level/x/y coordinates.
+     */
+    virtual std::string GetImagerySourceId() const = 0;
+
+    /** Declares the tile matrix and projection used by this provider. */
+    virtual imagery::TileMatrixSet GetTileMatrixSet() const = 0;
+
+    /**
+     * Converts a legacy XYZ request into the canonical source-aware identity.
+     *
+     * TileLoader still accepts TileCoordinates during the staged migration, but
+     * all new cache/residency work must consume this resolved key instead.
+     */
+    [[nodiscard]] std::optional<imagery::ImageTileKey> ResolveImageTileKey(
+        const TileCoordinates& coords) const {
+        if (coords.zoom < 0 || coords.x < 0 || coords.y < 0) {
+            return std::nullopt;
+        }
+
+        const imagery::TileMatrixSet matrix_set = GetTileMatrixSet();
+        const std::optional<imagery::ImageTileAddress> address =
+            matrix_set.NormalizeAddress(
+                static_cast<std::uint32_t>(coords.zoom),
+                static_cast<std::int64_t>(coords.x),
+                static_cast<std::int64_t>(coords.y));
+        if (!address.has_value()) {
+            return std::nullopt;
+        }
+
+        imagery::ImageTileKey key{
+            GetImagerySourceId(), matrix_set.id, *address};
+        return key.IsValid() ? std::optional<imagery::ImageTileKey>(std::move(key))
+                             : std::nullopt;
+    }
 
     /**
      * @brief Get headers for tile request
@@ -110,6 +152,8 @@ public:
                         const std::string& user_agent = "EarthMap/1.0");
 
     std::string BuildTileURL(const TileCoordinates& coords) const override;
+    std::string GetImagerySourceId() const override;
+    imagery::TileMatrixSet GetTileMatrixSet() const override;
     std::vector<std::pair<std::string, std::string>> GetHeaders() const override;
     std::string GetAttribution() const override;
     std::int32_t GetMinZoom() const override;
@@ -159,6 +203,9 @@ struct TileLoadResult {
     
     /** Provider name */
     std::string provider_name;
+
+    /** Canonical source-aware identity resolved by the selected provider. */
+    std::optional<imagery::ImageTileKey> imagery_key;
 };
 
 /**

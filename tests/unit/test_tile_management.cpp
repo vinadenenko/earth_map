@@ -189,6 +189,17 @@ TEST_F(TileManagementTest, TileLoaderProviders) {
     const TileProvider* provider = loader->GetProvider("OpenStreetMap");
     ASSERT_NE(provider, nullptr);
     EXPECT_EQ(provider->GetName(), "OpenStreetMap");
+    EXPECT_EQ(provider->GetImagerySourceId(), "OpenStreetMap");
+
+    const imagery::TileMatrixSet matrix_set = provider->GetTileMatrixSet();
+    EXPECT_TRUE(matrix_set.IsValid());
+    EXPECT_EQ(matrix_set.id, "WebMercatorQuad");
+
+    const auto key = provider->ResolveImageTileKey(TileCoordinates(1, 1, 1));
+    ASSERT_TRUE(key.has_value());
+    EXPECT_EQ(key->imagery_source_id, "OpenStreetMap");
+    EXPECT_EQ(key->matrix_set_id, "WebMercatorQuad");
+    EXPECT_EQ(key->address, (imagery::ImageTileAddress{1, 1, 1}));
 }
 
 TEST_F(TileManagementTest, TileLoadSynchronous) {
@@ -204,6 +215,10 @@ TEST_F(TileManagementTest, TileLoadSynchronous) {
     EXPECT_EQ(result.coordinates, coords);
     EXPECT_NE(result.tile_data, nullptr);
     EXPECT_TRUE(result.tile_data->IsValid());
+    ASSERT_TRUE(result.imagery_key.has_value());
+    EXPECT_EQ(result.imagery_key->imagery_source_id, "OpenStreetMap");
+    EXPECT_EQ(result.imagery_key->address,
+              (imagery::ImageTileAddress{1, 0, 0}));
 }
 
 TEST_F(TileManagementTest, TileLoadAsynchronous) {

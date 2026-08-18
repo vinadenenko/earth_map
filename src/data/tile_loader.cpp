@@ -335,6 +335,21 @@ TileLoadResult BasicTileLoader::LoadTile(const TileCoordinates& coordinates,
             result.coordinates = coordinates;
             result.provider_name = provider_name.empty() ? default_provider_ : provider_name;
 
+            const TileProvider* provider = GetProvider(result.provider_name);
+            if (!provider) {
+                result.success = false;
+                result.error_message = "Provider not found: " + result.provider_name;
+                result.tile_data.reset();
+                return result;
+            }
+
+            result.imagery_key = provider->ResolveImageTileKey(coordinates);
+            if (!result.imagery_key.has_value()) {
+                result.success = false;
+                result.error_message = "Provider cannot resolve a canonical imagery key";
+                result.tile_data.reset();
+            }
+
             return result;
         }
     }
@@ -531,6 +546,13 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
         coordinates.zoom < provider->GetMinZoom() ||
         coordinates.zoom > provider->GetMaxZoom()) {
         result.error_message = "Invalid tile coordinates";
+        UpdateStats(result);
+        return result;
+    }
+
+    result.imagery_key = provider->ResolveImageTileKey(coordinates);
+    if (!result.imagery_key.has_value()) {
+        result.error_message = "Provider cannot resolve a canonical imagery key";
         UpdateStats(result);
         return result;
     }
@@ -746,6 +768,21 @@ std::string BasicXYZTileProvider::BuildTileURL(const TileCoordinates& coords) co
     }
 
     return url;
+}
+
+std::string BasicXYZTileProvider::GetImagerySourceId() const {
+    return name_;
+}
+
+imagery::TileMatrixSet BasicXYZTileProvider::GetTileMatrixSet() const {
+    if (min_zoom_ < 0 || max_zoom_ < min_zoom_) {
+        return {};
+    }
+
+    imagery::TileMatrixSet matrix_set = imagery::TileMatrixSet::WebMercatorXYZ();
+    matrix_set.minimum_level = static_cast<std::uint32_t>(min_zoom_);
+    matrix_set.maximum_level = static_cast<std::uint32_t>(max_zoom_);
+    return matrix_set;
 }
 
 std::vector<std::pair<std::string, std::string>> BasicXYZTileProvider::GetHeaders() const {
