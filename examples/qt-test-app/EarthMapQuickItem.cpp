@@ -1,7 +1,12 @@
 // GLEW must be included before anything that might pull in the system GL
 // headers (Qt's OpenGL-adjacent headers below do) -- same ordering
-// requirement as examples/basic_example.cpp.
+// requirement as examples/basic_example.cpp. Not applicable on Android:
+// GLES entry points are directly linked, no loader needed.
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#else
 #include <GL/glew.h>
+#endif
 
 #include "EarthMapQuickItem.h"
 
@@ -229,13 +234,17 @@ public slots:
             return;
         }
 
+#ifndef __ANDROID__
         // GLEW's default extension query (glGetString(GL_EXTENSIONS)) is
         // invalid on some contexts Qt Quick's OpenGL RHI backend creates;
         // glewExperimental switches GLEW to the glGetStringi-based query.
+        // Not applicable on Android: GLES entry points are directly
+        // linked, no loader/init step needed.
         glewExperimental = GL_TRUE;
         if (glewInit() != GLEW_OK) {
             qFatal("EarthMapRenderer: glewInit() failed");
         }
+#endif
 
         earth_map::Configuration config;
         config.screen_width = static_cast<std::uint32_t>(std::max(1, viewport_rect_.width()));

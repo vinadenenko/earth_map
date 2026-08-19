@@ -48,10 +48,16 @@ class EarthMapConan(ConanFile):
     def requirements(self):
         """Core dependencies for Earth Map library"""
 
-        # GLEW loads the library's own GL entry points at compile/link time
-        # (see #include <GL/glew.h> throughout src/renderer/*.cpp) --
-        # required unconditionally.
-        self.requires("glew/2.2.0")
+        # GLEW loads the library's own desktop-GL entry points at
+        # compile/link time (see #include <GL/glew.h> throughout
+        # src/renderer/*.cpp). Not usable on Android: GLEW's own header
+        # pulls in glu.h, and no Android-compatible GLU exists (its conan
+        # recipe only offers "mesa-glu", which needs a desktop GL found via
+        # pkg-config, or "system", which Android has neither). Android
+        # instead links GLESv3 directly -- see CMakeLists.txt's Android
+        # branch and the __ANDROID__ conditional includes in src/renderer/.
+        if self.settings.os != "Android":
+            self.requires("glew/2.2.0")
 
         # GLFW is only used for window/context creation in
         # examples/basic-example; the library itself never calls into it.
@@ -61,10 +67,15 @@ class EarthMapConan(ConanFile):
         if self.options.with_examples:
             self.requires("glfw/3.3.8")
 
-        # Mathematics library
-        self.requires("glm/1.0.1")
+        # Mathematics library. transitive_headers=True: glm/glm.hpp (and
+        # friends) appear directly in ~20 public earth_map headers, so
+        # consumers linking earth_map::earth_map need glm's include dirs
+        # too, not just earth_map's own build.
+        self.requires("glm/1.0.1", transitive_headers=True)
 
-        # JSON parsing for configuration and data formats
+        # JSON parsing for configuration and data formats. Not used in any
+        # public header (only in .cpp files), so no transitive_headers --
+        # consumers don't need nlohmann_json's include dirs.
         self.requires("nlohmann_json/3.11.2")
 
         # XML parsing for KML support
@@ -73,8 +84,10 @@ class EarthMapConan(ConanFile):
         # ZIP parsing for KMZ support
         self.requires("libzip/1.10.1")
 
-        # Image loading for textures and icons
-        self.requires("stb/cci.20230920")
+        # Image loading for textures and icons. transitive_headers=True:
+        # stb_image.h appears in the public
+        # renderer/texture_atlas/tile_load_worker_pool.h header.
+        self.requires("stb/cci.20230920", transitive_headers=True)
 
         # Logging framework
         self.requires("spdlog/1.13.0")
@@ -137,6 +150,14 @@ class EarthMapConan(ConanFile):
             self.cpp_info.system_libs.extend(["opengl32", "gdi32", "user32", "kernel32", "shell32"])
         elif self.settings.os == "Macos":
             self.cpp_info.frameworks.extend(["OpenGL", "Cocoa", "IOKit", "CoreVideo"])
+        elif self.settings.os == "Android":
+            # Matches the Android branch of target_link_libraries(earth_map
+            # ...) in CMakeLists.txt. earth_map is a static library, so
+            # linking it never actually resolves symbols like
+            # glDeleteVertexArrays/glTexImage3D against GLESv3 during its
+            # own build -- only a consumer's final executable/shared-lib
+            # link does, so consumers need this propagated here too.
+            self.cpp_info.system_libs.extend(["GLESv3", "EGL", "android", "log"])
 
         # Define targets for proper transitive dependencies
         self.cpp_info.set_property("cmake_target_name", "earth_map::earth_map")

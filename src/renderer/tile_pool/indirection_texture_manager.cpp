@@ -5,7 +5,11 @@
 
 #include <earth_map/renderer/tile_pool/indirection_texture_manager.h>
 
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#else
 #include <GL/glew.h>
+#endif
 #include <spdlog/spdlog.h>
 
 #include <algorithm>

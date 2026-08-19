@@ -14,7 +14,11 @@
 #include <earth_map/coordinates/coordinate_mapper.h>
 #include <earth_map/constants.h>
 #include <spdlog/spdlog.h>
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#else
 #include <GL/glew.h>
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
@@ -30,7 +34,6 @@ namespace earth_map {
 
 namespace {
 
-constexpr int kDefaultTileSize = 256;
 constexpr int kDefaultZoomLevel = 2;
 constexpr int kMaxFallbackLevels = 5;
 constexpr glm::vec3 kDefaultLightPosition{2.0f, 2.0f, 2.0f};
@@ -596,8 +599,7 @@ private:
     std::vector<unsigned int> globe_indices_;
 
     // Tile atlas vertex shader source
-    static constexpr const char* kTileVertexShader = R"(
-#version 330 core
+    static constexpr const char* kTileVertexShader = EARTH_MAP_GLSL_PREAMBLE R"(
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
@@ -619,8 +621,7 @@ void main() {
 )";
 
     // Tile pool + indirection fragment shader
-    static constexpr const char* kTileFragmentShader = R"(
-#version 330 core
+    static constexpr const char* kTileFragmentShader = EARTH_MAP_GLSL_PREAMBLE R"(
 in vec3 FragPos;
 in vec3 Normal;
 in vec2 TexCoord;

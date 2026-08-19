@@ -13,6 +13,7 @@
 #include <random>
 #include <spdlog/spdlog.h>
 #include <string_view>
+#include <unordered_map>
 
 namespace earth_map {
 namespace {

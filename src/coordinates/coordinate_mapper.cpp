@@ -12,7 +12,7 @@
 #include <cmath>
 #include <algorithm>
 #include <limits>
-#include <numbers>
+#include <optional>
 
 namespace earth_map {
 namespace coordinates {
@@ -557,10 +557,10 @@ TileCoordinates CoordinateMapper::GeographicToSphericalTile(
         imagery::TileMatrixSet::WebMercatorXYZ();
     const geodesy::GeodeticPosition geodetic{
         std::clamp(
-            geo.latitude * std::numbers::pi_v<double> / 180.0,
+            geo.latitude * constants::math::PI / 180.0,
             matrix_set.minimum_latitude_radians,
             matrix_set.maximum_latitude_radians),
-        geo.longitude * std::numbers::pi_v<double> / 180.0,
+        geo.longitude * constants::math::PI / 180.0,
         geo.altitude,
     };
     const auto address = matrix_set.GeodeticToTile(

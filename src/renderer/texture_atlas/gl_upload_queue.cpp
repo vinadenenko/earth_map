@@ -4,6 +4,7 @@
  */
 
 #include <earth_map/renderer/texture_atlas/gl_upload_queue.h>
+#include <array>
 #include <utility>
 
 namespace earth_map {

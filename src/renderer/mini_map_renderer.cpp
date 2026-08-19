@@ -8,8 +8,11 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
 #include <stb_image.h>
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#else
 #include <GL/glew.h>
-#include <GLFW/glfw3.h>
+#endif
 #include <stdexcept>
 #include <vector>
 #include <array>

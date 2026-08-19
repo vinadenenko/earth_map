@@ -4,6 +4,7 @@
  */
 
 #include "../../include/earth_map/math/tile_mathematics.h"
+#include <array>
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>

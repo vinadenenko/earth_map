@@ -11,6 +11,23 @@
 #include <cstdint>
 #include <string>
 
+/**
+ * GLSL version/precision preamble, prepended to every embedded shader
+ * source via adjacent string-literal concatenation (e.g.
+ * `EARTH_MAP_GLSL_PREAMBLE R"(...)"`). Desktop GLSL and GLSL ES differ only
+ * here for the shaders in this codebase -- everything after the preamble
+ * is identical on both platforms. GLSL ES additionally requires an
+ * explicit default float/int precision in fragment shaders (desktop GLSL
+ * has no such requirement); declaring it in vertex shaders too is
+ * harmless.
+ */
+#ifdef __ANDROID__
+#define EARTH_MAP_GLSL_PREAMBLE \
+    "#version 300 es\nprecision highp float;\nprecision highp int;\n"
+#else
+#define EARTH_MAP_GLSL_PREAMBLE "#version 330 core\n"
+#endif
+
 namespace earth_map {
 
 /**

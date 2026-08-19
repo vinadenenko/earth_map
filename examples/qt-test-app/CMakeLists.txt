@@ -17,6 +17,22 @@ qt_standard_project_setup(REQUIRES 6.5)
 include(cmake/conan_handler.cmake)
 handle_conan_deps()
 list(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}/conan")
+
+# Qt Creator's Android kit configures this project directly against the raw
+# NDK toolchain file, which sets CMAKE_SYSROOT but never touches
+# CMAKE_FIND_ROOT_PATH_MODE_PACKAGE -- so it stays at CMake's cross-compile
+# default of ONLY, restricting every find_package(CONFIG) call to the
+# sysroot. Conan's own generated conan_toolchain.cmake works around exactly
+# this by forcing this variable to BOTH; that fix only applies inside the
+# isolated per-dependency builds handle_conan_deps() spawns, not to this
+# outer project. Apply the same override here, once, so it also covers the
+# find_dependency() calls earth_map-config.cmake makes for its own
+# transitive requirements (pugixml, glew, glm, ...), not just earth_map
+# itself.
+if(NOT DEFINED CMAKE_FIND_ROOT_PATH_MODE_PACKAGE OR CMAKE_FIND_ROOT_PATH_MODE_PACKAGE STREQUAL "ONLY")
+    set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE "BOTH")
+endif()
+
 find_package(earth_map REQUIRED)
 
 qt_add_executable(appqt-test-app

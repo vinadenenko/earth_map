@@ -6,12 +6,15 @@
 #include <earth_map/data/tile_loader.h>
 #include <earth_map/math/tile_mathematics.h>
 #include <algorithm>
+#include <array>
 #include <sstream>
 #include <iomanip>
+#include <map>
 #include <random>
 #include <thread>
 #include <future>
 #include <set>
+#include <unordered_map>
 #include <unordered_set>
 #include <regex>
 #include <queue>
@@ -232,7 +235,6 @@ private:
                         std::vector<std::uint8_t>& data) const;
     std::uint64_t GetCurrentTimeMs() const;
     void UpdateStats(const TileLoadResult& result);
-    TileCoordinatesHash hasher_;
 };
 
 // Factory function
