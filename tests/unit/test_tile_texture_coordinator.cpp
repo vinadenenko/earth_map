@@ -229,7 +229,8 @@ TEST_F(TileTextureCoordinatorTest, UploadOutsideCurrentIndirectionWindowIsDiscar
     // camera moved its high-zoom page-table window elsewhere. A stale upload
     // must not become Loaded without a GPU indirection entry.
     const TileCoordinates stale_tile(100, 100, 13);
-    coordinator_->UpdateIndirectionWindowCenter(13, 1000, 1000);
+    coordinator_->UpdateIndirectionWindowCenter(MakeMockImageTileKey(
+        TileCoordinates(1000, 1000, 13)));
     coordinator_->RequestTiles({stale_tile}, 0);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));

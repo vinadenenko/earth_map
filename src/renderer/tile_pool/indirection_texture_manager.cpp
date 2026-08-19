@@ -1,23 +1,31 @@
 /**
  * @file indirection_texture_manager.cpp
- * @brief Per-zoom indirection texture implementation
+ * @brief Source-aware imagery page-table implementation
  */
 
 #include <earth_map/renderer/tile_pool/indirection_texture_manager.h>
+
 #include <GL/glew.h>
 #include <spdlog/spdlog.h>
+
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <functional>
+#include <utility>
 
 namespace earth_map {
+namespace {
+
+std::size_t HashCombine(std::size_t seed, std::size_t value) noexcept {
+    return seed ^ (value + 0x9e3779b9U + (seed << 6U) + (seed >> 2U));
+}
+
+}  // namespace
 
 IndirectionTextureManager::IndirectionTextureManager(bool skip_gl_init)
     : skip_gl_init_(skip_gl_init) {
-
-    // Create a 1x1 dummy GL_R16UI texture filled with kInvalidLayer.
-    // This is returned by GetTextureID() for zoom levels that haven't been
-    // allocated yet, preventing the shader from binding texture 0 to a
-    // usampler2D uniform (which causes GL_INVALID_OPERATION).
+    // A valid integer texture for table levels that are not resident yet.
     if (!skip_gl_init_) {
         glGenTextures(1, &dummy_texture_id_);
         glBindTexture(GL_TEXTURE_2D, dummy_texture_id_);
@@ -25,24 +33,19 @@ IndirectionTextureManager::IndirectionTextureManager(bool skip_gl_init)
         const std::uint16_t sentinel = kInvalidLayer;
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R16UI, 1, 1, 0,
                      GL_RED_INTEGER, GL_UNSIGNED_SHORT, &sentinel);
-
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
         glBindTexture(GL_TEXTURE_2D, 0);
     }
-
-    spdlog::debug("IndirectionTextureManager initialized (skip_gl={}, dummy_tex={})",
-                  skip_gl_init, dummy_texture_id_);
 }
 
 IndirectionTextureManager::~IndirectionTextureManager() {
     if (!skip_gl_init_) {
-        for (auto& [zoom, zt] : zoom_textures_) {
-            if (zt.texture_id != 0) {
-                glDeleteTextures(1, &zt.texture_id);
+        for (auto& [identity, page_table] : page_tables_) {
+            if (page_table.texture_id != 0) {
+                glDeleteTextures(1, &page_table.texture_id);
             }
         }
         if (dummy_texture_id_ != 0) {
@@ -51,319 +54,355 @@ IndirectionTextureManager::~IndirectionTextureManager() {
     }
 }
 
-void IndirectionTextureManager::CreateZoomTexture(int zoom) {
-    if (zoom < 0 || zoom > 30) {
-        spdlog::error("IndirectionTextureManager: zoom {} out of valid range [0, 30]", zoom);
+std::size_t IndirectionTextureManager::PageTableIdentityHash::operator()(
+    const PageTableIdentity& identity) const noexcept {
+    std::size_t seed = std::hash<std::string>{}(identity.imagery_source_id);
+    seed = HashCombine(seed, std::hash<std::string>{}(identity.matrix_set_id));
+    return HashCombine(seed, std::hash<std::uint32_t>{}(identity.level));
+}
+
+IndirectionTextureManager::PageTableIdentity IndirectionTextureManager::GetIdentity(
+    const imagery::ImageTileKey& imagery_key) {
+    return {
+        imagery_key.imagery_source_id,
+        imagery_key.matrix_set_id,
+        imagery_key.address.level,
+    };
+}
+
+glm::ivec2 IndirectionTextureManager::GetWindowOffset(
+    const imagery::PageTableWindow& window) {
+    return {
+        static_cast<int>(window.origin_column),
+        static_cast<int>(window.origin_row),
+    };
+}
+
+void IndirectionTextureManager::CreatePageTable(
+    const imagery::ImageTileKey& imagery_key) {
+    if (!imagery_key.IsValid() ||
+        imagery_key.address.level > imagery::TileMatrixSet::kMaximumSupportedLevel) {
+        spdlog::error("IndirectionTextureManager: invalid imagery key for page table");
         return;
     }
 
-    ZoomTexture zt;
-    zt.zoom = zoom;
-    zt.windowed = IsWindowedMode(zoom);
-
-    if (zt.windowed) {
-        zt.width = kWindowSize;
-        zt.height = kWindowSize;
-    } else {
-        const auto dim = static_cast<std::uint32_t>(1u << zoom);
-        zt.width = dim;
-        zt.height = dim;
+    const PageTableIdentity identity = GetIdentity(imagery_key);
+    if (page_tables_.contains(identity)) {
+        return;
     }
 
-    // Allocate CPU-side data initialized to kInvalidLayer
-    zt.data.resize(zt.width * zt.height, kInvalidLayer);
+    PageTableTexture page_table;
+    const bool windowed = IsWindowedMode(identity.level);
+    page_table.width = windowed ? kWindowSize : (std::uint32_t{1} << identity.level);
+    page_table.height = page_table.width;
+    page_table.window = {
+        imagery::kVirtualImageryAddressContractVersion,
+        next_window_generation_++,
+        identity.imagery_source_id,
+        identity.matrix_set_id,
+        identity.level,
+        0,
+        0,
+        page_table.width,
+        page_table.height,
+    };
+    page_table.data.assign(
+        static_cast<std::size_t>(page_table.width) * page_table.height,
+        kInvalidLayer);
 
-    // Allocate GL texture
     if (!skip_gl_init_) {
-        glGenTextures(1, &zt.texture_id);
-        glBindTexture(GL_TEXTURE_2D, zt.texture_id);
-
+        glGenTextures(1, &page_table.texture_id);
+        glBindTexture(GL_TEXTURE_2D, page_table.texture_id);
         glTexImage2D(
             GL_TEXTURE_2D,
             0,
             GL_R16UI,
-            static_cast<GLsizei>(zt.width),
-            static_cast<GLsizei>(zt.height),
+            static_cast<GLsizei>(page_table.width),
+            static_cast<GLsizei>(page_table.height),
             0,
             GL_RED_INTEGER,
             GL_UNSIGNED_SHORT,
-            zt.data.data());
-
-        // Integer textures must use NEAREST filtering
+            page_table.data.data());
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
-    spdlog::debug("Created indirection texture for zoom {}: {}x{} ({})",
-                  zoom, zt.width, zt.height, zt.windowed ? "windowed" : "full");
-
-    zoom_textures_[zoom] = std::move(zt);
+    page_tables_.emplace(identity, std::move(page_table));
 }
 
-void IndirectionTextureManager::ClearZoomTextureData(ZoomTexture& zt) {
-    std::fill(zt.data.begin(), zt.data.end(), kInvalidLayer);
+void IndirectionTextureManager::ClearPageTableData(PageTableTexture& page_table) {
+    std::fill(page_table.data.begin(), page_table.data.end(), kInvalidLayer);
 
-    if (!skip_gl_init_ && zt.texture_id != 0) {
-        glBindTexture(GL_TEXTURE_2D, zt.texture_id);
+    if (!skip_gl_init_ && page_table.texture_id != 0) {
+        glBindTexture(GL_TEXTURE_2D, page_table.texture_id);
         glTexSubImage2D(
-            GL_TEXTURE_2D, 0, 0, 0,
-            static_cast<GLsizei>(zt.width),
-            static_cast<GLsizei>(zt.height),
-            GL_RED_INTEGER, GL_UNSIGNED_SHORT,
-            zt.data.data());
+            GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            static_cast<GLsizei>(page_table.width),
+            static_cast<GLsizei>(page_table.height),
+            GL_RED_INTEGER,
+            GL_UNSIGNED_SHORT,
+            page_table.data.data());
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 }
 
 bool IndirectionTextureManager::IsTileInWindow(
-    const ZoomTexture& zt, int tile_x, int tile_y) const {
-
-    if (!zt.windowed) {
-        return tile_x >= 0 && tile_y >= 0 &&
-               tile_x < static_cast<int>(zt.width) &&
-               tile_y < static_cast<int>(zt.height);
-    }
-
-    const int local_x = tile_x - zt.window_offset.x;
-    const int local_y = tile_y - zt.window_offset.y;
-
-    return local_x >= 0 && local_y >= 0 &&
-           local_x < static_cast<int>(zt.width) &&
-           local_y < static_cast<int>(zt.height);
+    const PageTableTexture& page_table,
+    const imagery::ImageTileKey& imagery_key) const {
+    return page_table.window.TryGetTexel(imagery_key).has_value();
 }
 
 glm::ivec2 IndirectionTextureManager::TileToTexel(
-    const ZoomTexture& zt, int tile_x, int tile_y) const {
-
-    if (zt.windowed) {
-        return {tile_x - zt.window_offset.x, tile_y - zt.window_offset.y};
-    }
-    return {tile_x, tile_y};
+    const PageTableTexture& page_table,
+    const imagery::ImageTileKey& imagery_key) const {
+    const auto texel = page_table.window.TryGetTexel(imagery_key);
+    return texel.has_value() ? glm::ivec2(texel->x, texel->y) : glm::ivec2(-1, -1);
 }
 
 bool IndirectionTextureManager::SetTileLayer(
-    const TileCoordinates& coords, std::uint16_t layer_index) {
-
-    const int zoom = coords.zoom;
-    auto it = zoom_textures_.find(zoom);
-
-    if (it == zoom_textures_.end()) {
-        CreateZoomTexture(zoom);
-        it = zoom_textures_.find(zoom);
-        if (it == zoom_textures_.end()) {
-            return false;
-        }
-    }
-
-    ZoomTexture& zt = it->second;
-
-    if (!IsTileInWindow(zt, coords.x, coords.y)) {
-        // Tile is outside current window. Don't re-center here - that creates a race
-        // condition with UpdateVisibleTiles(). The tile will be re-requested next frame
-        // when UpdateVisibleTiles() has properly positioned the window around the camera.
-        // This is the "camera-only window ownership" architecture pattern.
-        spdlog::debug("SetTileLayer: tile {} outside window (offset={},{} size={}), dropping",
-                      coords.GetKey(), zt.window_offset.x, zt.window_offset.y, zt.width);
+    const imagery::ImageTileKey& imagery_key,
+    std::uint16_t layer_index) {
+    if (!imagery_key.IsValid() || layer_index == kInvalidLayer) {
         return false;
     }
 
-    const glm::ivec2 texel = TileToTexel(zt, coords.x, coords.y);
-    const std::size_t idx = texel.y * zt.width + texel.x;
-    zt.data[idx] = layer_index;
+    const PageTableIdentity identity = GetIdentity(imagery_key);
+    if (!page_tables_.contains(identity)) {
+        CreatePageTable(imagery_key);
+    }
 
-    // Update GL texture
-    if (!skip_gl_init_ && zt.texture_id != 0) {
-        glBindTexture(GL_TEXTURE_2D, zt.texture_id);
+    const auto it = page_tables_.find(identity);
+    if (it == page_tables_.end() || !IsTileInWindow(it->second, imagery_key)) {
+        return false;
+    }
+
+    PageTableTexture& page_table = it->second;
+    const glm::ivec2 texel = TileToTexel(page_table, imagery_key);
+    const std::size_t index =
+        static_cast<std::size_t>(texel.y) * page_table.width + texel.x;
+    page_table.data[index] = layer_index;
+
+    if (!skip_gl_init_ && page_table.texture_id != 0) {
+        glBindTexture(GL_TEXTURE_2D, page_table.texture_id);
         glTexSubImage2D(
-            GL_TEXTURE_2D, 0,
-            texel.x, texel.y, 1, 1,
-            GL_RED_INTEGER, GL_UNSIGNED_SHORT,
+            GL_TEXTURE_2D,
+            0,
+            texel.x,
+            texel.y,
+            1,
+            1,
+            GL_RED_INTEGER,
+            GL_UNSIGNED_SHORT,
             &layer_index);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
-
     return true;
 }
 
-void IndirectionTextureManager::ClearTile(const TileCoordinates& coords) {
-    auto it = zoom_textures_.find(coords.zoom);
-    if (it == zoom_textures_.end()) {
+void IndirectionTextureManager::ClearTile(const imagery::ImageTileKey& imagery_key) {
+    if (!imagery_key.IsValid()) {
         return;
     }
 
-    ZoomTexture& zt = it->second;
-
-    if (!IsTileInWindow(zt, coords.x, coords.y)) {
+    const auto it = page_tables_.find(GetIdentity(imagery_key));
+    if (it == page_tables_.end() || !IsTileInWindow(it->second, imagery_key)) {
         return;
     }
 
-    const glm::ivec2 texel = TileToTexel(zt, coords.x, coords.y);
-    const std::size_t idx = texel.y * zt.width + texel.x;
-    zt.data[idx] = kInvalidLayer;
+    PageTableTexture& page_table = it->second;
+    const glm::ivec2 texel = TileToTexel(page_table, imagery_key);
+    const std::size_t index =
+        static_cast<std::size_t>(texel.y) * page_table.width + texel.x;
+    page_table.data[index] = kInvalidLayer;
 
-    if (!skip_gl_init_ && zt.texture_id != 0) {
+    if (!skip_gl_init_ && page_table.texture_id != 0) {
         const std::uint16_t invalid = kInvalidLayer;
-        glBindTexture(GL_TEXTURE_2D, zt.texture_id);
+        glBindTexture(GL_TEXTURE_2D, page_table.texture_id);
         glTexSubImage2D(
-            GL_TEXTURE_2D, 0,
-            texel.x, texel.y, 1, 1,
-            GL_RED_INTEGER, GL_UNSIGNED_SHORT,
+            GL_TEXTURE_2D,
+            0,
+            texel.x,
+            texel.y,
+            1,
+            1,
+            GL_RED_INTEGER,
+            GL_UNSIGNED_SHORT,
             &invalid);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 }
 
 std::uint16_t IndirectionTextureManager::GetTileLayer(
-    const TileCoordinates& coords) const {
-
-    auto it = zoom_textures_.find(coords.zoom);
-    if (it == zoom_textures_.end()) {
+    const imagery::ImageTileKey& imagery_key) const {
+    if (!imagery_key.IsValid()) {
         return kInvalidLayer;
     }
 
-    const ZoomTexture& zt = it->second;
-
-    if (!IsTileInWindow(zt, coords.x, coords.y)) {
+    const auto it = page_tables_.find(GetIdentity(imagery_key));
+    if (it == page_tables_.end() || !IsTileInWindow(it->second, imagery_key)) {
         return kInvalidLayer;
     }
 
-    const glm::ivec2 texel = TileToTexel(zt, coords.x, coords.y);
-    return zt.data[texel.y * zt.width + texel.x];
+    const glm::ivec2 texel = TileToTexel(it->second, imagery_key);
+    return it->second.data[
+        static_cast<std::size_t>(texel.y) * it->second.width + texel.x];
 }
 
-std::uint32_t IndirectionTextureManager::GetTextureID(int zoom) const {
-    auto it = zoom_textures_.find(zoom);
-    if (it == zoom_textures_.end()) {
+std::uint32_t IndirectionTextureManager::GetTextureID(
+    const imagery::ImageTileKey& imagery_key) const {
+    if (!imagery_key.IsValid()) {
         return dummy_texture_id_;
     }
-    return it->second.texture_id;
+
+    const auto it = page_tables_.find(GetIdentity(imagery_key));
+    return it == page_tables_.end() ? dummy_texture_id_ : it->second.texture_id;
 }
 
-glm::ivec2 IndirectionTextureManager::GetWindowOffset(int zoom) const {
-    auto it = zoom_textures_.find(zoom);
-    if (it == zoom_textures_.end()) {
+glm::ivec2 IndirectionTextureManager::GetWindowOffset(
+    const imagery::ImageTileKey& imagery_key) const {
+    if (!imagery_key.IsValid()) {
         return {0, 0};
     }
-    return it->second.window_offset;
+
+    const auto it = page_tables_.find(GetIdentity(imagery_key));
+    return it == page_tables_.end() ? glm::ivec2(0, 0) : GetWindowOffset(it->second.window);
+}
+
+std::optional<imagery::PageTableWindow> IndirectionTextureManager::GetPageTableWindow(
+    const imagery::ImageTileKey& imagery_key) const {
+    if (!imagery_key.IsValid()) {
+        return std::nullopt;
+    }
+
+    const auto it = page_tables_.find(GetIdentity(imagery_key));
+    return it == page_tables_.end()
+        ? std::nullopt
+        : std::optional<imagery::PageTableWindow>(it->second.window);
 }
 
 void IndirectionTextureManager::ShiftWindowData(
-    ZoomTexture& zt, int dx, int dy) {
+    PageTableTexture& page_table,
+    int delta_x,
+    int delta_y) {
+    const int width = static_cast<int>(page_table.width);
+    const int height = static_cast<int>(page_table.height);
+    std::vector<std::uint16_t> shifted(
+        static_cast<std::size_t>(width) * height,
+        kInvalidLayer);
 
-    const int w = static_cast<int>(zt.width);
-    const int h = static_cast<int>(zt.height);
+    const int source_x0 = std::max(0, delta_x);
+    const int source_y0 = std::max(0, delta_y);
+    const int source_x1 = std::min(width, width + delta_x);
+    const int source_y1 = std::min(height, height + delta_y);
 
-    // Create a new buffer initialized to kInvalidLayer
-    std::vector<std::uint16_t> new_data(w * h, kInvalidLayer);
-
-    // Copy overlapping region from old data to new positions.
-    // Old texel (ox, oy) maps to new texel (ox - dx, oy - dy).
-    // Source region in old buffer: the part that maps to valid new positions.
-    const int src_x0 = std::max(0, dx);
-    const int src_y0 = std::max(0, dy);
-    const int src_x1 = std::min(w, w + dx);
-    const int src_y1 = std::min(h, h + dy);
-
-    for (int oy = src_y0; oy < src_y1; ++oy) {
-        const int ny = oy - dy;
-        const int copy_width = src_x1 - src_x0;
+    for (int old_y = source_y0; old_y < source_y1; ++old_y) {
+        const int new_y = old_y - delta_y;
+        const int copy_width = source_x1 - source_x0;
         if (copy_width > 0) {
             std::memcpy(
-                &new_data[ny * w + (src_x0 - dx)],
-                &zt.data[oy * w + src_x0],
-                copy_width * sizeof(std::uint16_t));
+                &shifted[static_cast<std::size_t>(new_y) * width + (source_x0 - delta_x)],
+                &page_table.data[static_cast<std::size_t>(old_y) * width + source_x0],
+                static_cast<std::size_t>(copy_width) * sizeof(std::uint16_t));
         }
     }
-
-    zt.data = std::move(new_data);
+    page_table.data = std::move(shifted);
 }
 
 void IndirectionTextureManager::UpdateWindowCenter(
-    int zoom, int center_tile_x, int center_tile_y) {
-
-    if (!IsWindowedMode(zoom)) {
-        return;  // Full mode — no windowing needed
-    }
-
-    const int half = static_cast<int>(kWindowSize / 2);
-    const glm::ivec2 new_offset(center_tile_x - half, center_tile_y - half);
-
-    auto it = zoom_textures_.find(zoom);
-    if (it == zoom_textures_.end()) {
-        // Create texture with this offset
-        CreateZoomTexture(zoom);
-        it = zoom_textures_.find(zoom);
-        it->second.window_offset = new_offset;
+    const imagery::ImageTileKey& center_tile) {
+    if (!center_tile.IsValid() || !IsWindowedMode(center_tile.address.level)) {
         return;
     }
 
-    ZoomTexture& zt = it->second;
-    const glm::ivec2 old_offset = zt.window_offset;
-    const glm::ivec2 delta = new_offset - old_offset;
-
-    if (delta.x == 0 && delta.y == 0) {
-        return;  // No change
+    const PageTableIdentity identity = GetIdentity(center_tile);
+    if (!page_tables_.contains(identity)) {
+        CreatePageTable(center_tile);
     }
 
-    const int w = static_cast<int>(zt.width);
-    const int h = static_cast<int>(zt.height);
-
-    if (std::abs(delta.x) >= w || std::abs(delta.y) >= h) {
-        // No overlap — clear everything
-        ClearZoomTextureData(zt);
-        zt.window_offset = new_offset;
+    const auto it = page_tables_.find(identity);
+    if (it == page_tables_.end()) {
         return;
     }
 
-    // Smart shift: move overlapping data, clear newly exposed strips.
-    //
-    // The texel at position (lx, ly) stores the layer for tile
-    // (lx + offset.x, ly + offset.y). When offset shifts by (dx, dy),
-    // the data that was at texel (lx, ly) now belongs at texel (lx - dx, ly - dy).
-    // We shift the buffer accordingly and clear the exposed strips.
+    PageTableTexture& page_table = it->second;
+    imagery::PageTableWindow updated_window = page_table.window;
+    const std::int64_t half_window = static_cast<std::int64_t>(kWindowSize / 2U);
+    updated_window.origin_column =
+        static_cast<std::int64_t>(center_tile.address.column) - half_window;
+    updated_window.origin_row =
+        static_cast<std::int64_t>(center_tile.address.row) - half_window;
 
-    ShiftWindowData(zt, delta.x, delta.y);
-    zt.window_offset = new_offset;
-
-    // Upload entire buffer to GPU (the shifted data + cleared strips)
-    if (!skip_gl_init_ && zt.texture_id != 0) {
-        glBindTexture(GL_TEXTURE_2D, zt.texture_id);
-        glTexSubImage2D(
-            GL_TEXTURE_2D, 0, 0, 0,
-            static_cast<GLsizei>(zt.width),
-            static_cast<GLsizei>(zt.height),
-            GL_RED_INTEGER, GL_UNSIGNED_SHORT,
-            zt.data.data());
-        glBindTexture(GL_TEXTURE_2D, 0);
+    if (updated_window.origin_column == page_table.window.origin_column &&
+        updated_window.origin_row == page_table.window.origin_row) {
+        return;
     }
+
+    const std::int64_t delta_x =
+        updated_window.origin_column - page_table.window.origin_column;
+    const std::int64_t delta_y =
+        updated_window.origin_row - page_table.window.origin_row;
+    updated_window.generation = next_window_generation_++;
+
+    if (std::abs(delta_x) >= static_cast<std::int64_t>(page_table.width) ||
+        std::abs(delta_y) >= static_cast<std::int64_t>(page_table.height)) {
+        ClearPageTableData(page_table);
+    } else {
+        ShiftWindowData(
+            page_table,
+            static_cast<int>(delta_x),
+            static_cast<int>(delta_y));
+        if (!skip_gl_init_ && page_table.texture_id != 0) {
+            glBindTexture(GL_TEXTURE_2D, page_table.texture_id);
+            glTexSubImage2D(
+                GL_TEXTURE_2D,
+                0,
+                0,
+                0,
+                static_cast<GLsizei>(page_table.width),
+                static_cast<GLsizei>(page_table.height),
+                GL_RED_INTEGER,
+                GL_UNSIGNED_SHORT,
+                page_table.data.data());
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+    }
+    page_table.window = std::move(updated_window);
 }
 
 std::vector<int> IndirectionTextureManager::GetActiveZoomLevels() const {
     std::vector<int> levels;
-    levels.reserve(zoom_textures_.size());
-    for (const auto& [zoom, zt] : zoom_textures_) {
-        levels.push_back(zoom);
+    levels.reserve(page_tables_.size());
+    for (const auto& [identity, page_table] : page_tables_) {
+        const int level = static_cast<int>(identity.level);
+        if (std::find(levels.begin(), levels.end(), level) == levels.end()) {
+            levels.push_back(level);
+        }
     }
     std::sort(levels.begin(), levels.end());
     return levels;
 }
 
-void IndirectionTextureManager::ReleaseZoomLevel(int zoom) {
-    auto it = zoom_textures_.find(zoom);
-    if (it == zoom_textures_.end()) {
+void IndirectionTextureManager::ReleasePageTable(
+    const imagery::ImageTileKey& imagery_key) {
+    if (!imagery_key.IsValid()) {
+        return;
+    }
+
+    const auto it = page_tables_.find(GetIdentity(imagery_key));
+    if (it == page_tables_.end()) {
         return;
     }
 
     if (!skip_gl_init_ && it->second.texture_id != 0) {
         glDeleteTextures(1, &it->second.texture_id);
     }
-
-    zoom_textures_.erase(it);
-    spdlog::debug("Released indirection texture for zoom {}", zoom);
+    page_tables_.erase(it);
 }
 
-} // namespace earth_map
+}  // namespace earth_map

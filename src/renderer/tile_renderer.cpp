@@ -4,6 +4,7 @@
  */
 
 #include <earth_map/renderer/tile_renderer.h>
+#include <earth_map/imagery/tile_matrix_set.h>
 #include <earth_map/renderer/globe_mesh.h>
 #include <earth_map/renderer/shader_loader.h>
 #include <earth_map/math/projection.h>
@@ -21,6 +22,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <cstddef>
+#include <optional>
 
 namespace earth_map {
 
@@ -213,8 +215,11 @@ public:
                 coordinates::CoordinateMapper::CartesianToGeographic(canonical_camera_position);
             const TileCoordinates center_tile =
                 coordinates::CoordinateMapper::GeographicToSphericalTile(cam_geo, zoom_level);
-            texture_coordinator_->UpdateIndirectionWindowCenter(
-                zoom_level, center_tile.x, center_tile.y);
+            if (const auto center_imagery_key =
+                    texture_coordinator_->ResolveImageryTileKey(center_tile);
+                center_imagery_key.has_value()) {
+                texture_coordinator_->UpdateIndirectionWindowCenter(*center_imagery_key);
+            }
         }
 
         // Request all visible tiles from texture coordinator (idempotent, lock-free)
@@ -383,11 +388,15 @@ public:
 
             std::uint32_t indirection_id = 0;
             glm::ivec2 offset(0, 0);
-            if (texture_coordinator_ && zoom >= 0) {
-                indirection_id = texture_coordinator_->GetIndirectionTextureID(zoom);
-                offset = texture_coordinator_->GetIndirectionOffset(zoom);
-            } else if (texture_coordinator_) {
-                indirection_id = texture_coordinator_->GetIndirectionTextureID(-1);
+            if (texture_coordinator_) {
+                const auto table_key = zoom >= 0
+                    ? texture_coordinator_->ResolveImageryTileKey(TileCoordinates(0, 0, zoom))
+                    : std::optional<imagery::ImageTileKey>{};
+                const imagery::ImageTileKey invalid_key{};
+                const imagery::ImageTileKey& lookup_key =
+                    table_key.has_value() ? *table_key : invalid_key;
+                indirection_id = texture_coordinator_->GetIndirectionTextureID(lookup_key);
+                offset = texture_coordinator_->GetIndirectionOffset(lookup_key);
             }
 
             glBindTexture(GL_TEXTURE_2D, indirection_id);

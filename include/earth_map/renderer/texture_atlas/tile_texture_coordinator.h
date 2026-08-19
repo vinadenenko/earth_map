@@ -29,6 +29,7 @@
 #include <glm/vec4.hpp>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <shared_mutex>
 #include <cstdint>
@@ -170,7 +171,8 @@ public:
      *
      * @return OpenGL texture ID, or 0 if not allocated
      */
-    std::uint32_t GetIndirectionTextureID(int zoom) const;
+    std::uint32_t GetIndirectionTextureID(
+        const imagery::ImageTileKey& imagery_key) const;
 
     /**
      * @brief Get indirection window offset for a zoom level
@@ -178,7 +180,8 @@ public:
      * For full-mode zooms (0-12), returns (0,0).
      * For windowed zooms (13+), returns the tile coordinate offset.
      */
-    glm::ivec2 GetIndirectionOffset(int zoom) const;
+    glm::ivec2 GetIndirectionOffset(
+        const imagery::ImageTileKey& imagery_key) const;
 
     /**
      * @brief Update indirection window center for windowed zoom levels
@@ -186,7 +189,15 @@ public:
      * Should be called when camera moves to keep the indirection window
      * centered on the visible area.
      */
-    void UpdateIndirectionWindowCenter(int zoom, int center_tile_x, int center_tile_y);
+    void UpdateIndirectionWindowCenter(const imagery::ImageTileKey& center_tile);
+
+    /**
+     * Resolves the legacy renderer request into the default provider's
+     * canonical imagery identity. This is the only coordinate-to-imagery
+     * conversion at the current icosphere renderer boundary.
+     */
+    std::optional<imagery::ImageTileKey> ResolveImageryTileKey(
+        const TileCoordinates& coords) const;
 
     /**
      * @brief Get tile pool layer index for a tile
@@ -275,6 +286,9 @@ private:
 
     /// Worker pool for loading and decoding tiles
     std::unique_ptr<TileLoadWorkerPool> worker_pool_;
+
+    /// Provider authority for the temporary icosphere request boundary.
+    std::shared_ptr<TileLoader> loader_;
 
     /// GL upload queue (MPSC queue)
     std::shared_ptr<GLUploadQueue> upload_queue_;

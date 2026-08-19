@@ -6,6 +6,8 @@
 #include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
 #include <spdlog/spdlog.h>
 
+#include <utility>
+
 namespace earth_map {
 
 TileTextureCoordinator::TileTextureCoordinator(
@@ -13,15 +15,15 @@ TileTextureCoordinator::TileTextureCoordinator(
     std::shared_ptr<TileLoader> loader,
     int num_worker_threads,
     bool skip_gl_init)
-{
-    if (!loader) {
+    : loader_(std::move(loader)) {
+    if (!loader_) {
         spdlog::error("TileTextureCoordinator: null loader provided");
         throw std::invalid_argument("TileLoader cannot be null");
     }
 
     // TileLoader is the sole authority that resolves a render request into a
     // source-aware imagery cache key. Bind the cache once at that boundary.
-    loader->SetTileCache(cache);
+    loader_->SetTileCache(cache);
 
     // Create upload queue (shared between workers and GL thread)
     upload_queue_ = std::make_shared<GLUploadQueue>();
@@ -43,7 +45,7 @@ TileTextureCoordinator::TileTextureCoordinator(
 
     // Create worker pool
     worker_pool_ = std::make_unique<TileLoadWorkerPool>(
-        loader,
+        loader_,
         upload_queue_,
         num_worker_threads
     );
@@ -140,17 +142,24 @@ std::uint32_t TileTextureCoordinator::GetTilePoolTextureID() const {
     return tile_pool_->GetTextureArrayID();
 }
 
-std::uint32_t TileTextureCoordinator::GetIndirectionTextureID(int zoom) const {
-    return indirection_manager_->GetTextureID(zoom);
+std::uint32_t TileTextureCoordinator::GetIndirectionTextureID(
+    const imagery::ImageTileKey& imagery_key) const {
+    return indirection_manager_->GetTextureID(imagery_key);
 }
 
-glm::ivec2 TileTextureCoordinator::GetIndirectionOffset(int zoom) const {
-    return indirection_manager_->GetWindowOffset(zoom);
+glm::ivec2 TileTextureCoordinator::GetIndirectionOffset(
+    const imagery::ImageTileKey& imagery_key) const {
+    return indirection_manager_->GetWindowOffset(imagery_key);
 }
 
 void TileTextureCoordinator::UpdateIndirectionWindowCenter(
-    int zoom, int center_tile_x, int center_tile_y) {
-    indirection_manager_->UpdateWindowCenter(zoom, center_tile_x, center_tile_y);
+    const imagery::ImageTileKey& center_tile) {
+    indirection_manager_->UpdateWindowCenter(center_tile);
+}
+
+std::optional<imagery::ImageTileKey> TileTextureCoordinator::ResolveImageryTileKey(
+    const TileCoordinates& coords) const {
+    return loader_->ResolveImageTileKey(coords);
 }
 
 int TileTextureCoordinator::GetTileLayerIndex(const TileCoordinates& coords) const {
@@ -220,7 +229,7 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
                 }
 
                 if (candidate_coords.has_value()) {
-                    indirection_manager_->ClearTile(*candidate_coords);
+                    indirection_manager_->ClearTile(*candidate);
                 } else {
                     spdlog::error(
                         "Physical imagery page lost its legacy page-table owner before eviction: "
@@ -265,7 +274,7 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
             // stale upload, not as a loaded tile: otherwise RequestTiles()
             // will never retry it after the camera moves back into range.
             const bool mapped = indirection_manager_->SetTileLayer(
-                cmd->coords,
+                *cmd->imagery_key,
                 static_cast<std::uint16_t>(layer));
 
             if (!mapped) {
@@ -306,7 +315,7 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
                 spdlog::trace("Tile {} uploaded to pool layer {}",
                               cmd->coords.GetKey(), layer);
             } else {
-                indirection_manager_->ClearTile(cmd->coords);
+                indirection_manager_->ClearTile(*cmd->imagery_key);
                 tile_pool_->EvictTile(*cmd->imagery_key);
                 spdlog::debug("Discarded upload whose request state was removed: {}",
                               cmd->coords.GetKey());
@@ -379,7 +388,9 @@ std::size_t TileTextureCoordinator::EvictUnusedTiles(std::chrono::seconds max_ag
         }
 
         // Clear from indirection texture
-        indirection_manager_->ClearTile(coords);
+        if (it->second.imagery_key.has_value()) {
+            indirection_manager_->ClearTile(*it->second.imagery_key);
+        }
 
         // Evict from tile pool
         if (it->second.imagery_key.has_value()) {
