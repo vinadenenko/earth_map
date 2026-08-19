@@ -157,6 +157,12 @@ glm::ivec2 TileTextureCoordinator::GetIndirectionOffset(
     return indirection_manager_->GetWindowOffset(imagery_key);
 }
 
+std::optional<IndirectionTextureManager::PageTableBinding>
+TileTextureCoordinator::GetIndirectionPageTableBinding(
+    const imagery::ImageTileKey& imagery_key) const {
+    return indirection_manager_->GetPageTableBinding(imagery_key);
+}
+
 void TileTextureCoordinator::UpdateIndirectionWindowCenter(
     const imagery::ImageTileKey& center_tile) {
     if (!indirection_manager_->UpdateWindowCenter(center_tile)) {

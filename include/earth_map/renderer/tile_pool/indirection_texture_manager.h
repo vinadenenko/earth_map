@@ -36,6 +36,18 @@ public:
     static constexpr std::uint32_t kWindowSize = 512;
 
     /**
+     * Immutable binding for one page-table generation.
+     *
+     * The renderer must bind the texture and derive its lookup offset from
+     * this same value.  Keeping them together prevents a frame from mixing a
+     * texture from one window generation with coordinates from another.
+     */
+    struct PageTableBinding {
+        std::uint32_t texture_id = 0;
+        imagery::PageTableWindow window;
+    };
+
+    /**
      * @brief Constructor
      * @param skip_gl_init Skip OpenGL calls (for testing)
      */
@@ -92,6 +104,14 @@ public:
 
     /** Returns the immutable source-aware window used by an allocated table. */
     std::optional<imagery::PageTableWindow> GetPageTableWindow(
+        const imagery::ImageTileKey& imagery_key) const;
+
+    /**
+     * Returns the texture and immutable window as one generation-consistent
+     * render binding. Returns nullopt when that page table has not been
+     * allocated; callers may bind the dummy table in that case.
+     */
+    std::optional<PageTableBinding> GetPageTableBinding(
         const imagery::ImageTileKey& imagery_key) const;
 
     /**

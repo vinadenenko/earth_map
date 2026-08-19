@@ -286,6 +286,21 @@ std::optional<imagery::PageTableWindow> IndirectionTextureManager::GetPageTableW
         : std::optional<imagery::PageTableWindow>(it->second.window);
 }
 
+std::optional<IndirectionTextureManager::PageTableBinding>
+IndirectionTextureManager::GetPageTableBinding(
+    const imagery::ImageTileKey& imagery_key) const {
+    if (!imagery_key.IsValid()) {
+        return std::nullopt;
+    }
+
+    const auto it = page_tables_.find(GetIdentity(imagery_key));
+    if (it == page_tables_.end()) {
+        return std::nullopt;
+    }
+
+    return PageTableBinding{it->second.texture_id, it->second.window};
+}
+
 void IndirectionTextureManager::ShiftWindowData(
     PageTableTexture& page_table,
     int delta_x,

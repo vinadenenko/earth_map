@@ -194,6 +194,15 @@ public:
         const imagery::ImageTileKey& imagery_key) const;
 
     /**
+     * Captures the GL texture and page-table window from one page-table
+     * generation. The renderer uses this single value to build its immutable
+     * per-frame imagery snapshot.
+     */
+    std::optional<IndirectionTextureManager::PageTableBinding>
+    GetIndirectionPageTableBinding(
+        const imagery::ImageTileKey& imagery_key) const;
+
+    /**
      * @brief Update indirection window center for windowed zoom levels
      *
      * Should be called when camera moves to keep the indirection window

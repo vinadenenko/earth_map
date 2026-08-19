@@ -51,6 +51,13 @@ TEST_F(IndirectionTextureManagerTest, MapsCanonicalPageInFullTable) {
     EXPECT_EQ(window->imagery_source_id, "page-table-test-imagery");
     EXPECT_EQ(window->matrix_set_id, "WebMercatorQuad");
     EXPECT_EQ(window->generation, 1U);
+
+    const auto binding = manager_->GetPageTableBinding(key);
+    ASSERT_TRUE(binding.has_value());
+    EXPECT_EQ(binding->texture_id, manager_->GetTextureID(key));
+    EXPECT_EQ(binding->window.generation, window->generation);
+    EXPECT_EQ(binding->window.origin_column, window->origin_column);
+    EXPECT_EQ(binding->window.origin_row, window->origin_row);
 }
 
 TEST_F(IndirectionTextureManagerTest, KeepsSourcesWithSameAddressSeparate) {
@@ -114,6 +121,12 @@ TEST_F(IndirectionTextureManagerTest, WindowedPageUsesAndMovesSourceAwareWindow)
     const auto shifted_window = manager_->GetPageTableWindow(key);
     ASSERT_TRUE(shifted_window.has_value());
     EXPECT_GT(shifted_window->generation, first_window->generation);
+
+    const auto binding = manager_->GetPageTableBinding(key);
+    ASSERT_TRUE(binding.has_value());
+    EXPECT_EQ(binding->window.generation, shifted_window->generation);
+    EXPECT_EQ(binding->window.origin_column, shifted_window->origin_column);
+    EXPECT_EQ(binding->window.origin_row, shifted_window->origin_row);
 }
 
 TEST_F(IndirectionTextureManagerTest, FarWindowMoveDropsOldEntries) {

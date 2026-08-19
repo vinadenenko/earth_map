@@ -18,6 +18,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <unordered_map>
@@ -86,6 +87,25 @@ struct TileRenderState {
     bool is_visible;                 ///< Whether tile is currently visible
     float last_used;                 ///< Last frame this tile was used
     float load_priority;              ///< Priority for loading (0.0 = highest)
+};
+
+/**
+ * Immutable page-table state submitted to the imagery shader for one frame.
+ *
+ * Page-table windows are mutable derived views of physical tile residency.
+ * Capture the GL texture together with its exact immutable window before
+ * rendering so a draw cannot combine values from different generations.
+ */
+struct ImageryRenderSnapshot {
+    struct PageTable {
+        std::uint32_t texture_id = 0;
+        imagery::PageTableWindow window;
+        bool has_page_table = false;
+    };
+
+    int zoom_level = kDefaultZoomLevel;
+    int fallback_level_count = 1;
+    std::array<PageTable, kMaxFallbackLevels> page_tables;
 };
 
 /**
@@ -333,6 +353,8 @@ public:
             }
         }
 
+        CaptureImageryRenderSnapshot(zoom_level);
+
         spdlog::debug("Tile renderer update: {} visible tiles, zoom level {}",
                     visible_tiles_.size(), zoom_level);
     }
@@ -401,16 +423,12 @@ public:
         glUniform3f(uniform_locs_.light_pos, kDefaultLightPosition.x, kDefaultLightPosition.y, kDefaultLightPosition.z);
         glUniform3f(uniform_locs_.light_color, 1.0f, 1.0f, 1.0f);
 
-        // Get current zoom level from visible tiles (or use default)
-        int current_zoom = kDefaultZoomLevel;
-        if (!visible_tiles_.empty()) {
-            current_zoom = visible_tiles_[0].coordinates.zoom;
-        }
+        const int current_zoom = imagery_snapshot_.zoom_level;
 
         // Set zoom and fallback level uniforms
         glUniform1i(uniform_locs_.zoom_level, current_zoom);
 
-        const int num_fallback = std::min(kMaxFallbackLevels, current_zoom + 1);
+        const int num_fallback = imagery_snapshot_.fallback_level_count;
         glUniform1i(uniform_locs_.num_fallback_levels, num_fallback);
 
         // Bind tile pool texture array to unit 0
@@ -429,22 +447,19 @@ public:
         // This prevents undefined behavior from sampler/target type mismatch
         // (usampler2D pointing at GL_TEXTURE_2D_ARRAY on unit 0).
         for (int level = 0; level < kMaxFallbackLevels; ++level) {
-            const int zoom = current_zoom - level;
             const GLint tex_unit = 1 + level;
 
             glActiveTexture(GL_TEXTURE0 + tex_unit);
 
-            std::uint32_t indirection_id = 0;
+            const ImageryRenderSnapshot::PageTable& page_table =
+                imagery_snapshot_.page_tables[level];
+            std::uint32_t indirection_id = page_table.texture_id;
             glm::ivec2 offset(0, 0);
-            if (texture_coordinator_) {
-                const auto table_key = zoom >= 0
-                    ? texture_coordinator_->ResolveImageryTileKey(TileCoordinates(0, 0, zoom))
-                    : std::optional<imagery::ImageTileKey>{};
-                const imagery::ImageTileKey invalid_key{};
-                const imagery::ImageTileKey& lookup_key =
-                    table_key.has_value() ? *table_key : invalid_key;
-                indirection_id = texture_coordinator_->GetIndirectionTextureID(lookup_key);
-                offset = texture_coordinator_->GetIndirectionOffset(lookup_key);
+            if (page_table.has_page_table) {
+                offset = {
+                    static_cast<int>(page_table.window.origin_column),
+                    static_cast<int>(page_table.window.origin_row),
+                };
             }
 
             glBindTexture(GL_TEXTURE_2D, indirection_id);
@@ -485,6 +500,7 @@ public:
 
     void ClearCache() override {
         visible_tiles_.clear();
+        imagery_snapshot_ = {};
         // Cache cleared
         spdlog::info("Tile renderer cache cleared");
     }
@@ -506,6 +522,41 @@ public:
     }
 
 private:
+    void CaptureImageryRenderSnapshot(int zoom_level) {
+        imagery_snapshot_ = {};
+        imagery_snapshot_.zoom_level = zoom_level;
+        imagery_snapshot_.fallback_level_count =
+            std::min(kMaxFallbackLevels, zoom_level + 1);
+
+        for (int level = 0; level < kMaxFallbackLevels; ++level) {
+            const int table_zoom = zoom_level - level;
+            auto& page_table = imagery_snapshot_.page_tables[level];
+
+            if (!texture_coordinator_ || table_zoom < kMinZoom) {
+                continue;
+            }
+
+            const auto table_key = texture_coordinator_->ResolveImageryTileKey(
+                TileCoordinates(0, 0, table_zoom));
+            if (!table_key.has_value()) {
+                page_table.texture_id = texture_coordinator_->GetIndirectionTextureID({});
+                continue;
+            }
+
+            const auto binding =
+                texture_coordinator_->GetIndirectionPageTableBinding(*table_key);
+            if (!binding.has_value()) {
+                page_table.texture_id =
+                    texture_coordinator_->GetIndirectionTextureID(*table_key);
+                continue;
+            }
+
+            page_table.texture_id = binding->texture_id;
+            page_table.window = binding->window;
+            page_table.has_page_table = true;
+        }
+    }
+
     TileRenderConfig config_;
     TileTextureCoordinator* texture_coordinator_ = nullptr;
     GlobeMesh* globe_mesh_ = nullptr;  // External globe mesh to render on
@@ -513,6 +564,7 @@ private:
     bool mesh_uploaded_to_gpu_ = false;  // Track if mesh data is on GPU
     std::uint64_t frame_counter_ = 0;
     std::vector<TileRenderState> visible_tiles_;
+    ImageryRenderSnapshot imagery_snapshot_;
     TileRenderStats stats_;
 
     std::vector<TileCoordinates> last_visible_tiles_;
