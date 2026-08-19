@@ -85,22 +85,32 @@ void TileTexturePool::FreeLayer(int layer_index) {
     LayerSlot& slot = layers_[layer_index];
     if (slot.occupied) {
         lru_order_.erase(slot.lru_it);
-        coord_to_layer_.erase(slot.coords);
+        imagery_key_to_layer_.erase(slot.imagery_key);
         slot.occupied = false;
         free_layers_.push(layer_index);
     }
 }
 
 int TileTexturePool::UploadTile(
-    const TileCoordinates& coords,
+    const imagery::ImageTileKey& imagery_key,
     const std::uint8_t* pixel_data,
     std::uint32_t width,
     std::uint32_t height,
     std::uint8_t channels) {
 
+    if (!imagery_key.IsValid()) {
+        spdlog::warn("TileTexturePool::UploadTile: invalid imagery key");
+        return -1;
+    }
+
     if (!pixel_data) {
-        spdlog::warn("TileTexturePool::UploadTile: null pixel data for tile {}",
-                     coords.GetKey());
+        spdlog::warn(
+            "TileTexturePool::UploadTile: null pixel data for imagery {}/{}/{}/{}/{}",
+            imagery_key.imagery_source_id,
+            imagery_key.matrix_set_id,
+            imagery_key.address.level,
+            imagery_key.address.column,
+            imagery_key.address.row);
         return -1;
     }
 
@@ -117,10 +127,10 @@ int TileTexturePool::UploadTile(
     }
 
     // Check if already loaded (update in place)
-    auto it = coord_to_layer_.find(coords);
+    auto it = imagery_key_to_layer_.find(imagery_key);
     int layer_index;
 
-    if (it != coord_to_layer_.end()) {
+    if (it != imagery_key_to_layer_.end()) {
         layer_index = it->second;
         // Move to front of LRU (most recently used)
         lru_order_.splice(lru_order_.begin(), lru_order_, layers_[layer_index].lru_it);
@@ -129,8 +139,8 @@ int TileTexturePool::UploadTile(
         if (layer_index < 0) {
             return -1;
         }
-        coord_to_layer_[coords] = layer_index;
-        layers_[layer_index].coords = coords;
+        imagery_key_to_layer_[imagery_key] = layer_index;
+        layers_[layer_index].imagery_key = imagery_key;
         layers_[layer_index].occupied = true;
         // Insert at front of LRU
         lru_order_.push_front(layer_index);
@@ -171,7 +181,7 @@ int TileTexturePool::UploadTile(
             // will not install an indirection entry after this failure, so the
             // reservation must be released here rather than becoming an
             // unreachable physical page.
-            EvictTile(coords);
+            EvictTile(imagery_key);
             return -1;
         }
     }
@@ -179,45 +189,45 @@ int TileTexturePool::UploadTile(
     return layer_index;
 }
 
-void TileTexturePool::EvictTile(const TileCoordinates& coords) {
-    auto it = coord_to_layer_.find(coords);
-    if (it == coord_to_layer_.end()) {
+void TileTexturePool::EvictTile(const imagery::ImageTileKey& imagery_key) {
+    auto it = imagery_key_to_layer_.find(imagery_key);
+    if (it == imagery_key_to_layer_.end()) {
         return;
     }
     FreeLayer(it->second);
 }
 
-bool TileTexturePool::IsTileLoaded(const TileCoordinates& coords) const {
-    return coord_to_layer_.find(coords) != coord_to_layer_.end();
+bool TileTexturePool::IsTileLoaded(const imagery::ImageTileKey& imagery_key) const {
+    return imagery_key_to_layer_.find(imagery_key) != imagery_key_to_layer_.end();
 }
 
-int TileTexturePool::GetLayerIndex(const TileCoordinates& coords) const {
-    auto it = coord_to_layer_.find(coords);
-    if (it == coord_to_layer_.end()) {
+int TileTexturePool::GetLayerIndex(const imagery::ImageTileKey& imagery_key) const {
+    auto it = imagery_key_to_layer_.find(imagery_key);
+    if (it == imagery_key_to_layer_.end()) {
         return -1;
     }
     return it->second;
 }
 
 std::chrono::steady_clock::time_point TileTexturePool::GetLastUsedTime(
-    const TileCoordinates& coords) const {
-    auto it = coord_to_layer_.find(coords);
-    if (it == coord_to_layer_.end()) {
+    const imagery::ImageTileKey& imagery_key) const {
+    auto it = imagery_key_to_layer_.find(imagery_key);
+    if (it == imagery_key_to_layer_.end()) {
         return std::chrono::steady_clock::time_point::min();
     }
     return layers_[it->second].last_used;
 }
 
-std::optional<TileCoordinates> TileTexturePool::GetEvictionCandidate() const {
+std::optional<imagery::ImageTileKey> TileTexturePool::GetEvictionCandidate() const {
     if (lru_order_.empty()) {
         return std::nullopt;
     }
-    return layers_[lru_order_.back()].coords;
+    return layers_[lru_order_.back()].imagery_key;
 }
 
-void TileTexturePool::TouchTile(const TileCoordinates& coords) {
-    auto it = coord_to_layer_.find(coords);
-    if (it != coord_to_layer_.end()) {
+void TileTexturePool::TouchTile(const imagery::ImageTileKey& imagery_key) {
+    auto it = imagery_key_to_layer_.find(imagery_key);
+    if (it != imagery_key_to_layer_.end()) {
         LayerSlot& slot = layers_[it->second];
         slot.last_used = std::chrono::steady_clock::now();
         lru_order_.splice(lru_order_.begin(), lru_order_, slot.lru_it);

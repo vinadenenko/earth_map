@@ -77,6 +77,12 @@ public:
     struct TileState {
         TileStatus status = TileStatus::NotLoaded;
         int pool_layer = -1;  ///< Tile pool layer index (valid if Loaded)
+        /// Canonical physical-residency identity (valid if Loaded).
+        ///
+        /// The request map remains TileCoordinates only until the indirection
+        /// manager migrates in the next step. Physical GPU ownership must
+        /// already use this source-aware identity.
+        std::optional<imagery::ImageTileKey> imagery_key;
         std::chrono::steady_clock::time_point request_time;  ///< When tile was requested
     };
 
