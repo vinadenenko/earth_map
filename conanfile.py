@@ -48,9 +48,18 @@ class EarthMapConan(ConanFile):
     def requirements(self):
         """Core dependencies for Earth Map library"""
 
-        # Core OpenGL and windowing
-        self.requires("glfw/3.3.8")
+        # GLEW loads the library's own GL entry points at compile/link time
+        # (see #include <GL/glew.h> throughout src/renderer/*.cpp) --
+        # required unconditionally.
         self.requires("glew/2.2.0")
+
+        # GLFW is only used for window/context creation in
+        # examples/basic-example; the library itself never calls into it.
+        # Keeping it out of earth_map's own dependency graph when examples
+        # aren't being built means platforms without a usable glfw backend
+        # (e.g. Android) can still build and consume earth_map itself.
+        if self.options.with_examples:
+            self.requires("glfw/3.3.8")
 
         # Mathematics library
         self.requires("glm/1.0.1")

@@ -61,7 +61,6 @@ endif()
 
 # Find required packages
 find_package(OpenGL REQUIRED)
-find_package(glfw3 REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(glm REQUIRED)
 find_package(nlohmann_json REQUIRED)
@@ -75,6 +74,16 @@ find_package(CURL REQUIRED)
 if(EARTH_MAP_BUILD_TESTS)
     find_package(GTest REQUIRED)
     find_package(benchmark REQUIRED)
+endif()
+
+# glfw is only used for window/context creation in examples/basic-example
+# (the library itself never calls into it -- it only issues GL calls
+# against whatever context the consumer already made current). Keeping it
+# out of the library's own dependency graph means platforms without a
+# usable glfw backend (e.g. Android) can still build and consume earth_map
+# itself; only the desktop example needs it.
+if(EARTH_MAP_BUILD_EXAMPLES)
+    find_package(glfw3 REQUIRED)
 endif()
 
 # Include directories
@@ -109,7 +118,6 @@ set_target_properties(earth_map PROPERTIES
 target_link_libraries(earth_map
     PUBLIC
         OpenGL::GL
-        glfw
         GLEW::GLEW
         glm::glm
         nlohmann_json::nlohmann_json
