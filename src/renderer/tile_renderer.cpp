@@ -732,10 +732,10 @@ void main() {
 
     bool InitializeOpenGLState() {
         tile_shader_program_ = ShaderLoader::CreateProgram(
-            kTileVertexShader, kTileFragmentShader, "tile_atlas");
+            kTileVertexShader, kTileFragmentShader, "virtual_imagery_globe");
 
         if (tile_shader_program_ == 0) {
-            spdlog::error("Failed to create tile atlas shader program");
+            spdlog::error("Failed to create virtual imagery globe shader program");
             return false;
         }
 

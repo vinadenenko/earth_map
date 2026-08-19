@@ -24,7 +24,8 @@ namespace {
 /**
  * @brief C++ reference implementation of the GLSL geoToTile() function
  *
- * This must exactly match the shader code in tile_atlas.frag.
+ * This must exactly match surfaceToTileAndFrac in the embedded
+ * virtual_imagery_globe fragment shader.
  */
 struct ShaderGeoToTile {
     static std::pair<int, int> Calculate(double lon, double lat, int zoom) {
