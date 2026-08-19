@@ -21,6 +21,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstddef>
 #include <optional>
 
@@ -43,6 +44,33 @@ constexpr float kZoomAltitudeScale =
     (constants::camera_constraints::MIN_ALTITUDE_METERS
      / static_cast<float>(constants::geodetic::EARTH_MEAN_RADIUS))
     * static_cast<float>(1u << kMaxZoom);
+
+/**
+ * Returns the ancestors sampled by the fragment shader when an exact imagery
+ * page is not resident.  The renderer still receives legacy TileCoordinates
+ * at the icosphere boundary; canonical ImageTileKey resolution happens in the
+ * coordinator before a request reaches cache, upload, or GPU residency.
+ */
+std::vector<TileCoordinates> BuildAncestorFallbackRequests(
+    const std::vector<TileCoordinates>& leaf_tiles)
+{
+    std::vector<TileCoordinates> ancestors;
+    std::unordered_set<TileCoordinates, TileCoordinatesHash> seen;
+
+    for (const TileCoordinates& leaf : leaf_tiles) {
+        TileCoordinates ancestor = leaf;
+        for (int level = 1;
+             level < kMaxFallbackLevels && ancestor.zoom > kMinZoom;
+             ++level) {
+            ancestor = ancestor.GetParent();
+            if (seen.insert(ancestor).second) {
+                ancestors.push_back(ancestor);
+            }
+        }
+    }
+
+    return ancestors;
+}
 
 } // namespace
 
@@ -206,31 +234,51 @@ public:
             }
         }
 
-        // Update indirection window center for CURRENT zoom level only (13+).
-        // Fallback levels keep their existing windows - their tiles were loaded when
-        // the camera was at those zoom levels. Updating fallback windows with current
-        // camera position would clear their tiles (if shift > 512), causing GRAY areas.
+        // Keep every page-table window sampled by the shader centered on the
+        // current camera.  UpdateIndirectionWindowCenter replays resident pages
+        // into a new generation, so moving a parent window no longer drops its
+        // usable mapping.  This is essential for a direct jump to a high zoom:
+        // the four parent levels must be addressable before exact imagery arrives.
         if (texture_coordinator_ && zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom) {
             const coordinates::Geographic cam_geo =
                 coordinates::CoordinateMapper::CartesianToGeographic(canonical_camera_position);
-            const TileCoordinates center_tile =
+            TileCoordinates center_tile =
                 coordinates::CoordinateMapper::GeographicToSphericalTile(cam_geo, zoom_level);
-            if (const auto center_imagery_key =
-                    texture_coordinator_->ResolveImageryTileKey(center_tile);
-                center_imagery_key.has_value()) {
-                texture_coordinator_->UpdateIndirectionWindowCenter(*center_imagery_key);
+
+            const int fallback_level_count = std::min(kMaxFallbackLevels, zoom_level + 1);
+            for (int level = 0; level < fallback_level_count; ++level) {
+                if (const auto center_imagery_key =
+                        texture_coordinator_->ResolveImageryTileKey(center_tile);
+                    center_imagery_key.has_value()) {
+                    texture_coordinator_->UpdateIndirectionWindowCenter(*center_imagery_key);
+                }
+
+                if (center_tile.zoom == kMinZoom) {
+                    break;
+                }
+                center_tile = center_tile.GetParent();
             }
         }
 
-        // Request all visible tiles from texture coordinator (idempotent, lock-free)
+        // Request all ancestor pages that the shader can fall back to before
+        // requesting the exact pages.  Lower worker-pool priorities run first;
+        // this makes a direct high-zoom jump converge through real imagery,
+        // rather than leaving an avoidable gray interval while exact children
+        // download.  Both calls are idempotent.
         if (texture_coordinator_ && !visible_tile_coords.empty()) {
-            // Calculate priority based on camera distance (closer = lower number = higher priority)
-            int priority = static_cast<int>(camera_distance * 10.0f);
+            // Calculate priority based on camera distance (closer = lower number = higher priority).
+            const int priority = static_cast<int>(camera_distance * 10.0f);
+            const int ancestor_priority = std::max(kMinZoom, priority - 1);
+            const std::vector<TileCoordinates> ancestor_tiles =
+                BuildAncestorFallbackRequests(visible_tile_coords);
+
+            texture_coordinator_->RequestTiles(ancestor_tiles, ancestor_priority);
             texture_coordinator_->RequestTiles(visible_tile_coords, priority);
 
-            // Keep the resident pages selected for this frame at the front of
-            // the physical-layer LRU.  This is render-thread ownership, not a
-            // worker/cache mutation.
+            // Keep both exact and fallback pages selected for this frame at
+            // the front of the physical-layer LRU. This is render-thread
+            // ownership, not a worker/cache mutation.
+            texture_coordinator_->TouchTiles(ancestor_tiles);
             texture_coordinator_->TouchTiles(visible_tile_coords);
         }
 
