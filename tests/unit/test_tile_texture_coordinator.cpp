@@ -9,6 +9,17 @@
 
 namespace earth_map::tests {
 
+namespace {
+
+imagery::ImageTileKey MakeMockImageTileKey(const TileCoordinates& coordinates) {
+    return {"coordinator-test-imagery", "WebMercatorQuad",
+            {static_cast<std::uint32_t>(coordinates.zoom),
+             static_cast<std::uint32_t>(coordinates.x),
+             static_cast<std::uint32_t>(coordinates.y)}};
+}
+
+}  // namespace
+
 /**
  * @brief Mock TileCache for testing
  */
@@ -16,19 +27,17 @@ class CoordinatorMockTileCache : public TileCache {
 public:
     bool Initialize(const TileCacheConfig&) override { return true; }
     bool Put(const TileData&) override { return true; }
-    std::optional<TileData> Get(const TileCoordinates&) override { return std::nullopt; }
-    bool Contains(const TileCoordinates&) const override { return false; }
-    bool Remove(const TileCoordinates&) override { return false; }
+    std::optional<TileData> Get(const imagery::ImageTileKey&) override { return std::nullopt; }
+    bool Contains(const imagery::ImageTileKey&) const override { return false; }
+    bool Remove(const imagery::ImageTileKey&) override { return false; }
     void Clear() override {}
-    bool UpdateMetadata(const TileCoordinates&, const TileMetadata&) override { return true; }
-    std::shared_ptr<TileMetadata> GetMetadata(const TileCoordinates&) const override { return nullptr; }
+    bool UpdateMetadata(const imagery::ImageTileKey&, const TileMetadata&) override { return true; }
+    std::shared_ptr<TileMetadata> GetMetadata(const imagery::ImageTileKey&) const override { return nullptr; }
     TileCacheStats GetStatistics() const override { return {}; }
     std::size_t Cleanup() override { return 0; }
     TileCacheConfig GetConfiguration() const override { return {}; }
     bool SetConfiguration(const TileCacheConfig&) override { return true; }
-    std::size_t Preload(const std::vector<TileCoordinates>&) override { return 0; }
-    std::vector<TileCoordinates> GetTilesInBounds(const BoundingBox2D&) const override { return {}; }
-    std::vector<TileCoordinates> GetTilesAtZoom(std::uint8_t) const override { return {}; }
+    std::size_t Preload(const std::vector<imagery::ImageTileKey>&) override { return 0; }
 };
 
 /**
@@ -51,8 +60,9 @@ public:
         TileLoadResult result;
         result.success = true;
         result.coordinates = coords;
+        result.imagery_key = MakeMockImageTileKey(coords);
         result.tile_data = std::make_shared<TileData>();
-        result.tile_data->metadata.coordinates = coords;
+        result.tile_data->metadata.imagery_key = *result.imagery_key;
         result.tile_data->loaded = true;
         result.tile_data->width = 256;
         result.tile_data->height = 256;
@@ -60,6 +70,7 @@ public:
 
         const std::size_t data_size = 256 * 256 * 4;
         result.tile_data->data.resize(data_size);
+        result.tile_data->metadata.file_size = data_size;
         const std::uint8_t value = static_cast<std::uint8_t>((coords.x + coords.y) % 256);
         std::fill(result.tile_data->data.begin(), result.tile_data->data.end(), value);
 

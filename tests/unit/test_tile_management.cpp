@@ -40,11 +40,19 @@ protected:
     TileCoordinates CreateTestTile(int x, int y, int zoom) {
         return TileCoordinates{x, y, zoom};
     }
+
+    imagery::ImageTileKey CreateTestImageTileKey(
+        int x, int y, int zoom, const std::string& source = "test-imagery") {
+        return {source, "WebMercatorQuad",
+                {static_cast<std::uint32_t>(zoom),
+                 static_cast<std::uint32_t>(x),
+                 static_cast<std::uint32_t>(y)}};
+    }
     
-    TileData CreateTestTileData(const TileCoordinates& coords, 
+    TileData CreateTestTileData(const imagery::ImageTileKey& imagery_key,
                                const std::string& content = "test") {
         TileData tile_data;
-        tile_data.metadata.coordinates = coords;
+        tile_data.metadata.imagery_key = imagery_key;
         tile_data.metadata.file_size = content.size();
         tile_data.metadata.last_modified = std::chrono::system_clock::now();
         tile_data.metadata.last_access = std::chrono::system_clock::now();
@@ -85,17 +93,39 @@ TEST_F(TileManagementTest, TileCacheStoreAndRetrieve) {
     ASSERT_TRUE(cache->Initialize(config));
     
     // Store a tile
-    TileCoordinates coords = CreateTestTile(100, 200, 10);
-    TileData tile_data = CreateTestTileData(coords, "test tile content");
+    const auto imagery_key = CreateTestImageTileKey(100, 200, 10);
+    TileData tile_data = CreateTestTileData(imagery_key, "test tile content");
     
     EXPECT_TRUE(cache->Put(tile_data));
     
     // Retrieve the tile
-    auto retrieved_data = cache->Get(coords);
+    auto retrieved_data = cache->Get(imagery_key);
     ASSERT_TRUE(retrieved_data.has_value());
     EXPECT_TRUE(retrieved_data->IsValid());
     EXPECT_EQ(retrieved_data->data, tile_data.data);
-    EXPECT_EQ(retrieved_data->metadata.coordinates, coords);
+    EXPECT_EQ(retrieved_data->metadata.imagery_key, imagery_key);
+}
+
+TEST_F(TileManagementTest, TileCacheSeparatesImagerySourcesAtTheSameAddress) {
+    TileCacheConfig config;
+    config.disk_cache_directory = test_dir_.string() + "/tile_cache";
+
+    auto cache = CreateTileCache(config);
+    ASSERT_TRUE(cache->Initialize(config));
+
+    const auto source_a = CreateTestImageTileKey(100, 200, 10, "imagery-a");
+    const auto source_b = CreateTestImageTileKey(100, 200, 10, "imagery-b");
+    ASSERT_NE(source_a, source_b);
+
+    ASSERT_TRUE(cache->Put(CreateTestTileData(source_a, "source-a")));
+    ASSERT_TRUE(cache->Put(CreateTestTileData(source_b, "source-b")));
+
+    const auto data_a = cache->Get(source_a);
+    const auto data_b = cache->Get(source_b);
+    ASSERT_TRUE(data_a.has_value());
+    ASSERT_TRUE(data_b.has_value());
+    EXPECT_EQ(data_a->data, std::vector<std::uint8_t>({'s', 'o', 'u', 'r', 'c', 'e', '-', 'a'}));
+    EXPECT_EQ(data_b->data, std::vector<std::uint8_t>({'s', 'o', 'u', 'r', 'c', 'e', '-', 'b'}));
 }
 
 TEST_F(TileManagementTest, TileCacheContainsAndRemove) {
@@ -105,19 +135,19 @@ TEST_F(TileManagementTest, TileCacheContainsAndRemove) {
     auto cache = CreateTileCache(config);
     ASSERT_TRUE(cache->Initialize(config));
     
-    TileCoordinates coords = CreateTestTile(50, 100, 8);
-    TileData tile_data = CreateTestTileData(coords);
+    const auto imagery_key = CreateTestImageTileKey(50, 100, 8);
+    TileData tile_data = CreateTestTileData(imagery_key);
     
     // Should not contain initially
-    EXPECT_FALSE(cache->Contains(coords));
+    EXPECT_FALSE(cache->Contains(imagery_key));
     
     // Store tile
     EXPECT_TRUE(cache->Put(tile_data));
-    EXPECT_TRUE(cache->Contains(coords));
+    EXPECT_TRUE(cache->Contains(imagery_key));
     
     // Remove tile
-    EXPECT_TRUE(cache->Remove(coords));
-    EXPECT_FALSE(cache->Contains(coords));
+    EXPECT_TRUE(cache->Remove(imagery_key));
+    EXPECT_FALSE(cache->Contains(imagery_key));
 }
 
 TEST_F(TileManagementTest, TileCacheStatistics) {
@@ -129,8 +159,8 @@ TEST_F(TileManagementTest, TileCacheStatistics) {
     
     // Store some tiles
     for (int i = 0; i < 5; ++i) {
-        TileCoordinates coords = CreateTestTile(i, i, 10);
-        TileData tile_data = CreateTestTileData(coords, "tile_" + std::to_string(i));
+        const auto imagery_key = CreateTestImageTileKey(i, i, 10);
+        TileData tile_data = CreateTestTileData(imagery_key, "tile_" + std::to_string(i));
         cache->Put(tile_data);
     }
     
@@ -148,12 +178,12 @@ TEST_F(TileManagementTest, TileCacheEviction) {
     ASSERT_TRUE(cache->Initialize(config));
     
     // Store tiles to trigger eviction
-    std::vector<TileCoordinates> stored_tiles;
+    std::vector<imagery::ImageTileKey> stored_tiles;
     for (int i = 0; i < 10; ++i) {
-        TileCoordinates coords = CreateTestTile(i, i, 10);
-        TileData tile_data = CreateTestTileData(coords, "large_tile_content_" + std::to_string(i));
+        const auto imagery_key = CreateTestImageTileKey(i, i, 10);
+        TileData tile_data = CreateTestTileData(imagery_key, "large_tile_content_" + std::to_string(i));
         cache->Put(tile_data);
-        stored_tiles.push_back(coords);
+        stored_tiles.push_back(imagery_key);
     }
     
     // Check that only some tiles remain in memory (eviction occurred)
@@ -430,11 +460,11 @@ TEST_F(TileManagementTest, ConcurrencyTest) {
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
             for (int i = 0; i < tiles_per_thread; ++i) {
-                TileCoordinates coords = CreateTestTile(t * 100 + i, i, 10);
-                TileData tile_data = CreateTestTileData(coords, "thread_" + std::to_string(t));
+                const auto imagery_key = CreateTestImageTileKey(t * 100 + i, i, 10);
+                TileData tile_data = CreateTestTileData(imagery_key, "thread_" + std::to_string(t));
                 
                 if (cache->Put(tile_data)) {
-                    auto retrieved = cache->Get(coords);
+                    auto retrieved = cache->Get(imagery_key);
                     if (retrieved.has_value() && retrieved->IsValid()) {
                         success_count++;
                     }
@@ -506,7 +536,7 @@ TEST_F(TileManagementTest, ErrorHandling) {
     auto cache = CreateTileCache(cache_config);
     ASSERT_TRUE(cache->Initialize(cache_config));
     
-    TileCoordinates invalid_tile = CreateTestTile(-1, -1, -1);
+    imagery::ImageTileKey invalid_tile;
     EXPECT_FALSE(cache->Get(invalid_tile).has_value());
     EXPECT_FALSE(cache->Remove(invalid_tile));
     

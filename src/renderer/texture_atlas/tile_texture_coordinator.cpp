@@ -19,6 +19,10 @@ TileTextureCoordinator::TileTextureCoordinator(
         throw std::invalid_argument("TileLoader cannot be null");
     }
 
+    // TileLoader is the sole authority that resolves a render request into a
+    // source-aware imagery cache key. Bind the cache once at that boundary.
+    loader->SetTileCache(cache);
+
     // Create upload queue (shared between workers and GL thread)
     upload_queue_ = std::make_shared<GLUploadQueue>();
 
@@ -39,7 +43,6 @@ TileTextureCoordinator::TileTextureCoordinator(
 
     // Create worker pool
     worker_pool_ = std::make_unique<TileLoadWorkerPool>(
-        cache,
         loader,
         upload_queue_,
         num_worker_threads

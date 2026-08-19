@@ -321,36 +321,25 @@ TileLoadResult BasicTileLoader::LoadTile(const TileCoordinates& coordinates,
                                         const std::string& provider_name) {
     // Commented for now to prevent double increment in UpdateStats
     // stats_.total_requests++;
-    
-    // Check cache first
-    // TODO: tile_cache_ is null now, investigate later
-    if (tile_cache_) {
-        auto cached_tile = tile_cache_->Get(coordinates);
-        if (cached_tile && cached_tile->IsValid()) {
-            stats_.cached_requests++;
 
-            TileLoadResult result;
-            result.success = true;
-            result.tile_data = std::make_shared<TileData>(std::move(*cached_tile));
-            result.coordinates = coordinates;
-            result.provider_name = provider_name.empty() ? default_provider_ : provider_name;
+    const std::string resolved_provider_name =
+        provider_name.empty() ? default_provider_ : provider_name;
+    const TileProvider* provider = GetProvider(resolved_provider_name);
+    if (provider) {
+        const auto imagery_key = provider->ResolveImageTileKey(coordinates);
+        if (imagery_key.has_value() && tile_cache_) {
+            auto cached_tile = tile_cache_->Get(*imagery_key);
+            if (cached_tile && cached_tile->IsValid()) {
+                stats_.cached_requests++;
 
-            const TileProvider* provider = GetProvider(result.provider_name);
-            if (!provider) {
-                result.success = false;
-                result.error_message = "Provider not found: " + result.provider_name;
-                result.tile_data.reset();
+                TileLoadResult result;
+                result.success = true;
+                result.tile_data = std::make_shared<TileData>(std::move(*cached_tile));
+                result.coordinates = coordinates;
+                result.provider_name = resolved_provider_name;
+                result.imagery_key = *imagery_key;
                 return result;
             }
-
-            result.imagery_key = provider->ResolveImageTileKey(coordinates);
-            if (!result.imagery_key.has_value()) {
-                result.success = false;
-                result.error_message = "Provider cannot resolve a canonical imagery key";
-                result.tile_data.reset();
-            }
-
-            return result;
         }
     }
     
@@ -493,9 +482,15 @@ std::vector<TileCoordinates> BasicTileLoader::GetLoadingTiles() const {
 std::size_t BasicTileLoader::PreloadTiles(const std::vector<TileCoordinates>& coordinates,
                                           const std::string& provider_name) {
     std::size_t preloaded_count = 0;
+    const TileProvider* provider = GetProvider(
+        provider_name.empty() ? default_provider_ : provider_name);
     
     for (const auto& coords : coordinates) {
-        if (tile_cache_ && !tile_cache_->Contains(coords)) {
+        std::optional<imagery::ImageTileKey> imagery_key;
+        if (provider) {
+            imagery_key = provider->ResolveImageTileKey(coords);
+        }
+        if (tile_cache_ && imagery_key.has_value() && !tile_cache_->Contains(*imagery_key)) {
             auto result = LoadTile(coords, provider_name);
             if (result.success) {
                 preloaded_count++;
@@ -595,7 +590,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     
     // Create tile data
     auto tile_data = std::make_shared<TileData>();
-    tile_data->metadata.coordinates = coordinates;
+    tile_data->metadata.imagery_key = *result.imagery_key;
     tile_data->metadata.file_size = data.size();
     tile_data->metadata.last_modified = std::chrono::system_clock::now();
     tile_data->metadata.last_access = std::chrono::system_clock::now();
