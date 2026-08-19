@@ -300,8 +300,19 @@ public slots:
         earth_map::Configuration config;
         config.screen_width = static_cast<std::uint32_t>(std::max(1, viewport_rect_.width()));
         config.screen_height = static_cast<std::uint32_t>(std::max(1, viewport_rect_.height()));
-        // tile_provider left unset: EarthMapImpl::Initialize() falls back
-        // to TileProviders::OpenStreetMap (src/core/earth_map_impl.cpp).
+
+        // Matches examples/basic_example.cpp's googleProvider exactly,
+        // including the placeholder API key -- Google's tile endpoint
+        // needs a real key to actually serve imagery; this just mirrors
+        // basic_example's provider wiring, not a working Google Maps key.
+        auto google_provider = std::make_shared<earth_map::BasicXYZTileProvider>(
+            "GoogleMaps",
+            "https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=YOUR_API_KEY",
+            "0123",  // Subdomains for load balancing
+            0,       // Min zoom
+            21,      // Max zoom
+            "png");
+        config.tile_provider = google_provider;
 
         try {
             earth_map_ = earth_map::EarthMap::Create(config);
