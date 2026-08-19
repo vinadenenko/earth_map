@@ -213,7 +213,7 @@ struct TileLoadResult {
  */
 struct TileLoaderConfig {
     /** Maximum concurrent downloads */
-    std::size_t max_concurrent_downloads = 4;
+    std::size_t max_concurrent_downloads = 8;
     
     /** Request timeout in seconds */
     std::uint32_t timeout = 30;

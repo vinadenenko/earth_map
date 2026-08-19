@@ -187,7 +187,7 @@ bool EarthMapImpl::InitializeSubsystems() {
         texture_coordinator_ = std::make_unique<TileTextureCoordinator>(
             tile_cache,
             tile_loader,
-            4  // 4 worker threads for tile loading
+            8  // 8 worker threads for tile loading
         );
 
         spdlog::info("Tile texture coordinator initialized with lock-free architecture");

@@ -1,5 +1,5 @@
 from conan import ConanFile
-from conan.tools.cmake import CMakeToolchain, CMakeDeps, cmake_layout
+from conan.tools.cmake import CMake, CMakeToolchain, CMakeDeps
 from conan.tools.files import copy
 import os
 
@@ -31,7 +31,8 @@ class EarthMapConan(ConanFile):
     }
 
     # Export sources for conan center
-    exports_sources = "CMakeLists.txt", "src/*", "include/*", "tests/*", "examples/*"
+    # exports_sources = "CMakeLists.txt", "src/*", "include/*", "tests/*", "examples/*"
+    exports_sources = "*"
 
     def config_options(self):
         if self.settings.os == "Windows":
@@ -41,8 +42,8 @@ class EarthMapConan(ConanFile):
         if self.options.shared:
             self.options.rm_safe("fPIC")
 
-    def layout(self):
-        cmake_layout(self)
+    #def layout(self):
+    #    cmake_layout(self)
 
     def requirements(self):
         """Core dependencies for Earth Map library"""
@@ -87,8 +88,8 @@ class EarthMapConan(ConanFile):
 
     def generate(self):
         """Generate CMake toolchain and dependencies"""
-        deps = CMakeDeps(self)
-        deps.generate()
+        cmake = CMakeDeps(self)
+        cmake.generate()
 
         tc = CMakeToolchain(self)
         tc.variables["EARTH_MAP_BUILD_TESTS"] = self.options.with_tests
@@ -98,7 +99,6 @@ class EarthMapConan(ConanFile):
 
     def build(self):
         """Build the project"""
-        from conan.tools.cmake import CMake, cmake_program
         cmake = CMake(self)
         cmake.configure()
         cmake.build()
