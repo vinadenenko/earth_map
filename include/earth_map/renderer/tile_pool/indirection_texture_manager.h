@@ -103,7 +103,14 @@ public:
      *
      * No-op for full-mode zoom levels (0-12).
      */
-    void UpdateWindowCenter(const imagery::ImageTileKey& center_tile);
+    /**
+     * @return true only when the active window changed generation.
+     *
+     * The caller must rebuild the entries for resident pages after true is
+     * returned. The page table is a derived view of residency, not residency
+     * itself.
+     */
+    bool UpdateWindowCenter(const imagery::ImageTileKey& center_tile);
 
     /**
      * @brief Get all levels that have allocated indirection textures

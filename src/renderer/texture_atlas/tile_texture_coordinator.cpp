@@ -147,6 +147,11 @@ std::uint32_t TileTextureCoordinator::GetIndirectionTextureID(
     return indirection_manager_->GetTextureID(imagery_key);
 }
 
+std::uint16_t TileTextureCoordinator::GetIndirectionLayer(
+    const imagery::ImageTileKey& imagery_key) const {
+    return indirection_manager_->GetTileLayer(imagery_key);
+}
+
 glm::ivec2 TileTextureCoordinator::GetIndirectionOffset(
     const imagery::ImageTileKey& imagery_key) const {
     return indirection_manager_->GetWindowOffset(imagery_key);
@@ -154,7 +159,40 @@ glm::ivec2 TileTextureCoordinator::GetIndirectionOffset(
 
 void TileTextureCoordinator::UpdateIndirectionWindowCenter(
     const imagery::ImageTileKey& center_tile) {
-    indirection_manager_->UpdateWindowCenter(center_tile);
+    if (!indirection_manager_->UpdateWindowCenter(center_tile)) {
+        return;
+    }
+
+    // A page table is a windowed, derived GPU view of the physical pool. A
+    // window shift can clear entries that remain resident in the pool; replay
+    // every resident page that belongs to this table so revisiting an area
+    // never requires a redundant download/upload to become drawable again.
+    std::vector<std::pair<imagery::ImageTileKey, std::uint16_t>> resident_pages;
+    {
+        std::shared_lock<std::shared_mutex> lock(state_mutex_);
+        resident_pages.reserve(tile_states_.size());
+        for (const auto& entry : tile_states_) {
+            const TileState& state = entry.second;
+            if (state.status != TileStatus::Loaded || !state.imagery_key.has_value() ||
+                state.pool_layer < 0 ||
+                state.imagery_key->imagery_source_id != center_tile.imagery_source_id ||
+                state.imagery_key->matrix_set_id != center_tile.matrix_set_id ||
+                state.imagery_key->address.level != center_tile.address.level) {
+                continue;
+            }
+
+            const int current_layer = tile_pool_->GetLayerIndex(*state.imagery_key);
+            if (current_layer == state.pool_layer) {
+                resident_pages.emplace_back(
+                    *state.imagery_key,
+                    static_cast<std::uint16_t>(current_layer));
+            }
+        }
+    }
+
+    for (const auto& [imagery_key, layer] : resident_pages) {
+        indirection_manager_->SetTileLayer(imagery_key, layer);
+    }
 }
 
 std::optional<imagery::ImageTileKey> TileTextureCoordinator::ResolveImageryTileKey(

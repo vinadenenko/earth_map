@@ -175,6 +175,16 @@ public:
         const imagery::ImageTileKey& imagery_key) const;
 
     /**
+     * Returns the current page-table mapping for a canonical page.
+     *
+     * This is an observability/testing query. A page may remain physically
+     * resident while returning kInvalidLayer when it is outside the active
+     * page-table window.
+     */
+    std::uint16_t GetIndirectionLayer(
+        const imagery::ImageTileKey& imagery_key) const;
+
+    /**
      * @brief Get indirection window offset for a zoom level
      *
      * For full-mode zooms (0-12), returns (0,0).

@@ -314,10 +314,10 @@ void IndirectionTextureManager::ShiftWindowData(
     page_table.data = std::move(shifted);
 }
 
-void IndirectionTextureManager::UpdateWindowCenter(
+bool IndirectionTextureManager::UpdateWindowCenter(
     const imagery::ImageTileKey& center_tile) {
     if (!center_tile.IsValid() || !IsWindowedMode(center_tile.address.level)) {
-        return;
+        return false;
     }
 
     const PageTableIdentity identity = GetIdentity(center_tile);
@@ -327,7 +327,7 @@ void IndirectionTextureManager::UpdateWindowCenter(
 
     const auto it = page_tables_.find(identity);
     if (it == page_tables_.end()) {
-        return;
+        return false;
     }
 
     PageTableTexture& page_table = it->second;
@@ -340,7 +340,7 @@ void IndirectionTextureManager::UpdateWindowCenter(
 
     if (updated_window.origin_column == page_table.window.origin_column &&
         updated_window.origin_row == page_table.window.origin_row) {
-        return;
+        return false;
     }
 
     const std::int64_t delta_x =
@@ -373,6 +373,7 @@ void IndirectionTextureManager::UpdateWindowCenter(
         }
     }
     page_table.window = std::move(updated_window);
+    return true;
 }
 
 std::vector<int> IndirectionTextureManager::GetActiveZoomLevels() const {

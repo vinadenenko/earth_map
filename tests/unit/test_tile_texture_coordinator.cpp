@@ -241,6 +241,34 @@ TEST_F(TileTextureCoordinatorTest, UploadOutsideCurrentIndirectionWindowIsDiscar
     EXPECT_EQ(coordinator_->GetTileLayerIndex(stale_tile), -1);
 }
 
+TEST_F(TileTextureCoordinatorTest, WindowMoveReplaysResidentPageWithoutReloading) {
+    const TileCoordinates tile(1000, 1000, 13);
+    const imagery::ImageTileKey imagery_key = MakeMockImageTileKey(tile);
+
+    coordinator_->UpdateIndirectionWindowCenter(imagery_key);
+    coordinator_->RequestTiles({tile}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator_->ProcessUploads(10);
+
+    ASSERT_TRUE(coordinator_->IsTileReady(tile));
+    const int pool_layer = coordinator_->GetTileLayerIndex(tile);
+    ASSERT_GE(pool_layer, 0);
+    EXPECT_EQ(coordinator_->GetIndirectionLayer(imagery_key),
+              static_cast<std::uint16_t>(pool_layer));
+
+    coordinator_->UpdateIndirectionWindowCenter(
+        MakeMockImageTileKey(TileCoordinates(3000, 3000, 13)));
+    EXPECT_EQ(coordinator_->GetIndirectionLayer(imagery_key),
+              IndirectionTextureManager::kInvalidLayer);
+
+    coordinator_->UpdateIndirectionWindowCenter(imagery_key);
+
+    EXPECT_TRUE(coordinator_->IsTileReady(tile));
+    EXPECT_EQ(coordinator_->GetTileLayerIndex(tile), pool_layer);
+    EXPECT_EQ(coordinator_->GetIndirectionLayer(imagery_key),
+              static_cast<std::uint16_t>(pool_layer));
+}
+
 // ============================================================================
 // UV Coordinate Tests
 // ============================================================================
