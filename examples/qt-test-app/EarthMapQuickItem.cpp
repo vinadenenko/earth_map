@@ -16,6 +16,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QRunnable>
+#include <QTouchEvent>
 #include <QWheelEvent>
 
 #include <earth_map/core/camera_controller.h>
@@ -79,6 +80,7 @@ uint64_t NowMillis() {
 EarthMapQuickItem::EarthMapQuickItem(QQuickItem* parent) : QQuickItem(parent) {
     setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton | Qt::RightButton);
     setAcceptHoverEvents(true);
+    setAcceptTouchEvents(true);
     setFlag(QQuickItem::ItemIsFocusScope, true);
     connect(this, &QQuickItem::windowChanged, this, &EarthMapQuickItem::handleWindowChanged);
 }
@@ -108,6 +110,14 @@ QRect EarthMapQuickItem::DeviceViewportRect() const {
 
 void EarthMapQuickItem::QueueEvent(const earth_map::InputEvent& event) {
     pending_events_.push_back(event);
+    // Matches Squircle::setT() in Qt's own "Scene Graph - OpenGL Under QML"
+    // example: request a sync+render cycle the moment new GUI-thread state
+    // arrives, from the GUI thread, rather than relying solely on paint()'s
+    // own window_->update() call at the end of each frame to eventually
+    // pick it up.
+    if (window()) {
+        window()->update();
+    }
 }
 
 std::vector<earth_map::InputEvent> EarthMapQuickItem::TakePendingEvents() {
@@ -118,8 +128,8 @@ void EarthMapQuickItem::mousePressEvent(QMouseEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS;
     input_event.button = ToEarthMapButton(event->button());
-    input_event.x = static_cast<float>(event->position().x());
-    input_event.y = static_cast<float>(event->position().y());
+    input_event.x = static_cast<float>(event->scenePosition().x());
+    input_event.y = static_cast<float>(event->scenePosition().y());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
     event->accept();
@@ -129,8 +139,8 @@ void EarthMapQuickItem::mouseReleaseEvent(QMouseEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE;
     input_event.button = ToEarthMapButton(event->button());
-    input_event.x = static_cast<float>(event->position().x());
-    input_event.y = static_cast<float>(event->position().y());
+    input_event.x = static_cast<float>(event->scenePosition().x());
+    input_event.y = static_cast<float>(event->scenePosition().y());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
     event->accept();
@@ -139,8 +149,8 @@ void EarthMapQuickItem::mouseReleaseEvent(QMouseEvent* event) {
 void EarthMapQuickItem::mouseMoveEvent(QMouseEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::MOUSE_MOVE;
-    input_event.x = static_cast<float>(event->position().x());
-    input_event.y = static_cast<float>(event->position().y());
+    input_event.x = static_cast<float>(event->scenePosition().x());
+    input_event.y = static_cast<float>(event->scenePosition().y());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
     event->accept();
@@ -149,8 +159,8 @@ void EarthMapQuickItem::mouseMoveEvent(QMouseEvent* event) {
 void EarthMapQuickItem::hoverMoveEvent(QHoverEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::MOUSE_MOVE;
-    input_event.x = static_cast<float>(event->position().x());
-    input_event.y = static_cast<float>(event->position().y());
+    input_event.x = static_cast<float>(event->scenePosition().x());
+    input_event.y = static_cast<float>(event->scenePosition().y());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
     event->accept();
@@ -166,8 +176,8 @@ void EarthMapQuickItem::mouseDoubleClickEvent(QMouseEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::DOUBLE_CLICK;
     input_event.button = ToEarthMapButton(event->button());
-    input_event.x = static_cast<float>(event->position().x());
-    input_event.y = static_cast<float>(event->position().y());
+    input_event.x = static_cast<float>(event->scenePosition().x());
+    input_event.y = static_cast<float>(event->scenePosition().y());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
     event->accept();
@@ -205,6 +215,47 @@ void EarthMapQuickItem::keyReleaseEvent(QKeyEvent* event) {
     input_event.key = ToEarthMapKeyCode(event->key());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
+    event->accept();
+}
+
+void EarthMapQuickItem::touchEvent(QTouchEvent* event) {
+    const auto& points = event->points();
+    if (points.isEmpty()) {
+        event->accept();
+        return;
+    }
+
+    // Only the first touch point drives the camera (single-finger drag to
+    // rotate, matching a left-mouse drag); additional simultaneous touches
+    // are ignored rather than misread as a second drag.
+    const QEventPoint& point = points.first();
+
+    earth_map::InputEvent input_event;
+    input_event.x = static_cast<float>(point.scenePosition().x());
+    input_event.y = static_cast<float>(point.scenePosition().y());
+    input_event.timestamp = NowMillis();
+
+    switch (point.state()) {
+        case QEventPoint::Pressed:
+            input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS;
+            input_event.button = 0;  // matches a left-mouse drag
+            QueueEvent(input_event);
+            break;
+        case QEventPoint::Updated:
+            input_event.type = earth_map::InputEvent::Type::MOUSE_MOVE;
+            QueueEvent(input_event);
+            break;
+        case QEventPoint::Released:
+            input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE;
+            input_event.button = 0;
+            QueueEvent(input_event);
+            break;
+        case QEventPoint::Stationary:
+        case QEventPoint::Unknown:
+        default:
+            break;
+    }
+
     event->accept();
 }
 

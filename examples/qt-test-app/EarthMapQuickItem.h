@@ -62,6 +62,14 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
 
+    // earth_map::InputEvent has no touch concept -- the library only knows
+    // about the abstract MOUSE_* actions (press/move/release/scroll). Touch
+    // gestures are an application/UI concern, so single-finger touch is
+    // translated into that same MOUSE_* vocabulary here (button 0, matching
+    // a left-drag) rather than adding touch-specific handling to the
+    // library.
+    void touchEvent(QTouchEvent* event) override;
+
 private slots:
     void handleWindowChanged(QQuickWindow* window);
 
