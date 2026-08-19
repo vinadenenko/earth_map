@@ -618,13 +618,14 @@ bool canonicalSurfacePoint(out vec3 point) {
 
 void surfaceToTileAndFrac(vec3 point, int zoom, out ivec2 tile, out vec2 frac) {
     const float PI = 3.14159265358979323846;
-    // The canonical map surface is the unit sphere hit by the view ray, not
-    // the interpolated icosphere triangle. For a unit sphere, sin(latitude)
-    // is point.y and Web Mercator can be evaluated directly as atanh(y).
-    // This removes the latitude -> degrees -> radians rounding chain.
+    // The map surface is the sphere hit by the view ray, not the interpolated
+    // icosphere triangle. The intersection has small floating-point radial
+    // error, so normalize before treating Y as sin(latitude). The CPU path
+    // does the same before converting to canonical Web-Mercator coordinates.
+    vec3 unitPoint = normalize(point);
     const float maxMercatorSinLatitude = 0.9962721;
-    float norm_x = (atan(point.x, point.z) / PI + 1.0) * 0.5;
-    float sinLatitude = clamp(point.y,
+    float norm_x = (atan(unitPoint.x, unitPoint.z) / PI + 1.0) * 0.5;
+    float sinLatitude = clamp(unitPoint.y,
                               -maxMercatorSinLatitude,
                               maxMercatorSinLatitude);
     float norm_y = (1.0 - 0.5 * log((1.0 + sinLatitude) /
@@ -635,8 +636,11 @@ void surfaceToTileAndFrac(vec3 point, int zoom, out ivec2 tile, out vec2 frac) {
     float fx = norm_x * float(n);
     float fy = norm_y * float(n);
 
-    tile = ivec2(clamp(int(floor(fx)), 0, n - 1),
-                 clamp(int(floor(fy)), 0, n - 1));
+    int tileX = int(floor(fx));
+    // TileMatrixSet declares XYZ longitude as horizontally wrapping. atan()
+    // can produce +PI at the anti-meridian, where floor(fx) equals n.
+    tileX = tileX == n ? 0 : clamp(tileX, 0, n - 1);
+    tile = ivec2(tileX, clamp(int(floor(fy)), 0, n - 1));
 
     // Use subtraction instead of fract() to avoid precision loss on large values
     frac = vec2(fx - floor(fx), fy - floor(fy));

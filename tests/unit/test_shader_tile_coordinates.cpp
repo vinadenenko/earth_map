@@ -2,15 +2,19 @@
  * @file test_shader_tile_coordinates.cpp
  * @brief Tests that C++ tile coordinate calculations match the GLSL shader formulas
  *
- * The fragment shader computes tile coordinates from world position using
- * Web Mercator. This test verifies the C++ reference implementation
- * (CoordinateMapper::GeographicToSphericalTile) produces identical results.
+ * The fragment shader computes tile coordinates from a ray-hit point using
+ * Web Mercator. These tests verify that its reference calculation, the
+ * legacy renderer boundary, and the canonical TileMatrixSet agree.
  */
 
 #include <gtest/gtest.h>
 #include <earth_map/coordinates/coordinate_mapper.h>
+#include <earth_map/imagery/tile_matrix_set.h>
 #include <earth_map/math/tile_mathematics.h>
+#include <glm/glm.hpp>
+#include <algorithm>
 #include <cmath>
+#include <numbers>
 
 using namespace earth_map;
 using namespace earth_map::coordinates;
@@ -37,12 +41,52 @@ struct ShaderGeoToTile {
         int tile_x = static_cast<int>(std::floor(norm_lon * n));
         int tile_y = static_cast<int>(std::floor(norm_lat * n));
 
-        tile_x = std::clamp(tile_x, 0, n - 1);
+        tile_x = tile_x == n ? 0 : std::clamp(tile_x, 0, n - 1);
         tile_y = std::clamp(tile_y, 0, n - 1);
 
         return {tile_x, tile_y};
     }
 };
+
+std::optional<imagery::ImageTileAddress> ShaderSurfaceToTile(
+    glm::vec3 ray_hit,
+    std::uint32_t zoom) {
+    constexpr float kPi = 3.14159265358979323846f;
+    constexpr float kMaxMercatorSinLatitude = 0.9962721f;
+
+    // This is the CPU reference for surfaceToTileAndFrac in the fragment
+    // shader. A ray/sphere hit is not assumed to be exactly unit length.
+    const glm::vec3 point = glm::normalize(ray_hit);
+    const float normalized_x = (std::atan2(point.x, point.z) / kPi + 1.0f) * 0.5f;
+    const float sin_latitude = std::clamp(
+        point.y, -kMaxMercatorSinLatitude, kMaxMercatorSinLatitude);
+    const float normalized_y = (1.0f - 0.5f * std::log(
+        (1.0f + sin_latitude) / (1.0f - sin_latitude)) / kPi) * 0.5f;
+    const int dimension = 1 << zoom;
+
+    const int raw_column =
+        static_cast<int>(std::floor(normalized_x * static_cast<float>(dimension)));
+    const int column = raw_column == dimension
+        ? 0
+        : std::clamp(raw_column, 0, dimension - 1);
+    return imagery::ImageTileAddress{
+        zoom,
+        static_cast<std::uint32_t>(column),
+        static_cast<std::uint32_t>(std::clamp(
+            static_cast<int>(std::floor(normalized_y * static_cast<float>(dimension))),
+            0, dimension - 1)),
+    };
+}
+
+glm::vec3 UnitSpherePoint(double latitude_radians, double longitude_radians) {
+    const float latitude = static_cast<float>(latitude_radians);
+    const float longitude = static_cast<float>(longitude_radians);
+    return {
+        std::cos(latitude) * std::sin(longitude),
+        std::sin(latitude),
+        std::cos(latitude) * std::cos(longitude),
+    };
+}
 
 } // namespace
 
@@ -122,6 +166,11 @@ TEST_F(ShaderTileCoordinateTest, ShaderHandlesDateLine) {
     // Just east of date line
     auto [x_east, y_east] = ShaderGeoToTile::Calculate(179.0, 0.0, 2);
     EXPECT_EQ(x_east, 3);
+
+    // The declared XYZ matrix wraps exactly at +180° rather than creating a
+    // second copy of the easternmost tile column.
+    auto [x_wrap, y_wrap] = ShaderGeoToTile::Calculate(180.0, 0.0, 2);
+    EXPECT_EQ(x_wrap, 0);
 }
 
 TEST_F(ShaderTileCoordinateTest, ZoomPrecisionWithBitshift) {
@@ -132,5 +181,37 @@ TEST_F(ShaderTileCoordinateTest, ZoomPrecisionWithBitshift) {
         const int n_pow = static_cast<int>(std::pow(2.0, zoom));
         EXPECT_EQ(n_bitshift, n_pow)
             << "Bitshift vs pow mismatch at zoom=" << zoom;
+    }
+}
+
+TEST_F(ShaderTileCoordinateTest, RayHitAndCanonicalMatrixAgreeAtHighZoom) {
+    const imagery::TileMatrixSet matrix_set = imagery::TileMatrixSet::WebMercatorXYZ();
+    const geodesy::GeodeticPosition yerevan{
+        40.1872 * std::numbers::pi_v<double> / 180.0,
+        44.5152 * std::numbers::pi_v<double> / 180.0,
+        0.0,
+    };
+    const glm::vec3 ray_hit = UnitSpherePoint(
+        yerevan.latitude_radians, yerevan.longitude_radians) * 1.0001f;
+
+    for (const std::uint32_t zoom : {13U, 18U, 21U}) {
+        const auto canonical = matrix_set.GeodeticToTile(yerevan, zoom);
+        const auto shader = ShaderSurfaceToTile(ray_hit, zoom);
+        ASSERT_TRUE(canonical.has_value());
+        ASSERT_TRUE(shader.has_value());
+
+        EXPECT_EQ(*shader, *canonical) << "zoom=" << zoom;
+
+        const Geographic legacy_geographic{
+            yerevan.latitude_radians * 180.0 / std::numbers::pi_v<double>,
+            yerevan.longitude_radians * 180.0 / std::numbers::pi_v<double>,
+            0.0,
+        };
+        const TileCoordinates legacy_tile =
+            CoordinateMapper::GeographicToSphericalTile(
+                legacy_geographic, static_cast<std::int32_t>(zoom));
+        EXPECT_EQ(legacy_tile.x, static_cast<std::int32_t>(canonical->column));
+        EXPECT_EQ(legacy_tile.y, static_cast<std::int32_t>(canonical->row));
+        EXPECT_EQ(legacy_tile.zoom, static_cast<std::int32_t>(canonical->level));
     }
 }
