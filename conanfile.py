@@ -1,5 +1,5 @@
 from conan import ConanFile
-from conan.tools.cmake import CMake, CMakeToolchain, CMakeDeps
+from conan.tools.cmake import CMake, CMakeToolchain, CMakeDeps, cmake_layout
 from conan.tools.files import copy
 import os
 
@@ -25,14 +25,14 @@ class EarthMapConan(ConanFile):
     default_options = {
         "shared": False,
         "fPIC": True,
-        "with_tests": True,
-        "with_examples": True,
+        "with_tests": False,
+        "with_examples": False,
         "enable_opengl_debug": False
     }
 
     # Export sources for conan center
     # exports_sources = "CMakeLists.txt", "src/*", "include/*", "tests/*", "examples/*"
-    exports_sources = "*"
+    exports_sources = "*", "!build/*"
 
     def config_options(self):
         if self.settings.os == "Windows":
@@ -42,8 +42,8 @@ class EarthMapConan(ConanFile):
         if self.options.shared:
             self.options.rm_safe("fPIC")
 
-    #def layout(self):
-    #    cmake_layout(self)
+    def layout(self):
+        cmake_layout(self)
 
     def requirements(self):
         """Core dependencies for Earth Map library"""
