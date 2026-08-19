@@ -206,7 +206,7 @@ endif()
 
 # Examples
 if(EARTH_MAP_BUILD_EXAMPLES)
-    add_subdirectory(examples)
+    add_subdirectory(examples/basic-example)
 endif()
 
 # Documentation

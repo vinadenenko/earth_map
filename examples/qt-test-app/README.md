@@ -8,10 +8,11 @@ than `QQuickFramebufferObject`.
 
 ## This is not built by earth_map's own CMake project
 
-It lives under `examples/` for discoverability, but it is **not** wired
-into `examples/CMakeLists.txt`, not added via `add_subdirectory`, and not
-gated behind `EARTH_MAP_BUILD_EXAMPLES` the way `basic_example.cpp` is. It
-has its own `project()` call and its own conan integration
+It lives under `examples/` for discoverability, but the root
+`CMakeLists.txt`'s `add_subdirectory(examples/basic-example)` only reaches
+`examples/basic-example/`, not this directory, and it isn't gated behind
+`EARTH_MAP_BUILD_EXAMPLES` the way `examples/basic-example/basic_example.cpp`
+is. It has its own `project()` call and its own conan integration
 (`cmake/conan_handler.cmake`) and is meant to be opened and built as a
 **completely separate project** -- e.g. via Qt Creator's "Open Project...",
 pointed directly at this directory's `CMakeLists.txt`.
