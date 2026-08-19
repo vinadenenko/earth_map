@@ -58,7 +58,16 @@ struct ImageTileKey final {
 
     [[nodiscard]] bool IsValid() const noexcept;
 
+    // std::string became a literal type (usable in a constexpr function) only
+    // once P0980 was fully implemented; libstdc++ advertises an earlier,
+    // incomplete revision as __cpp_lib_constexpr_string == 201811L (e.g. GCC
+    // 11), which still rejects this comparison at compile time. 201907L is
+    // the completed revision, first fully supported in libstdc++ 12.
+#if defined(__cpp_lib_constexpr_string) && __cpp_lib_constexpr_string >= 201907L
     constexpr bool operator==(const ImageTileKey& other) const noexcept = default;
+#else
+    bool operator==(const ImageTileKey& other) const noexcept = default;
+#endif
 };
 
 struct ImageTileKeyHash final {
