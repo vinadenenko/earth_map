@@ -158,6 +158,13 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
         return;
     }
 
+    if (!load_result.imagery_key.has_value() || !load_result.imagery_key->IsValid() ||
+        load_result.tile_data->metadata.imagery_key != *load_result.imagery_key) {
+        spdlog::error("Loaded tile {} without a consistent canonical imagery key", coords.GetKey());
+        upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
+        return;
+    }
+
     TileData tile_data = *load_result.tile_data;
     tile_data.loaded = true;
 
@@ -172,6 +179,7 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
     // Step 4: Create GL upload command
     auto upload_cmd = std::make_unique<GLUploadCommand>();
     upload_cmd->coords = coords;
+    upload_cmd->imagery_key = *load_result.imagery_key;
     upload_cmd->pixel_data = std::move(tile_data.data);
     upload_cmd->width = tile_data.width;
     upload_cmd->height = tile_data.height;

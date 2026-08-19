@@ -144,6 +144,11 @@ TEST_F(TileLoadWorkerPoolTest, SubmitSingleRequest) {
 
     // Should have uploaded to GL queue
     EXPECT_GE(upload_queue_->Size(), 1u);
+
+    const auto command = upload_queue_->TryPop();
+    ASSERT_NE(command, nullptr);
+    ASSERT_TRUE(command->imagery_key.has_value());
+    EXPECT_EQ(*command->imagery_key, MakeMockImageTileKey(tile));
 }
 
 TEST_F(TileLoadWorkerPoolTest, SubmitMultipleRequests) {

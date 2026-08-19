@@ -370,6 +370,20 @@ public:
      * @return const TileProvider* Provider pointer or nullptr if not found
      */
     virtual const TileProvider* GetProvider(const std::string& name) const = 0;
+
+    /**
+     * Resolve a renderer request to the provider's canonical imagery identity.
+     *
+     * TileCoordinates remain only at the current renderer request boundary.
+     * Components below the loader (cache, upload, physical residency, and
+     * page-table updates) must use the returned ImageTileKey instead.
+     */
+    [[nodiscard]] std::optional<imagery::ImageTileKey> ResolveImageTileKey(
+        const TileCoordinates& coordinates,
+        const std::string& provider_name = "") const {
+        const TileProvider* provider = GetProvider(provider_name);
+        return provider ? provider->ResolveImageTileKey(coordinates) : std::nullopt;
+    }
     
     /**
      * @brief Get all provider names

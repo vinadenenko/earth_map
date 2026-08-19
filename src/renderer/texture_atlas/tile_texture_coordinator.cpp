@@ -175,6 +175,20 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
 
         processed_count++;
 
+        if (!cmd->imagery_key.has_value() || !cmd->imagery_key->IsValid()) {
+            std::unique_lock<std::shared_mutex> lock(state_mutex_);
+            auto it = tile_states_.find(cmd->coords);
+            if (it != tile_states_.end() && it->second.status == TileStatus::Loading) {
+                tile_states_.erase(it);
+                pending_load_count_.fetch_sub(1);
+            }
+            spdlog::error("Rejected unkeyed imagery upload for tile {}", cmd->coords.GetKey());
+            if (cmd->on_complete) {
+                cmd->on_complete(cmd->coords);
+            }
+            continue;
+        }
+
         // Upload to tile pool
         int layer = tile_pool_->UploadTile(
             cmd->coords,
