@@ -14,8 +14,8 @@ int main(int argc, char *argv[])
     // platform plugin (via XWayland, which is present whenever DISPLAY is
     // set) with GLX integration gives GLEW a real GLX context. Must be set
     // before QGuiApplication loads the platform plugin.
-    qputenv("QT_QPA_PLATFORM", "xcb");
-    qputenv("QT_XCB_GL_INTEGRATION", "xcb_glx");
+    // qputenv("QT_QPA_PLATFORM", "xcb");
+    // qputenv("QT_XCB_GL_INTEGRATION", "xcb_glx");
 #endif
 
     // EarthMapItem embeds earth_map via QQuickFramebufferObject, which only
