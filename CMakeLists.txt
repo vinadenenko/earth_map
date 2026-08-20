@@ -60,9 +60,14 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 # Find required packages
-find_package(OpenGL REQUIRED)
-find_package(glfw3 REQUIRED)
-find_package(GLEW REQUIRED)
+# GLEW is a desktop-GL function loader (its own header pulls in glu.h, with
+# no Android-compatible GLU available); on Android the library links GLESv3
+# directly instead (see the Android link branch below), so neither OpenGL
+# (desktop) nor GLEW is needed there.
+if(NOT ANDROID)
+    find_package(OpenGL REQUIRED)
+    find_package(GLEW REQUIRED)
+endif()
 find_package(glm REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(pugixml REQUIRED)
@@ -77,11 +82,21 @@ if(EARTH_MAP_BUILD_TESTS)
     find_package(benchmark REQUIRED)
 endif()
 
+# glfw is only used for window/context creation in examples/basic-example
+# (the library itself never calls into it -- it only issues GL calls
+# against whatever context the consumer already made current). Keeping it
+# out of the library's own dependency graph means platforms without a
+# usable glfw backend (e.g. Android) can still build and consume earth_map
+# itself; only the desktop example needs it.
+if(EARTH_MAP_BUILD_EXAMPLES)
+    find_package(glfw3 REQUIRED)
+endif()
+
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Source files
-file(GLOB_RECURSE EARTH_MAP_SOURCES 
+file(GLOB_RECURSE EARTH_MAP_SOURCES CONFIGURE_DEPENDS
     "src/*.cpp"
     "src/*.c"
 )
@@ -108,9 +123,6 @@ set_target_properties(earth_map PROPERTIES
 # Link libraries
 target_link_libraries(earth_map
     PUBLIC
-        OpenGL::GL
-        glfw
-        GLEW::GLEW
         glm::glm
         nlohmann_json::nlohmann_json
         pugixml::pugixml
@@ -119,6 +131,9 @@ target_link_libraries(earth_map
         spdlog::spdlog
         CURL::libcurl
 )
+if(NOT ANDROID)
+    target_link_libraries(earth_map PUBLIC OpenGL::GL GLEW::GLEW)
+endif()
 
 # Platform-specific libraries
 if(WIN32)
@@ -128,6 +143,8 @@ elseif(APPLE)
     find_library(IOKIT_FRAMEWORK IOKit)
     find_library(COREVIDEO_FRAMEWORK CoreVideo)
     target_link_libraries(earth_map PUBLIC ${COCOA_FRAMEWORK} ${IOKIT_FRAMEWORK} ${COREVIDEO_FRAMEWORK})
+elseif(ANDROID)
+    target_link_libraries(earth_map PUBLIC GLESv3 EGL android log)
 else()
     target_link_libraries(earth_map PUBLIC X11 Xrandr Xinerama Xi Xcursor dl pthread)
 endif()
@@ -206,7 +223,7 @@ endif()
 
 # Examples
 if(EARTH_MAP_BUILD_EXAMPLES)
-    add_subdirectory(examples)
+    add_subdirectory(examples/basic-example)
 endif()
 
 # Documentation

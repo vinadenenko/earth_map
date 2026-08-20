@@ -8,8 +8,7 @@
  * metadata management, and compression support for globe rendering.
  */
 
-#include <earth_map/math/tile_mathematics.h>
-#include <earth_map/math/bounding_box.h>
+#include <earth_map/imagery/tile_matrix_set.h>
 #include <glm/vec2.hpp>
 #include <vector>
 #include <memory>
@@ -18,6 +17,7 @@
 #include <chrono>
 #include <functional>
 #include <optional>
+#include <utility>
 
 namespace earth_map {
 
@@ -25,8 +25,8 @@ namespace earth_map {
  * @brief Tile metadata information
  */
 struct TileMetadata {
-    /** Tile coordinates */
-    TileCoordinates coordinates;
+    /** Canonical source-aware imagery identity. */
+    imagery::ImageTileKey imagery_key;
     
     /** File size in bytes */
     std::size_t file_size = 0;
@@ -66,10 +66,10 @@ struct TileMetadata {
     TileMetadata() = default;
     
     /**
-     * @brief Constructor with coordinates
+     * @brief Constructor with canonical imagery identity
      */
-    explicit TileMetadata(const TileCoordinates& coords) 
-        : coordinates(coords) {}
+    explicit TileMetadata(imagery::ImageTileKey key)
+        : imagery_key(std::move(key)) {}
 };
 
 /**
@@ -240,26 +240,26 @@ public:
     /**
      * @brief Get tile data from cache
      *
-     * @param coordinates Tile coordinates to retrieve
+     * @param key Canonical source-aware imagery identity to retrieve
      * @return std::optional<TileData> Tile data if found, std::nullopt otherwise
      */
-    virtual std::optional<TileData> Get(const TileCoordinates& coordinates) = 0;
+    virtual std::optional<TileData> Get(const imagery::ImageTileKey& key) = 0;
     
     /**
      * @brief Check if tile exists in cache
      * 
-     * @param coordinates Tile coordinates to check
+     * @param key Canonical source-aware imagery identity to check
      * @return true if tile exists, false otherwise
      */
-    virtual bool Contains(const TileCoordinates& coordinates) const = 0;
+    virtual bool Contains(const imagery::ImageTileKey& key) const = 0;
     
     /**
      * @brief Remove tile from cache
      * 
-     * @param coordinates Tile coordinates to remove
+     * @param key Canonical source-aware imagery identity to remove
      * @return true if removal succeeded, false otherwise
      */
-    virtual bool Remove(const TileCoordinates& coordinates) = 0;
+    virtual bool Remove(const imagery::ImageTileKey& key) = 0;
     
     /**
      * @brief Clear all cached tiles
@@ -276,21 +276,21 @@ public:
     /**
      * @brief Update tile metadata
      * 
-     * @param coordinates Tile coordinates
+     * @param key Canonical source-aware imagery identity
      * @param metadata New metadata
      * @return true if update succeeded, false otherwise
      */
-    virtual bool UpdateMetadata(const TileCoordinates& coordinates, 
+    virtual bool UpdateMetadata(const imagery::ImageTileKey& key,
                                const TileMetadata& metadata) = 0;
     
     /**
      * @brief Get tile metadata
      * 
-     * @param coordinates Tile coordinates
+     * @param key Canonical source-aware imagery identity
      * @return std::shared_ptr<TileMetadata> Tile metadata or nullptr if not found
      */
     virtual std::shared_ptr<TileMetadata> GetMetadata(
-        const TileCoordinates& coordinates) const = 0;
+        const imagery::ImageTileKey& key) const = 0;
     
     /**
      * @brief Perform cache cleanup and maintenance
@@ -317,28 +317,10 @@ public:
     /**
      * @brief Preload tiles into memory cache
      * 
-     * @param coordinates List of tile coordinates to preload
+     * @param keys List of canonical source-aware imagery identities to preload
      * @return std::size_t Number of tiles successfully preloaded
      */
-    virtual std::size_t Preload(const std::vector<TileCoordinates>& coordinates) = 0;
-    
-    /**
-     * @brief Get tiles cached in specified geographic bounds
-     * 
-     * @param bounds Geographic bounds to query
-     * @return std::vector<TileCoordinates> List of cached tile coordinates
-     */
-    virtual std::vector<TileCoordinates> GetTilesInBounds(
-        const BoundingBox2D& bounds) const = 0;
-    
-    /**
-     * @brief Get tiles cached at specific zoom level
-     * 
-     * @param zoom_level Zoom level to query
-     * @return std::vector<TileCoordinates> List of cached tile coordinates
-     */
-    virtual std::vector<TileCoordinates> GetTilesAtZoom(
-        std::uint8_t zoom_level) const = 0;
+    virtual std::size_t Preload(const std::vector<imagery::ImageTileKey>& keys) = 0;
 
 protected:
     /**

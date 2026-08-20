@@ -11,8 +11,11 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#else
 #include <GL/glew.h>
-#include <GLFW/glfw3.h>
+#endif
 #include <stdexcept>
 #include <vector>
 #include <array>
@@ -20,8 +23,7 @@
 namespace earth_map {
 
 // Basic vertex and fragment shaders for a simple globe
-const char* BASIC_VERTEX_SHADER = R"(
-#version 330 core
+const char* BASIC_VERTEX_SHADER = EARTH_MAP_GLSL_PREAMBLE R"(
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
@@ -43,8 +45,7 @@ void main() {
 }
 )";
 
-const char* BASIC_FRAGMENT_SHADER = R"(
-#version 330 core
+const char* BASIC_FRAGMENT_SHADER = EARTH_MAP_GLSL_PREAMBLE R"(
 in vec3 FragPos;
 in vec3 Normal;
 in vec2 TexCoord;
@@ -55,7 +56,9 @@ uniform vec3 uLightPos;
 uniform vec3 uLightColor;
 uniform vec3 uViewPos;
 uniform vec3 uObjectColor;
-uniform float uAlpha = 1.0;
+// Uniform initializers aren't valid GLSL ES; set to 1.0 explicitly via
+// glUniform1f() after linking instead (RendererImpl::LoadShaders()).
+uniform float uAlpha;
 
 void main() {
     // Ambient lighting
@@ -72,7 +75,7 @@ void main() {
     float specularStrength = 0.5;
     vec3 viewDir = normalize(uViewPos - FragPos);
     vec3 reflectDir = reflect(-lightDir, norm);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
     vec3 specular = specularStrength * spec * uLightColor;
     
     vec3 result = (ambient + diffuse + specular) * uObjectColor;
@@ -80,8 +83,7 @@ void main() {
 }
 )";
 
-const char* MINIMAP_VERTEX_SHADER = R"(
-#version 330 core
+const char* MINIMAP_VERTEX_SHADER = EARTH_MAP_GLSL_PREAMBLE R"(
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec2 aTexCoord;
 
@@ -96,8 +98,7 @@ void main() {
 }
 )";
 
-const char* MINIMAP_FRAGMENT_SHADER = R"(
-#version 330 core
+const char* MINIMAP_FRAGMENT_SHADER = EARTH_MAP_GLSL_PREAMBLE R"(
 in vec2 TexCoord;
 
 uniform sampler2D uTexture;
@@ -138,12 +139,15 @@ public:
         spdlog::info("Initializing renderer");
         
         try {
-            // Initialize GLEW
+#ifndef __ANDROID__
+            // GLEW loads desktop-GL entry points at runtime; GLES entry
+            // points are directly linked on Android, no loader needed.
             if (glewInit() != GLEW_OK) {
                 spdlog::error("Failed to initialize GLEW");
                 return false;
             }
-            
+#endif
+
             // Check OpenGL version
             const GLubyte* version = glGetString(GL_VERSION);
             spdlog::info("OpenGL Version: {}", reinterpret_cast<const char*>(version));
@@ -256,8 +260,7 @@ public:
     }
     
     void RenderScene(const glm::mat4& view_matrix,
-                    const glm::mat4& projection_matrix,
-                    const Frustum& frustum) override {
+                    const glm::mat4& projection_matrix) override {
         if (!initialized_) {
             return;
         }
@@ -268,7 +271,7 @@ public:
         if (tile_renderer_) {
             tile_renderer_->BeginFrame();
             tile_renderer_->UpdateVisibleTiles(view_matrix, projection_matrix,
-                                                 camera_controller_->GetPosition(), frustum);
+                                                 camera_controller_->GetPosition());
             tile_renderer_->RenderTiles(view_matrix, projection_matrix);
             tile_renderer_->EndFrame();
         } else {
@@ -418,24 +421,21 @@ public:
         // Get view and projection matrices from camera controller
         glm::mat4 view;
         glm::mat4 projection;
-        Frustum frustum;
 
         if (camera_controller_) {
             float aspect_ratio = static_cast<float>(config_.screen_width) / config_.screen_height;
             view = camera_controller_->GetViewMatrix();
             projection = camera_controller_->GetProjectionMatrix(aspect_ratio);
-            frustum = camera_controller_->GetFrustum(aspect_ratio);
         } else {
             // Fallback to simple view and projection if no camera
             view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -3.0f));
             projection = glm::perspective(glm::radians(constants::camera::DEFAULT_FOV),
                                           static_cast<float>(config_.screen_width) / config_.screen_height,
                                           0.1f, 100.0f);
-            frustum = Frustum(projection * view);
         }
 
         spdlog::debug("Renderer::Render() - RenderScene");
-        RenderScene(view, projection, frustum);
+        RenderScene(view, projection);
 
         // Render mini-map overlay
         if (mini_map_enabled_ && mini_map_renderer_ && camera_controller_) {
@@ -627,6 +627,12 @@ private:
             return false;
         }
 
+        // uAlpha has no GLSL-side default (uniform initializers aren't
+        // valid in GLSL ES); it's otherwise always fully opaque.
+        glUseProgram(shader_program_);
+        glUniform1f(glGetUniformLocation(shader_program_, "uAlpha"), 1.0f);
+        glUseProgram(0);
+
         minimap_shader_program_ = ShaderLoader::CreateProgram(
             MINIMAP_VERTEX_SHADER, MINIMAP_FRAGMENT_SHADER, "minimap");
         if (minimap_shader_program_ == 0) {
@@ -713,8 +719,11 @@ private:
         glFrontFace(GL_CCW);  // Counter-clockwise winding is front face
         spdlog::info("Backface culling enabled (CCW winding)");
 
-        // Set polygon mode
+#ifndef __ANDROID__
+        // glPolygonMode doesn't exist in GLES; GL_FILL is already GLES's
+        // only polygon mode, so this is a no-op there.
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+#endif
     }
     
     void Cleanup() {

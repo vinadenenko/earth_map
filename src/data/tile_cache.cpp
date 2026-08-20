@@ -4,7 +4,6 @@
  */
 
 #include <earth_map/data/tile_cache.h>
-#include <earth_map/math/tile_mathematics.h>
 #include <algorithm>
 #include <fstream>
 #include <filesystem>
@@ -13,8 +12,25 @@
 #include <iomanip>
 #include <random>
 #include <spdlog/spdlog.h>
+#include <string_view>
+#include <unordered_map>
 
 namespace earth_map {
+namespace {
+
+std::string EncodeCachePathComponent(std::string_view value) {
+    static constexpr char kHex[] = "0123456789abcdef";
+
+    std::string encoded;
+    encoded.reserve(value.size() * 2U);
+    for (const unsigned char byte : value) {
+        encoded.push_back(kHex[byte >> 4U]);
+        encoded.push_back(kHex[byte & 0x0fU]);
+    }
+    return encoded;
+}
+
+}  // namespace
 
 
 
@@ -28,16 +44,16 @@ public:
     
     bool Initialize(const TileCacheConfig& config) override;
     bool Put(const TileData& tile_data) override;
-    std::optional<TileData> Get(const TileCoordinates& coordinates) override;
-    bool Contains(const TileCoordinates& coordinates) const override;
-    bool Remove(const TileCoordinates& coordinates) override;
+    std::optional<TileData> Get(const imagery::ImageTileKey& key) override;
+    bool Contains(const imagery::ImageTileKey& key) const override;
+    bool Remove(const imagery::ImageTileKey& key) override;
     void Clear() override;
     
     TileCacheStats GetStatistics() const override;
-    bool UpdateMetadata(const TileCoordinates& coordinates, 
+    bool UpdateMetadata(const imagery::ImageTileKey& key,
                         const TileMetadata& metadata) override;
     std::shared_ptr<TileMetadata> GetMetadata(
-        const TileCoordinates& coordinates) const override;
+        const imagery::ImageTileKey& key) const override;
     std::size_t Cleanup() override;
     
     TileCacheConfig GetConfiguration() const override {
@@ -46,11 +62,7 @@ public:
     }
     bool SetConfiguration(const TileCacheConfig& config) override;
     
-    std::size_t Preload(const std::vector<TileCoordinates>& coordinates) override;
-    std::vector<TileCoordinates> GetTilesInBounds(
-        const BoundingBox2D& bounds) const override;
-    std::vector<TileCoordinates> GetTilesAtZoom(
-        std::uint8_t zoom_level) const override;
+    std::size_t Preload(const std::vector<imagery::ImageTileKey>& keys) override;
 
 private:
     // Coarse-grained lock protecting all mutable state. The LRU implementation
@@ -63,27 +75,28 @@ private:
     TileCacheStats stats_;
     
     // Memory cache
-    std::unordered_map<TileCoordinates, std::shared_ptr<TileData>, 
-                      TileCoordinatesHash> memory_cache_;
-    std::unordered_map<TileCoordinates, std::shared_ptr<TileMetadata>, 
-                      TileCoordinatesHash> metadata_cache_;
+    std::unordered_map<imagery::ImageTileKey, std::shared_ptr<TileData>,
+                       imagery::ImageTileKeyHash> memory_cache_;
+    std::unordered_map<imagery::ImageTileKey, std::shared_ptr<TileMetadata>,
+                       imagery::ImageTileKeyHash> metadata_cache_;
     
     // LRU tracking
-    mutable std::vector<TileCoordinates> lru_list_;
-    mutable std::unordered_map<TileCoordinates, std::size_t, TileCoordinatesHash> lru_index_;
+    mutable std::vector<imagery::ImageTileKey> lru_list_;
+    mutable std::unordered_map<imagery::ImageTileKey, std::size_t,
+                               imagery::ImageTileKeyHash> lru_index_;
     
-    std::string GetTileFilePath(const TileCoordinates& coordinates) const;
-    std::string GetMetadataFilePath(const TileCoordinates& coordinates) const;
+    std::string GetTileFilePath(const imagery::ImageTileKey& key) const;
+    std::string GetMetadataFilePath(const imagery::ImageTileKey& key) const;
     std::vector<std::uint8_t> CompressData(const std::vector<std::uint8_t>& data,
                                            TileMetadata::Compression type) const;
     std::vector<std::uint8_t> DecompressData(const std::vector<std::uint8_t>& data,
                                              TileMetadata::Compression type) const;
     std::uint32_t CalculateChecksum(const std::vector<std::uint8_t>& data) const;
     bool SaveTileToDisk(const TileData& tile_data) const;
-    std::unique_ptr<TileData> LoadTileFromDisk(const TileCoordinates& coordinates) const;
+    std::unique_ptr<TileData> LoadTileFromDisk(const imagery::ImageTileKey& key) const;
     bool SaveMetadataToDisk(const TileMetadata& metadata) const;
-    std::unique_ptr<TileMetadata> LoadMetadataFromDisk(const TileCoordinates& coordinates) const;
-    void UpdateLRU(const TileCoordinates& coordinates) const;
+    std::unique_ptr<TileMetadata> LoadMetadataFromDisk(const imagery::ImageTileKey& key) const;
+    void UpdateLRU(const imagery::ImageTileKey& key) const;
     void EvictFromMemory(std::size_t required_space);
     void EvictFromDisk(std::size_t required_space);
     bool IsTileExpired(const TileMetadata& metadata) const;
@@ -105,11 +118,11 @@ bool BasicTileCache::Initialize(const TileCacheConfig& config) {
     try {
         std::filesystem::create_directories(config_.disk_cache_directory);
         
-        // Create subdirectories for different zoom levels
-        for (int zoom = 0; zoom <= 20; ++zoom) {
-            std::filesystem::create_directories(
-                config_.disk_cache_directory + "/" + std::to_string(zoom));
-        }
+        // Version one stores each source/matrix namespace separately.  Do not
+        // read the historical bare-XYZ layout: it can alias different imagery
+        // providers at the same level/x/y address.
+        std::filesystem::create_directories(
+            config_.disk_cache_directory + "/imagery-v1");
         
         spdlog::info("Tile cache initialized. Memory: {}MB, Disk: {}MB, Directory: {}",
                      config_.max_memory_cache_size / (1024 * 1024),
@@ -130,28 +143,38 @@ bool BasicTileCache::Put(const TileData& tile_data) {
         return false;
     }
 
-    const auto& coords = tile_data.metadata.coordinates;
+    const auto& key = tile_data.metadata.imagery_key;
+    if (!key.IsValid()) {
+        spdlog::warn("Attempted to store tile data without an imagery key");
+        return false;
+    }
     stats_.total_requests++;
 
     // Update metadata
-    metadata_cache_[coords] = std::make_shared<TileMetadata>(tile_data.metadata);
+    metadata_cache_[key] = std::make_shared<TileMetadata>(tile_data.metadata);
     SaveMetadataToDisk(tile_data.metadata);
 
-    // Store in memory cache
+    // Store in memory cache. Replacing a refreshed tile must not inflate the
+    // resident byte/count accounting.
+    if (const auto existing = memory_cache_.find(key); existing != memory_cache_.end()) {
+        stats_.memory_cache_size -= existing->second->GetDataSize();
+    } else {
+        stats_.memory_cache_count++;
+    }
     auto data_copy = std::make_shared<TileData>(tile_data);
-    memory_cache_[coords] = data_copy;
+    memory_cache_[key] = data_copy;
 
     // Update LRU
-    UpdateLRU(coords);
+    UpdateLRU(key);
 
     // Update statistics
     stats_.memory_cache_size += tile_data.GetDataSize();
-    stats_.memory_cache_count++;
 
     // Save to disk cache as well
     if (!SaveTileToDisk(tile_data)) {
-        spdlog::warn("Failed to save tile to disk cache: {}/{}/{}",
-                     coords.x, coords.y, coords.zoom);
+        spdlog::warn("Failed to save tile to disk cache: {}/{}/{}/{}",
+                     key.imagery_source_id, key.matrix_set_id,
+                     key.address.level, key.address.column);
     }
 
     // Check if we need to evict from memory
@@ -163,18 +186,21 @@ bool BasicTileCache::Put(const TileData& tile_data) {
     return true;
 }
 
-std::optional<TileData> BasicTileCache::Get(const TileCoordinates& coordinates) {
+std::optional<TileData> BasicTileCache::Get(const imagery::ImageTileKey& key) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!key.IsValid()) {
+        return std::nullopt;
+    }
     stats_.total_requests++;
 
     // First try memory cache
-    auto it = memory_cache_.find(coordinates);
+    auto it = memory_cache_.find(key);
     if (it != memory_cache_.end()) {
         stats_.memory_cache_hits++;
-        UpdateLRU(coordinates);
+        UpdateLRU(key);
 
         // Update access metadata
-        if (auto metadata = GetMetadata(coordinates)) {
+        if (auto metadata = GetMetadata(key)) {
             metadata->access_count++;
             metadata->last_access = std::chrono::system_clock::now();
         }
@@ -185,14 +211,14 @@ std::optional<TileData> BasicTileCache::Get(const TileCoordinates& coordinates) 
     stats_.memory_cache_misses++;
 
     // Try loading from disk
-    auto disk_tile = LoadTileFromDisk(coordinates);
+    auto disk_tile = LoadTileFromDisk(key);
     if (disk_tile && disk_tile->IsValid()) {
         stats_.disk_cache_hits++;
 
         // Add to memory cache
         auto shared_tile = std::shared_ptr<TileData>(disk_tile.release());
-        memory_cache_[coordinates] = shared_tile;
-        UpdateLRU(coordinates);
+        memory_cache_[key] = shared_tile;
+        UpdateLRU(key);
 
         // Update statistics
         stats_.memory_cache_size += shared_tile->GetDataSize();
@@ -205,25 +231,31 @@ std::optional<TileData> BasicTileCache::Get(const TileCoordinates& coordinates) 
     return std::nullopt;
 }
 
-bool BasicTileCache::Contains(const TileCoordinates& coordinates) const {
+bool BasicTileCache::Contains(const imagery::ImageTileKey& key) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!key.IsValid()) {
+        return false;
+    }
     // Check memory cache first
-    if (memory_cache_.find(coordinates) != memory_cache_.end()) {
+    if (memory_cache_.find(key) != memory_cache_.end()) {
         return true;
     }
     
     // Check disk cache
-    std::string file_path = GetTileFilePath(coordinates);
+    std::string file_path = GetTileFilePath(key);
     return std::filesystem::exists(file_path);
 }
 
-bool BasicTileCache::Remove(const TileCoordinates& coordinates) {
+bool BasicTileCache::Remove(const imagery::ImageTileKey& key) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!key.IsValid()) {
+        return false;
+    }
     bool removed_memory = false;
     bool removed_disk = false;
     
     // Remove from memory cache
-    auto mem_it = memory_cache_.find(coordinates);
+    auto mem_it = memory_cache_.find(key);
     if (mem_it != memory_cache_.end()) {
         stats_.memory_cache_size -= mem_it->second->GetDataSize();
         stats_.memory_cache_count--;
@@ -232,10 +264,10 @@ bool BasicTileCache::Remove(const TileCoordinates& coordinates) {
     }
     
     // Remove from metadata cache
-    metadata_cache_.erase(coordinates);
+    metadata_cache_.erase(key);
     
     // Remove from LRU
-    auto lru_it = lru_index_.find(coordinates);
+    auto lru_it = lru_index_.find(key);
     if (lru_it != lru_index_.end()) {
         std::size_t index = lru_it->second;
         lru_list_.erase(lru_list_.begin() + index);
@@ -248,8 +280,8 @@ bool BasicTileCache::Remove(const TileCoordinates& coordinates) {
     }
     
     // Remove from disk
-    std::string tile_path = GetTileFilePath(coordinates);
-    std::string meta_path = GetMetadataFilePath(coordinates);
+    std::string tile_path = GetTileFilePath(key);
+    std::string meta_path = GetMetadataFilePath(key);
     
     try {
         removed_disk = std::filesystem::remove(tile_path) || 
@@ -306,29 +338,36 @@ TileCacheStats BasicTileCache::GetStatistics() const {
     return stats;
 }
 
-bool BasicTileCache::UpdateMetadata(const TileCoordinates& coordinates,
+bool BasicTileCache::UpdateMetadata(const imagery::ImageTileKey& key,
                                     const TileMetadata& metadata) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    metadata_cache_[coordinates] = std::make_shared<TileMetadata>(metadata);
+    if (!key.IsValid() || metadata.imagery_key != key) {
+        return false;
+    }
+    metadata_cache_[key] = std::make_shared<TileMetadata>(metadata);
     return SaveMetadataToDisk(metadata);
 }
 
 std::shared_ptr<TileMetadata> BasicTileCache::GetMetadata(
-    const TileCoordinates& coordinates) const {
+    const imagery::ImageTileKey& key) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!key.IsValid()) {
+        return nullptr;
+    }
     // Check memory cache first
-    auto it = metadata_cache_.find(coordinates);
+    auto it = metadata_cache_.find(key);
     if (it != metadata_cache_.end()) {
         return it->second;
     }
     
     // Load from disk
-    auto disk_metadata = const_cast<BasicTileCache*>(this)->LoadMetadataFromDisk(coordinates);
+    auto disk_metadata = const_cast<BasicTileCache*>(this)->LoadMetadataFromDisk(key);
     if (disk_metadata) {
         auto shared_metadata = std::shared_ptr<TileMetadata>(disk_metadata.release());
         // Use const_cast to modify cache in const method - this is logical since
         // we're just adding a cached result, not changing the logical state
-        const_cast<std::unordered_map<TileCoordinates, std::shared_ptr<TileMetadata>, TileCoordinatesHash>&>(metadata_cache_)[coordinates] = shared_metadata;
+        const_cast<std::unordered_map<imagery::ImageTileKey, std::shared_ptr<TileMetadata>,
+                                      imagery::ImageTileKeyHash>&>(metadata_cache_)[key] = shared_metadata;
         return shared_metadata;
     }
     
@@ -348,31 +387,6 @@ std::size_t BasicTileCache::Cleanup() {
         } else {
             ++it;
         }
-    }
-    
-    // Clean up disk cache
-    try {
-        for (const auto& entry : 
-             std::filesystem::recursive_directory_iterator(config_.disk_cache_directory)) {
-            if (entry.path().extension() == ".meta") {
-                auto metadata = LoadMetadataFromDisk([&entry]() {
-                    // Extract coordinates from path
-                    std::string path = entry.path().string();
-                    // TODO: Parse coordinates from path
-                    TileCoordinates coords{0, 0, 0};
-                    return coords;
-                }());
-                
-                if (metadata && IsTileExpired(*metadata)) {
-                    std::string base_path = entry.path().stem().string();
-                    std::filesystem::remove(entry.path());
-                    std::filesystem::remove(base_path + ".tile");
-                    ++cleaned_count;
-                }
-            }
-        }
-    } catch (const std::exception& e) {
-        spdlog::warn("Error during disk cleanup: {}", e.what());
     }
     
     if (cleaned_count > 0) {
@@ -398,19 +412,23 @@ bool BasicTileCache::SetConfiguration(const TileCacheConfig& config) {
     return true;
 }
 
-std::size_t BasicTileCache::Preload(const std::vector<TileCoordinates>& coordinates) {
+std::size_t BasicTileCache::Preload(const std::vector<imagery::ImageTileKey>& keys) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::size_t loaded_count = 0;
     
-    for (const auto& coords : coordinates) {
-        if (!Contains(coords)) {
-            auto tile_data = LoadTileFromDisk(coords);
-            if (tile_data && tile_data->IsValid()) {
-                auto shared_tile = std::shared_ptr<TileData>(tile_data.release());
-                memory_cache_[coords] = shared_tile;
-                UpdateLRU(coords);
-                loaded_count++;
-            }
+    for (const auto& key : keys) {
+        if (!key.IsValid() || memory_cache_.find(key) != memory_cache_.end()) {
+            continue;
+        }
+
+        auto tile_data = LoadTileFromDisk(key);
+        if (tile_data && tile_data->IsValid()) {
+            auto shared_tile = std::shared_ptr<TileData>(tile_data.release());
+            memory_cache_[key] = shared_tile;
+            UpdateLRU(key);
+            stats_.memory_cache_size += shared_tile->GetDataSize();
+            stats_.memory_cache_count++;
+            loaded_count++;
         }
     }
     
@@ -421,50 +439,23 @@ std::size_t BasicTileCache::Preload(const std::vector<TileCoordinates>& coordina
     return loaded_count;
 }
 
-std::vector<TileCoordinates> BasicTileCache::GetTilesInBounds(
-    const BoundingBox2D& bounds) const {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    std::vector<TileCoordinates> tiles_in_bounds;
-    
-    for (const auto& [coords, tile_data] : memory_cache_) {
-        if (tile_data && tile_data->IsValid()) {
-            BoundingBox2D tile_bounds = TileMathematics::GetTileBounds(coords);
-            if (bounds.Intersects(tile_bounds)) {
-                tiles_in_bounds.push_back(coords);
-            }
-        }
-    }
-    
-    return tiles_in_bounds;
-}
-
-std::vector<TileCoordinates> BasicTileCache::GetTilesAtZoom(
-    std::uint8_t zoom_level) const {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    std::vector<TileCoordinates> tiles_at_zoom;
-    
-    for (const auto& [coords, tile_data] : memory_cache_) {
-        if (coords.zoom == zoom_level && tile_data && tile_data->IsValid()) {
-            tiles_at_zoom.push_back(coords);
-        }
-    }
-    
-    return tiles_at_zoom;
-}
-
-std::string BasicTileCache::GetTileFilePath(const TileCoordinates& coordinates) const {
+std::string BasicTileCache::GetTileFilePath(const imagery::ImageTileKey& key) const {
     std::ostringstream oss;
-    oss << config_.disk_cache_directory << "/" 
-        << static_cast<int>(coordinates.zoom) << "/"
-        << coordinates.x << "_" << coordinates.y << ".tile";
+    oss << config_.disk_cache_directory << "/imagery-v1/"
+        << EncodeCachePathComponent(key.imagery_source_id) << "/"
+        << EncodeCachePathComponent(key.matrix_set_id) << "/"
+        << key.address.level << "/"
+        << key.address.column << "_" << key.address.row << ".tile";
     return oss.str();
 }
 
-std::string BasicTileCache::GetMetadataFilePath(const TileCoordinates& coordinates) const {
+std::string BasicTileCache::GetMetadataFilePath(const imagery::ImageTileKey& key) const {
     std::ostringstream oss;
-    oss << config_.disk_cache_directory << "/" 
-        << static_cast<int>(coordinates.zoom) << "/"
-        << coordinates.x << "_" << coordinates.y << ".meta";
+    oss << config_.disk_cache_directory << "/imagery-v1/"
+        << EncodeCachePathComponent(key.imagery_source_id) << "/"
+        << EncodeCachePathComponent(key.matrix_set_id) << "/"
+        << key.address.level << "/"
+        << key.address.column << "_" << key.address.row << ".meta";
     return oss.str();
 }
 
@@ -500,10 +491,11 @@ std::uint32_t BasicTileCache::CalculateChecksum(
 }
 
 bool BasicTileCache::SaveTileToDisk(const TileData& tile_data) const {
-    const auto& coords = tile_data.metadata.coordinates;
-    std::string file_path = GetTileFilePath(coords);
+    const auto& key = tile_data.metadata.imagery_key;
+    std::string file_path = GetTileFilePath(key);
     
     try {
+        std::filesystem::create_directories(std::filesystem::path(file_path).parent_path());
         std::ofstream file(file_path, std::ios::binary);
         if (!file) {
             return false;
@@ -525,9 +517,9 @@ bool BasicTileCache::SaveTileToDisk(const TileData& tile_data) const {
 }
 
 std::unique_ptr<TileData> BasicTileCache::LoadTileFromDisk(
-    const TileCoordinates& coordinates) const {
+    const imagery::ImageTileKey& key) const {
     
-    std::string file_path = GetTileFilePath(coordinates);
+    std::string file_path = GetTileFilePath(key);
     
     try {
         std::ifstream file(file_path, std::ios::binary);
@@ -536,7 +528,7 @@ std::unique_ptr<TileData> BasicTileCache::LoadTileFromDisk(
         }
         
         auto tile_data = std::make_unique<TileData>();
-        tile_data->metadata.coordinates = coordinates;
+        tile_data->metadata.imagery_key = key;
         
         // Read data size
         std::uint64_t data_size;
@@ -561,10 +553,11 @@ std::unique_ptr<TileData> BasicTileCache::LoadTileFromDisk(
 }
 
 bool BasicTileCache::SaveMetadataToDisk(const TileMetadata& metadata) const {
-    const auto& coords = metadata.coordinates;
-    std::string file_path = GetMetadataFilePath(coords);
+    const auto& key = metadata.imagery_key;
+    std::string file_path = GetMetadataFilePath(key);
     
     try {
+        std::filesystem::create_directories(std::filesystem::path(file_path).parent_path());
         std::ofstream file(file_path, std::ios::binary);
         if (!file) {
             return false;
@@ -611,9 +604,9 @@ bool BasicTileCache::SaveMetadataToDisk(const TileMetadata& metadata) const {
 }
 
 std::unique_ptr<TileMetadata> BasicTileCache::LoadMetadataFromDisk(
-    const TileCoordinates& coordinates) const {
+    const imagery::ImageTileKey& key) const {
     
-    std::string file_path = GetMetadataFilePath(coordinates);
+    std::string file_path = GetMetadataFilePath(key);
     
     try {
         std::ifstream file(file_path, std::ios::binary);
@@ -622,7 +615,7 @@ std::unique_ptr<TileMetadata> BasicTileCache::LoadMetadataFromDisk(
         }
         
         auto metadata = std::make_unique<TileMetadata>();
-        metadata->coordinates = coordinates;
+        metadata->imagery_key = key;
         
         // Read metadata fields
         file.read(reinterpret_cast<char*>(&metadata->file_size), 
@@ -668,24 +661,24 @@ std::unique_ptr<TileMetadata> BasicTileCache::LoadMetadataFromDisk(
     }
 }
 
-void BasicTileCache::UpdateLRU(const TileCoordinates& coordinates) const {
-    auto it = lru_index_.find(coordinates);
+void BasicTileCache::UpdateLRU(const imagery::ImageTileKey& key) const {
+    auto it = lru_index_.find(key);
     
     if (it != lru_index_.end()) {
         // Move to end (most recently used)
         std::size_t old_index = it->second;
         lru_list_.erase(lru_list_.begin() + old_index);
-        lru_list_.push_back(coordinates);
+        lru_list_.push_back(key);
         
         // Update indices
         for (std::size_t i = old_index; i < lru_list_.size(); ++i) {
             lru_index_[lru_list_[i]] = i;
         }
-        lru_index_[coordinates] = lru_list_.size() - 1;
+        lru_index_[key] = lru_list_.size() - 1;
     } else {
         // Add to end
-        lru_list_.push_back(coordinates);
-        lru_index_[coordinates] = lru_list_.size() - 1;
+        lru_list_.push_back(key);
+        lru_index_[key] = lru_list_.size() - 1;
     }
 }
 
@@ -694,9 +687,9 @@ void BasicTileCache::EvictFromMemory(std::size_t required_space) {
     
     while (freed_space < required_space && !lru_list_.empty()) {
         // Remove least recently used (front of list)
-        TileCoordinates coords_to_evict = lru_list_.front();
+        imagery::ImageTileKey key_to_evict = lru_list_.front();
         lru_list_.erase(lru_list_.begin());
-        lru_index_.erase(coords_to_evict);
+        lru_index_.erase(key_to_evict);
         
         // Update indices
         for (auto& [coords, index] : lru_index_) {
@@ -706,7 +699,7 @@ void BasicTileCache::EvictFromMemory(std::size_t required_space) {
         }
         
         // Remove from memory cache
-        auto it = memory_cache_.find(coords_to_evict);
+        auto it = memory_cache_.find(key_to_evict);
         if (it != memory_cache_.end()) {
             freed_space += it->second->GetDataSize();
             stats_.memory_cache_size -= it->second->GetDataSize();

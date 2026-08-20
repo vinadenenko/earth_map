@@ -52,6 +52,9 @@ struct Configuration {
     
     /** User agent string for tile requests */
     std::string user_agent = "EarthMap/0.1.0";
+
+    /** HTTP and TLS settings for imagery tile downloads. */
+    TileLoaderConfig tile_loader_config;
     
     /** Enable performance monitoring */
     bool enable_performance_monitoring = true;

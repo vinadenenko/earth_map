@@ -5,24 +5,20 @@
 
 #include <earth_map/renderer/texture_atlas/tile_load_worker_pool.h>
 #include <spdlog/spdlog.h>
+#include <array>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
 namespace earth_map {
 
 TileLoadWorkerPool::TileLoadWorkerPool(
-    std::shared_ptr<TileCache> cache,
     std::shared_ptr<TileLoader> loader,
     std::shared_ptr<GLUploadQueue> upload_queue,
     int num_threads)
-    : cache_(std::move(cache))
-    , loader_(std::move(loader))
+    : loader_(std::move(loader))
     , upload_queue_(std::move(upload_queue))
     , shutdown_flag_(false) {
 
-    if (!cache_) {
-        spdlog::warn("TileLoadWorkerPool: null cache provided");
-    }
     if (!loader_) {
         spdlog::error("TileLoadWorkerPool: null loader provided");
         throw std::invalid_argument("TileLoader cannot be null");
@@ -142,58 +138,36 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
     const auto& coords = request.coords;
     spdlog::trace("Processing tile load request: {}", coords.GetKey());
 
-    // Step 1: Check cache
-    std::optional<TileData> cached_data;
-    bool cache_hit = false;
+    // The loader resolves the provider's canonical imagery key before checking
+    // its cache. A render request only has TileCoordinates, which are not a
+    // cache identity because the same address can belong to different sources
+    // or matrix sets. Keep this worker downstream of that resolution.
+    auto load_result = loader_->LoadTile(coords, "");  // Empty provider = default
 
-    if (cache_) {
-        cached_data = cache_->Get(coords);
-        cache_hit = cached_data.has_value();
-        if (cache_hit) {
-            spdlog::trace("Cache hit for tile {}", coords.GetKey());
-        }
+    if (!load_result.success) {
+        spdlog::warn("Failed to load tile {}: {}", coords.GetKey(), load_result.error_message);
+        // Enqueue an empty command so ProcessUploads sees the failure and
+        // resets the tile from Loading back to NotLoaded (via its existing
+        // upload-failed path). Without this the tile stays Loading forever.
+        upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
+        return;
     }
 
-    TileData tile_data;
-    if (cache_hit) {
-        tile_data = std::move(*cached_data);
-    } else {
-        tile_data.metadata.coordinates = coords;
+    if (!load_result.tile_data) {
+        spdlog::warn("Loaded tile {} but data is null", coords.GetKey());
+        upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
+        return;
     }
 
-    // Step 2: Load from network if cache miss
-    if (!cache_hit) {
-        spdlog::trace("Cache miss for tile {}, loading from network", coords.GetKey());
-
-        // Use loader to download tile
-        auto load_result = loader_->LoadTile(coords, "");  // Empty provider = default
-
-        if (!load_result.success) {
-            spdlog::warn("Failed to load tile {}: {}", coords.GetKey(), load_result.error_message);
-            // Enqueue an empty command so ProcessUploads sees the failure and
-            // resets the tile from Loading back to NotLoaded (via its existing
-            // upload-failed path). Without this the tile stays Loading forever.
-            upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
-            return;
-        }
-
-        if (!load_result.tile_data) {
-            spdlog::warn("Loaded tile {} but data is null", coords.GetKey());
-            upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
-            return;
-        }
-        tile_data = *load_result.tile_data;
-
-        // TODO: hardcoded 'loaded', basically we are loaded, but it is weird
-        // Think about another loading indication
-        // E.g. separated from disk/network loading, because now we have 'bool success' (http status) and 'bool loaded'
-        tile_data.loaded = true;
-
-        // Put in cache for future use
-        if (cache_ && tile_data.loaded) {
-            cache_->Put(tile_data);
-        }
+    if (!load_result.imagery_key.has_value() || !load_result.imagery_key->IsValid() ||
+        load_result.tile_data->metadata.imagery_key != *load_result.imagery_key) {
+        spdlog::error("Loaded tile {} without a consistent canonical imagery key", coords.GetKey());
+        upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
+        return;
     }
+
+    TileData tile_data = *load_result.tile_data;
+    tile_data.loaded = true;
 
     // Step 3: Decode image data
     if (!DecodeImage(tile_data)) {
@@ -206,6 +180,7 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
     // Step 4: Create GL upload command
     auto upload_cmd = std::make_unique<GLUploadCommand>();
     upload_cmd->coords = coords;
+    upload_cmd->imagery_key = *load_result.imagery_key;
     upload_cmd->pixel_data = std::move(tile_data.data);
     upload_cmd->width = tile_data.width;
     upload_cmd->height = tile_data.height;

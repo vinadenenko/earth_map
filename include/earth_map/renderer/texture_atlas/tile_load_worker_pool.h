@@ -6,11 +6,10 @@
  *
  * Manages multiple worker threads that:
  * 1. Pull tile load requests from a priority queue
- * 2. Check cache for tile data
- * 3. Download tile from network if cache miss
- * 4. Decode image data (stb_image)
- * 5. Create GL upload command
- * 6. Push to GL upload queue
+ * 2. Ask TileLoader for canonical cached-or-downloaded data
+ * 3. Decode image data (stb_image)
+ * 4. Create GL upload command
+ * 5. Push to GL upload queue
  *
  * Design:
  * - Multi-threaded (configurable worker count, default 4)
@@ -21,7 +20,6 @@
  */
 
 #include <earth_map/math/tile_mathematics.h>
-#include <earth_map/data/tile_cache.h>
 #include <earth_map/data/tile_loader.h>
 #include <earth_map/renderer/texture_atlas/gl_upload_queue.h>
 #include <memory>
@@ -98,13 +96,11 @@ public:
     /**
      * @brief Constructor
      *
-     * @param cache Shared pointer to tile cache
      * @param loader Shared pointer to tile loader
      * @param upload_queue Shared pointer to GL upload queue
      * @param num_threads Number of worker threads (default: 4)
      */
     TileLoadWorkerPool(
-        std::shared_ptr<TileCache> cache,
         std::shared_ptr<TileLoader> loader,
         std::shared_ptr<GLUploadQueue> upload_queue,
         int num_threads = 4);
@@ -192,10 +188,7 @@ private:
      */
     bool DecodeImage(TileData& tile_data);
 
-    /// Tile cache (check before downloading)
-    std::shared_ptr<TileCache> cache_;
-
-    /// Tile loader (download from network)
+    /// Tile loader (resolves source identity, cache, and network loading)
     std::shared_ptr<TileLoader> loader_;
 
     /// GL upload queue (push decoded tiles for GPU upload)

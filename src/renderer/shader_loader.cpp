@@ -5,7 +5,11 @@
 
 #include <earth_map/renderer/shader_loader.h>
 #include <spdlog/spdlog.h>
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#else
 #include <GL/glew.h>
+#endif
 #include <array>
 
 namespace earth_map {

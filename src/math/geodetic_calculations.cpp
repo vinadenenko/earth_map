@@ -4,6 +4,7 @@
  */
 
 #include "../../include/earth_map/math/geodetic_calculations.h"
+#include <array>
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>

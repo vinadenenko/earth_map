@@ -6,12 +6,15 @@
 #include <earth_map/data/tile_loader.h>
 #include <earth_map/math/tile_mathematics.h>
 #include <algorithm>
+#include <array>
 #include <sstream>
 #include <iomanip>
+#include <map>
 #include <random>
 #include <thread>
 #include <future>
 #include <set>
+#include <unordered_map>
 #include <unordered_set>
 #include <regex>
 #include <queue>
@@ -232,7 +235,6 @@ private:
                         std::vector<std::uint8_t>& data) const;
     std::uint64_t GetCurrentTimeMs() const;
     void UpdateStats(const TileLoadResult& result);
-    TileCoordinatesHash hasher_;
 };
 
 // Factory function
@@ -258,6 +260,10 @@ bool BasicTileLoader::Initialize(const TileLoaderConfig& config) {
     
     spdlog::info("Tile loader initialized with {} providers and {} threads", 
                 providers_.size(), config_.max_concurrent_downloads);
+    if (!config_.ca_cert_path.empty()) {
+        spdlog::info("Tile loader: using configured CA bundle '{}'",
+                     config_.ca_cert_path);
+    }
     return true;
 }
 
@@ -321,21 +327,25 @@ TileLoadResult BasicTileLoader::LoadTile(const TileCoordinates& coordinates,
                                         const std::string& provider_name) {
     // Commented for now to prevent double increment in UpdateStats
     // stats_.total_requests++;
-    
-    // Check cache first
-    // TODO: tile_cache_ is null now, investigate later
-    if (tile_cache_) {
-        auto cached_tile = tile_cache_->Get(coordinates);
-        if (cached_tile && cached_tile->IsValid()) {
-            stats_.cached_requests++;
 
-            TileLoadResult result;
-            result.success = true;
-            result.tile_data = std::make_shared<TileData>(std::move(*cached_tile));
-            result.coordinates = coordinates;
-            result.provider_name = provider_name.empty() ? default_provider_ : provider_name;
+    const std::string resolved_provider_name =
+        provider_name.empty() ? default_provider_ : provider_name;
+    const TileProvider* provider = GetProvider(resolved_provider_name);
+    if (provider) {
+        const auto imagery_key = provider->ResolveImageTileKey(coordinates);
+        if (imagery_key.has_value() && tile_cache_) {
+            auto cached_tile = tile_cache_->Get(*imagery_key);
+            if (cached_tile && cached_tile->IsValid()) {
+                stats_.cached_requests++;
 
-            return result;
+                TileLoadResult result;
+                result.success = true;
+                result.tile_data = std::make_shared<TileData>(std::move(*cached_tile));
+                result.coordinates = coordinates;
+                result.provider_name = resolved_provider_name;
+                result.imagery_key = *imagery_key;
+                return result;
+            }
         }
     }
     
@@ -478,9 +488,15 @@ std::vector<TileCoordinates> BasicTileLoader::GetLoadingTiles() const {
 std::size_t BasicTileLoader::PreloadTiles(const std::vector<TileCoordinates>& coordinates,
                                           const std::string& provider_name) {
     std::size_t preloaded_count = 0;
+    const TileProvider* provider = GetProvider(
+        provider_name.empty() ? default_provider_ : provider_name);
     
     for (const auto& coords : coordinates) {
-        if (tile_cache_ && !tile_cache_->Contains(coords)) {
+        std::optional<imagery::ImageTileKey> imagery_key;
+        if (provider) {
+            imagery_key = provider->ResolveImageTileKey(coords);
+        }
+        if (tile_cache_ && imagery_key.has_value() && !tile_cache_->Contains(*imagery_key)) {
             auto result = LoadTile(coords, provider_name);
             if (result.success) {
                 preloaded_count++;
@@ -534,6 +550,13 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
         UpdateStats(result);
         return result;
     }
+
+    result.imagery_key = provider->ResolveImageTileKey(coordinates);
+    if (!result.imagery_key.has_value()) {
+        result.error_message = "Provider cannot resolve a canonical imagery key";
+        UpdateStats(result);
+        return result;
+    }
     
     // Build URL
     std::string url = provider->BuildTileURL(coordinates);
@@ -547,7 +570,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
         result.retry_count = attempt;
         
         if (DownloadTile(url, headers, data, status_code)) {
-            spdlog::info("Tile downloaded ok");
+            spdlog::info("Tile downloaded ok: {}", url);
             result.status_code = status_code;
             break;
         }
@@ -573,7 +596,7 @@ TileLoadResult BasicTileLoader::LoadTileInternal(const TileCoordinates& coordina
     
     // Create tile data
     auto tile_data = std::make_shared<TileData>();
-    tile_data->metadata.coordinates = coordinates;
+    tile_data->metadata.imagery_key = *result.imagery_key;
     tile_data->metadata.file_size = data.size();
     tile_data->metadata.last_modified = std::chrono::system_clock::now();
     tile_data->metadata.last_access = std::chrono::system_clock::now();
@@ -615,6 +638,18 @@ CURL* BasicTileLoader::CreateCurlHandle() const {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, config_.verify_ssl ? 2L : 0L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L); // Prevent signals for thread safety
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // Enable all supported encodings
+
+    if (!config_.ca_cert_path.empty()) {
+        const CURLcode ca_cert_result = curl_easy_setopt(
+            curl, CURLOPT_CAINFO, config_.ca_cert_path.c_str());
+        if (ca_cert_result != CURLE_OK) {
+            spdlog::error("Tile loader: failed to configure CA bundle '{}': {}",
+                          config_.ca_cert_path,
+                          curl_easy_strerror(ca_cert_result));
+            curl_easy_cleanup(curl);
+            return nullptr;
+        }
+    }
     
     if (config_.enable_http2) {
         curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
@@ -746,6 +781,21 @@ std::string BasicXYZTileProvider::BuildTileURL(const TileCoordinates& coords) co
     }
 
     return url;
+}
+
+std::string BasicXYZTileProvider::GetImagerySourceId() const {
+    return name_;
+}
+
+imagery::TileMatrixSet BasicXYZTileProvider::GetTileMatrixSet() const {
+    if (min_zoom_ < 0 || max_zoom_ < min_zoom_) {
+        return {};
+    }
+
+    imagery::TileMatrixSet matrix_set = imagery::TileMatrixSet::WebMercatorXYZ();
+    matrix_set.minimum_level = static_cast<std::uint32_t>(min_zoom_);
+    matrix_set.maximum_level = static_cast<std::uint32_t>(max_zoom_);
+    return matrix_set;
 }
 
 std::vector<std::pair<std::string, std::string>> BasicXYZTileProvider::GetHeaders() const {

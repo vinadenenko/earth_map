@@ -36,12 +36,14 @@ protected:
  * @brief Test that camera starts in normalized coordinate system
  */
 TEST_F(CameraInputIntegrationTest, InitialCameraPositionNormalized) {
-    // Camera should start at distance 3.0 in normalized units
+    // Camera should start at DEFAULT_CAMERA_DISTANCE_NORMALIZED (2.5)
     glm::vec3 pos = camera_controller_->GetPosition();
     float distance = glm::length(pos);
 
-    // Should be around 3.0 (DEFAULT_CAMERA_DISTANCE_NORMALIZED)
+    // Should be around 2.5 (DEFAULT_CAMERA_DISTANCE_NORMALIZED)
+    // and within the valid constraint range
     EXPECT_NEAR(distance, constants::camera::DEFAULT_CAMERA_DISTANCE_NORMALIZED, 0.1f);
+    EXPECT_LE(distance, constants::camera_constraints::MAX_DISTANCE_NORMALIZED);
 
     // Should NOT be in meters (would be ~19 million)
     EXPECT_LT(distance, 100.0f);

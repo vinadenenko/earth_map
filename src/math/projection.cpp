@@ -6,6 +6,7 @@
 #include "../../include/earth_map/math/projection.h"
 #include <cmath>
 #include <stdexcept>
+#include <unordered_map>
 #include <glm/glm.hpp>
 
 namespace earth_map {
