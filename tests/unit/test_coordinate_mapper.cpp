@@ -7,6 +7,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <earth_map/constants.h>
 #include <earth_map/coordinates/coordinate_mapper.h>
 #include <earth_map/coordinates/coordinate_spaces.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -80,6 +81,19 @@ TEST_F(GeographicWorldTest, CustomRadius_ScalesCorrectly) {
     World world = CoordinateMapper::GeographicToWorld(geo, 2.5f);
 
     EXPECT_NEAR(2.5f, world.Distance(), EPSILON);
+}
+
+TEST_F(GeographicWorldTest, AltitudeMeters_MapsToNormalizedRadialOffset) {
+    constexpr double altitude_meters = 25000.0;
+    Geographic geo(0.0, 0.0, altitude_meters);
+
+    World world = CoordinateMapper::GeographicToWorld(geo);
+    Geographic result = CoordinateMapper::WorldToGeographic(world);
+
+    const float expected_radius = 1.0f +
+        static_cast<float>(altitude_meters / earth_map::constants::geodetic::EARTH_MEAN_RADIUS);
+    EXPECT_NEAR(expected_radius, world.Distance(), EPSILON);
+    EXPECT_NEAR(altitude_meters, result.altitude, 0.1);
 }
 
 TEST_F(GeographicWorldTest, RoundTrip_PreservesCoordinates) {

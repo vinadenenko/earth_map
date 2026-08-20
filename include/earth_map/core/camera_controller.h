@@ -164,13 +164,6 @@ public:
      * @return glm::mat4 Projection matrix for rendering
      */
     virtual glm::mat4 GetProjectionMatrix(float aspect_ratio) const = 0;
-    
-     /**
-      * @brief Get view frustum
-      *
-      * @return Frustum Current camera frustum for culling
-      */
-     virtual Frustum GetFrustum(float aspect_ratio) const = 0;
 
      /**
       * @brief Get camera forward vector

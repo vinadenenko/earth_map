@@ -61,6 +61,7 @@ void print_help() {
     std::cout << "║   M                 : Toggle mini-map                       ║\n";
     std::cout << "║   R                 : Reset camera to default view         ║\n";
     std::cout << "║   1                 : Jump to Himalayas (SRTM data region) ║\n";
+    std::cout << "║   Ctrl + 2          : Jump to Yerevan zoom-13 test view    ║\n";
     std::cout << "║   O                 : Toggle debug overlay                 ║\n";
     std::cout << "║   H                 : Toggle this help text                ║\n";
     std::cout << "║   ESC               : Exit application                     ║\n";
@@ -77,7 +78,7 @@ void framebuffer_size_callback(GLFWwindow* /*window*/, int width, int height) {
 }
 
 // Keyboard callback
-void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int /*mods*/) {
+void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int mods) {
     if (!g_earth_map_instance) return;
 
     auto camera = g_earth_map_instance->GetCameraController();
@@ -108,6 +109,17 @@ void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int
                 camera->SetGeographicPosition(90.0, 28.0, 500000.0);  // 500km altitude
                 camera->SetMovementMode(earth_map::CameraController::MovementMode::ORBIT);
                 std::cout << "→ Jumped to Himalayan region (SRTM data area)\n";
+                break;
+            }
+            case GLFW_KEY_2: {
+                if ((mods & GLFW_MOD_CONTROL) == 0) {
+                    break;
+                }
+                // Reproducible high-zoom view: Yerevan at an altitude that
+                // selects z13 with the renderer's current zoom calibration.
+                camera->SetGeographicPosition(44.5152, 40.1872, 25000.0);
+                camera->SetMovementMode(earth_map::CameraController::MovementMode::ORBIT);
+                std::cout << "Tag. Inspect preset: Yerevan zoom-13 view\n";
                 break;
             }
             case GLFW_KEY_O:

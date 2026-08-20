@@ -4,6 +4,7 @@
  */
 
 #include <earth_map/renderer/tile_renderer.h>
+#include <earth_map/imagery/tile_matrix_set.h>
 #include <earth_map/renderer/globe_mesh.h>
 #include <earth_map/renderer/shader_loader.h>
 #include <earth_map/math/projection.h>
@@ -13,20 +14,26 @@
 #include <earth_map/coordinates/coordinate_mapper.h>
 #include <earth_map/constants.h>
 #include <spdlog/spdlog.h>
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#else
 #include <GL/glew.h>
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstddef>
+#include <optional>
 
 namespace earth_map {
 
 namespace {
 
-constexpr int kDefaultTileSize = 256;
 constexpr int kDefaultZoomLevel = 2;
 constexpr int kMaxFallbackLevels = 5;
 constexpr glm::vec3 kDefaultLightPosition{2.0f, 2.0f, 2.0f};
@@ -41,6 +48,33 @@ constexpr float kZoomAltitudeScale =
     (constants::camera_constraints::MIN_ALTITUDE_METERS
      / static_cast<float>(constants::geodetic::EARTH_MEAN_RADIUS))
     * static_cast<float>(1u << kMaxZoom);
+
+/**
+ * Returns the ancestors sampled by the fragment shader when an exact imagery
+ * page is not resident.  The renderer still receives legacy TileCoordinates
+ * at the icosphere boundary; canonical ImageTileKey resolution happens in the
+ * coordinator before a request reaches cache, upload, or GPU residency.
+ */
+std::vector<TileCoordinates> BuildAncestorFallbackRequests(
+    const std::vector<TileCoordinates>& leaf_tiles)
+{
+    std::vector<TileCoordinates> ancestors;
+    std::unordered_set<TileCoordinates, TileCoordinatesHash> seen;
+
+    for (const TileCoordinates& leaf : leaf_tiles) {
+        TileCoordinates ancestor = leaf;
+        for (int level = 1;
+             level < kMaxFallbackLevels && ancestor.zoom > kMinZoom;
+             ++level) {
+            ancestor = ancestor.GetParent();
+            if (seen.insert(ancestor).second) {
+                ancestors.push_back(ancestor);
+            }
+        }
+    }
+
+    return ancestors;
+}
 
 } // namespace
 
@@ -59,6 +93,25 @@ struct TileRenderState {
 };
 
 /**
+ * Immutable page-table state submitted to the imagery shader for one frame.
+ *
+ * Page-table windows are mutable derived views of physical tile residency.
+ * Capture the GL texture together with its exact immutable window before
+ * rendering so a draw cannot combine values from different generations.
+ */
+struct ImageryRenderSnapshot {
+    struct PageTable {
+        std::uint32_t texture_id = 0;
+        imagery::PageTableWindow window;
+        bool has_page_table = false;
+    };
+
+    int zoom_level = kDefaultZoomLevel;
+    int fallback_level_count = 1;
+    std::array<PageTable, kMaxFallbackLevels> page_tables;
+};
+
+/**
  * @brief Basic tile renderer implementation
  */
 class TileRendererImpl : public TileRenderer {
@@ -67,34 +120,34 @@ public:
         : config_(config), frame_counter_(0) {
         spdlog::info("Creating tile renderer with max tiles: {}", config.max_visible_tiles);
     }
-    
+
     ~TileRendererImpl() override {
         Cleanup();
     }
-    
+
     bool Initialize() override {
         if (initialized_) {
             return true;
         }
-        
+
         spdlog::info("Initializing tile renderer");
-        
+
         try {
             if (!InitializeOpenGLState()) {
                 spdlog::error("Failed to initialize OpenGL state");
                 return false;
             }
-            
+
             initialized_ = true;
             spdlog::info("Tile renderer initialized successfully");
             return true;
-            
+
         } catch (const std::exception& e) {
             spdlog::error("Exception during tile renderer initialization: {}", e.what());
             return false;
         }
     }
-    
+
     void BeginFrame() override {
         if (!initialized_) {
             return;
@@ -107,19 +160,19 @@ public:
 
         // Process GL uploads from worker threads (must be on GL thread)
         if (texture_coordinator_) {
-            texture_coordinator_->ProcessUploads(100);  // Upload up to 5 tiles per frame for 60 FPS (changed)
+            texture_coordinator_->ProcessUploads();
         }
 
     }
-    
+
     void EndFrame() override {
         if (!initialized_) {
             return;
         }
-        
+
         // Update statistics
         stats_.visible_tiles = visible_tiles_.size();
-        
+
         // Calculate average LOD
         if (visible_tiles_.size() > 0) {
             float total_lod = 0.0f;
@@ -130,10 +183,6 @@ public:
         } else {
             stats_.average_lod = 0.0f;
         }
-    }
-    
-    void SetTileManager(TileManager* tile_manager) override {
-        tile_manager_ = tile_manager;
     }
 
     void SetTextureCoordinator(TileTextureCoordinator* coordinator) override {
@@ -157,21 +206,23 @@ public:
 
     void UpdateVisibleTiles(const glm::mat4& view_matrix,
                         const glm::mat4& projection_matrix,
-                        const glm::vec3& camera_position,
-                        const Frustum& frustum) override {
-        if (!initialized_ || !tile_manager_) {
+                        const glm::vec3& /*camera_position*/) override {
+        if (!initialized_) {
             return;
         }
-        
+
         // Clear previous visible tiles
         visible_tiles_.clear();
-        
-        // Calculate camera distance from globe center
-        const float camera_distance = glm::length(camera_position);
-        
+
+        // The submitted view matrix defines the camera for both CPU
+        // selection and the shader. Do not accept a second camera transform.
+        const glm::vec3 canonical_camera_position =
+            glm::vec3(glm::inverse(view_matrix)[3]);
+        const float camera_distance = glm::length(canonical_camera_position);
+
         // Estimate optimal zoom level based on distance
         const int zoom_level = CalculateOptimalZoom(camera_distance);
-        
+
         // Collect visible tile coordinates
         // Using int64_t to avoid overflow, because with zoom_level 20, n equals 1048576 and n * n gives 0 with int32_t
         const int64_t n = 1 << zoom_level;
@@ -188,50 +239,70 @@ public:
                 }
             }
         } else {
-            // At higher zoom, use visibility bounds and frustum culling
+            // At higher zoom, use visibility bounds from ray-cast geographic projection
             const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
-                camera_position, view_matrix, projection_matrix);
-            const std::vector<TileCoordinates> candidate_tiles =
-                tile_manager_->GetTilesInBounds(visible_bounds, zoom_level);
+                canonical_camera_position, view_matrix, projection_matrix);
+            const std::vector<TileCoordinates> candidate_tiles = TileMathematics::GetTilesInBounds(visible_bounds, zoom_level);
 
-            spdlog::info("Tag. Candidate tiles: {} with n = {} and zoom level = {}", candidate_tiles.size(), n, zoom_level);
 
             const std::size_t max_tiles_for_frame =
                 static_cast<std::size_t>(config_.max_visible_tiles);
 
-            for (const TileCoordinates& tile_coords : candidate_tiles) {
-                if (visible_tile_coords.size() >= max_tiles_for_frame) break;
-                if (IsTileInFrustum(tile_coords, frustum)) {
-                    visible_tile_coords.push_back(tile_coords);
-                }
+            if (candidate_tiles.size() <= max_tiles_for_frame) {
+                visible_tile_coords = candidate_tiles;
+            } else {
+                visible_tile_coords.assign(
+                    candidate_tiles.begin(),
+                    candidate_tiles.begin() + max_tiles_for_frame);
             }
         }
 
-        // Update indirection window center for windowed zoom levels (13+).
-        // Converts camera position to tile coordinates at the current zoom.
+        // Keep every page-table window sampled by the shader centered on the
+        // current camera.  UpdateIndirectionWindowCenter replays resident pages
+        // into a new generation, so moving a parent window no longer drops its
+        // usable mapping.  This is essential for a direct jump to a high zoom:
+        // the four parent levels must be addressable before exact imagery arrives.
         if (texture_coordinator_ && zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom) {
-            const glm::vec3 cam_dir = glm::normalize(camera_position);
-            const double lon = glm::degrees(std::atan2(
-                static_cast<double>(cam_dir.x), static_cast<double>(cam_dir.z)));
-            const double lat = glm::degrees(std::asin(
-                static_cast<double>(cam_dir.y)));
-            const int n = 1 << zoom_level;
-            const int center_x = std::clamp(
-                static_cast<int>(((lon + 180.0) / 360.0) * n), 0, n - 1);
-            const double lat_rad = glm::radians(glm::clamp(lat, -85.0511, 85.0511));
-            const int center_y = std::clamp(
-                static_cast<int>(
-                    ((1.0 - std::log(std::tan(M_PI / 4.0 + lat_rad / 2.0)) / M_PI) / 2.0) * n),
-                0, n - 1);
-            texture_coordinator_->UpdateIndirectionWindowCenter(
-                zoom_level, center_x, center_y);
+            const coordinates::Geographic cam_geo =
+                coordinates::CoordinateMapper::CartesianToGeographic(canonical_camera_position);
+            TileCoordinates center_tile =
+                coordinates::CoordinateMapper::GeographicToSphericalTile(cam_geo, zoom_level);
+
+            const int fallback_level_count = std::min(kMaxFallbackLevels, zoom_level + 1);
+            for (int level = 0; level < fallback_level_count; ++level) {
+                if (const auto center_imagery_key =
+                        texture_coordinator_->ResolveImageryTileKey(center_tile);
+                    center_imagery_key.has_value()) {
+                    texture_coordinator_->UpdateIndirectionWindowCenter(*center_imagery_key);
+                }
+
+                if (center_tile.zoom == kMinZoom) {
+                    break;
+                }
+                center_tile = center_tile.GetParent();
+            }
         }
 
-        // Request all visible tiles from texture coordinator (idempotent, lock-free)
+        // Request all ancestor pages that the shader can fall back to before
+        // requesting the exact pages.  Lower worker-pool priorities run first;
+        // this makes a direct high-zoom jump converge through real imagery,
+        // rather than leaving an avoidable gray interval while exact children
+        // download.  Both calls are idempotent.
         if (texture_coordinator_ && !visible_tile_coords.empty()) {
-            // Calculate priority based on camera distance (closer = lower number = higher priority)
-            int priority = static_cast<int>(camera_distance * 10.0f);
+            // Calculate priority based on camera distance (closer = lower number = higher priority).
+            const int priority = static_cast<int>(camera_distance * 10.0f);
+            const int ancestor_priority = std::max(kMinZoom, priority - 1);
+            const std::vector<TileCoordinates> ancestor_tiles =
+                BuildAncestorFallbackRequests(visible_tile_coords);
+
+            texture_coordinator_->RequestTiles(ancestor_tiles, ancestor_priority);
             texture_coordinator_->RequestTiles(visible_tile_coords, priority);
+
+            // Keep both exact and fallback pages selected for this frame at
+            // the front of the physical-layer LRU. This is render-thread
+            // ownership, not a worker/cache mutation.
+            texture_coordinator_->TouchTiles(ancestor_tiles);
+            texture_coordinator_->TouchTiles(visible_tile_coords);
         }
 
         // Build visible tiles list with UV coords from coordinator
@@ -241,7 +312,8 @@ public:
                 tile_state.geographic_bounds = TileMathematics::GetTileBounds(tile_coords);
                 tile_state.lod_level = CalculateTileLOD(tile_coords, camera_distance);
                 tile_state.last_used = static_cast<float>(frame_counter_);
-                tile_state.load_priority = CalculateLoadPriority(tile_coords, camera_position);
+                tile_state.load_priority = CalculateLoadPriority(
+                    tile_coords, canonical_camera_position);
                 tile_state.is_visible = true;
 
                 // Get UV coordinates and ready state from coordinator
@@ -256,7 +328,7 @@ public:
 
                 visible_tiles_.push_back(tile_state);
         }
-        
+
         // Sort tiles by priority (highest first)
         std::sort(visible_tiles_.begin(), visible_tiles_.end(),
                  [](const TileRenderState& a, const TileRenderState& b) {
@@ -284,10 +356,12 @@ public:
             }
         }
 
+        CaptureImageryRenderSnapshot(zoom_level);
+
         spdlog::debug("Tile renderer update: {} visible tiles, zoom level {}",
                     visible_tiles_.size(), zoom_level);
     }
-    
+
     void RenderTiles(const glm::mat4& view_matrix,
                      const glm::mat4& projection_matrix) override {
         if (!initialized_) {
@@ -314,34 +388,50 @@ public:
         // Save current OpenGL state
         GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
         GLboolean cull_face_enabled = glIsEnabled(GL_CULL_FACE);
-        
+
         // Enable required states
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
-        
+
         // Set up shader for textured rendering
         glUseProgram(tile_shader_program_);
-        
+
         // Set matrices
         glUniformMatrix4fv(uniform_locs_.view, 1, GL_FALSE, glm::value_ptr(view_matrix));
         glUniformMatrix4fv(uniform_locs_.projection, 1, GL_FALSE, glm::value_ptr(projection_matrix));
         glUniformMatrix4fv(uniform_locs_.model, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
 
+        const glm::vec3 canonical_camera_position =
+            glm::vec3(glm::inverse(view_matrix)[3]);
+        const glm::mat3 camera_to_world = glm::mat3(glm::inverse(view_matrix));
+        const glm::vec2 projection_scale(projection_matrix[0][0],
+                                         projection_matrix[1][1]);
+        const float ray_sphere_c =
+            glm::dot(canonical_camera_position, canonical_camera_position) - 1.0f;
+        GLint viewport[4] = {0, 0, 0, 0};
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        glUniform3f(uniform_locs_.camera_position,
+                    canonical_camera_position.x, canonical_camera_position.y,
+                    canonical_camera_position.z);
+        glUniformMatrix3fv(uniform_locs_.camera_to_world, 1, GL_FALSE,
+                           glm::value_ptr(camera_to_world));
+        glUniform2f(uniform_locs_.projection_scale,
+                    projection_scale.x, projection_scale.y);
+        glUniform1f(uniform_locs_.ray_sphere_c, ray_sphere_c);
+        glUniform4i(uniform_locs_.viewport,
+                    viewport[0], viewport[1], viewport[2], viewport[3]);
+
         // Set lighting uniforms
         glUniform3f(uniform_locs_.light_pos, kDefaultLightPosition.x, kDefaultLightPosition.y, kDefaultLightPosition.z);
         glUniform3f(uniform_locs_.light_color, 1.0f, 1.0f, 1.0f);
 
-        // Get current zoom level from visible tiles (or use default)
-        int current_zoom = kDefaultZoomLevel;
-        if (!visible_tiles_.empty()) {
-            current_zoom = visible_tiles_[0].coordinates.zoom;
-        }
+        const int current_zoom = imagery_snapshot_.zoom_level;
 
         // Set zoom and fallback level uniforms
         glUniform1i(uniform_locs_.zoom_level, current_zoom);
 
-        const int num_fallback = std::min(kMaxFallbackLevels, current_zoom + 1);
+        const int num_fallback = imagery_snapshot_.fallback_level_count;
         glUniform1i(uniform_locs_.num_fallback_levels, num_fallback);
 
         // Bind tile pool texture array to unit 0
@@ -360,18 +450,19 @@ public:
         // This prevents undefined behavior from sampler/target type mismatch
         // (usampler2D pointing at GL_TEXTURE_2D_ARRAY on unit 0).
         for (int level = 0; level < kMaxFallbackLevels; ++level) {
-            const int zoom = current_zoom - level;
             const GLint tex_unit = 1 + level;
 
             glActiveTexture(GL_TEXTURE0 + tex_unit);
 
-            std::uint32_t indirection_id = 0;
+            const ImageryRenderSnapshot::PageTable& page_table =
+                imagery_snapshot_.page_tables[level];
+            std::uint32_t indirection_id = page_table.texture_id;
             glm::ivec2 offset(0, 0);
-            if (texture_coordinator_ && zoom >= 0) {
-                indirection_id = texture_coordinator_->GetIndirectionTextureID(zoom);
-                offset = texture_coordinator_->GetIndirectionOffset(zoom);
-            } else if (texture_coordinator_) {
-                indirection_id = texture_coordinator_->GetIndirectionTextureID(-1);
+            if (page_table.has_page_table) {
+                offset = {
+                    static_cast<int>(page_table.window.origin_column),
+                    static_cast<int>(page_table.window.origin_row),
+                };
             }
 
             glBindTexture(GL_TEXTURE_2D, indirection_id);
@@ -383,7 +474,7 @@ public:
         glBindVertexArray(globe_vao_);
         glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
-        
+
         // Restore previous OpenGL state
         if (!depth_test_enabled) {
             glDisable(GL_DEPTH_TEST);
@@ -391,31 +482,32 @@ public:
         if (!cull_face_enabled) {
             glDisable(GL_CULL_FACE);
         }
-        
+
         stats_.rendered_tiles = visible_tiles_.size();
         stats_.texture_binds = 1 + kMaxFallbackLevels;  // tile pool + indirection textures
     }
-    
+
     TileRenderStats GetStats() const override {
         return stats_;
     }
-    
+
     TileRenderConfig GetConfig() const override {
         return config_;
     }
-    
+
     void SetConfig(const TileRenderConfig& config) override {
         config_ = config;
-        spdlog::info("Tile renderer config updated: max_tiles={}", 
+        spdlog::info("Tile renderer config updated: max_tiles={}",
                     config_.max_visible_tiles);
     }
-    
+
     void ClearCache() override {
         visible_tiles_.clear();
+        imagery_snapshot_ = {};
         // Cache cleared
         spdlog::info("Tile renderer cache cleared");
     }
-    
+
     TileCoordinates GetTileAtScreenCoords(float /*screen_x*/,
                                           float /*screen_y*/,
                                           std::uint32_t /*screen_width*/,
@@ -424,7 +516,7 @@ public:
                                           const glm::mat4& /*projection_matrix*/) override {
         throw std::runtime_error("GetTileAtScreenCoords not implemented");
     }
-    
+
     std::uint32_t GetGlobeTexture() const override {
         if (texture_coordinator_) {
             return texture_coordinator_->GetAtlasTextureID();
@@ -433,18 +525,53 @@ public:
     }
 
 private:
+    void CaptureImageryRenderSnapshot(int zoom_level) {
+        imagery_snapshot_ = {};
+        imagery_snapshot_.zoom_level = zoom_level;
+        imagery_snapshot_.fallback_level_count =
+            std::min(kMaxFallbackLevels, zoom_level + 1);
+
+        for (int level = 0; level < kMaxFallbackLevels; ++level) {
+            const int table_zoom = zoom_level - level;
+            auto& page_table = imagery_snapshot_.page_tables[level];
+
+            if (!texture_coordinator_ || table_zoom < kMinZoom) {
+                continue;
+            }
+
+            const auto table_key = texture_coordinator_->ResolveImageryTileKey(
+                TileCoordinates(0, 0, table_zoom));
+            if (!table_key.has_value()) {
+                page_table.texture_id = texture_coordinator_->GetIndirectionTextureID({});
+                continue;
+            }
+
+            const auto binding =
+                texture_coordinator_->GetIndirectionPageTableBinding(*table_key);
+            if (!binding.has_value()) {
+                page_table.texture_id =
+                    texture_coordinator_->GetIndirectionTextureID(*table_key);
+                continue;
+            }
+
+            page_table.texture_id = binding->texture_id;
+            page_table.window = binding->window;
+            page_table.has_page_table = true;
+        }
+    }
+
     TileRenderConfig config_;
-    TileManager* tile_manager_ = nullptr;
     TileTextureCoordinator* texture_coordinator_ = nullptr;
     GlobeMesh* globe_mesh_ = nullptr;  // External globe mesh to render on
     bool initialized_ = false;
     bool mesh_uploaded_to_gpu_ = false;  // Track if mesh data is on GPU
     std::uint64_t frame_counter_ = 0;
     std::vector<TileRenderState> visible_tiles_;
+    ImageryRenderSnapshot imagery_snapshot_;
     TileRenderStats stats_;
-    
+
     std::vector<TileCoordinates> last_visible_tiles_;
-    
+
     // OpenGL objects
     std::uint32_t tile_shader_program_ = 0;
 
@@ -453,6 +580,11 @@ private:
         GLint view = -1;
         GLint projection = -1;
         GLint model = -1;
+        GLint camera_position = -1;
+        GLint camera_to_world = -1;
+        GLint projection_scale = -1;
+        GLint ray_sphere_c = -1;
+        GLint viewport = -1;
         GLint light_pos = -1;
         GLint light_color = -1;
         GLint zoom_level = -1;
@@ -465,10 +597,9 @@ private:
     std::uint32_t globe_vbo_ = 0;
     std::uint32_t globe_ebo_ = 0;
     std::vector<unsigned int> globe_indices_;
-    
+
     // Tile atlas vertex shader source
-    static constexpr const char* kTileVertexShader = R"(
-#version 330 core
+    static constexpr const char* kTileVertexShader = EARTH_MAP_GLSL_PREAMBLE R"(
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
@@ -490,8 +621,7 @@ void main() {
 )";
 
     // Tile pool + indirection fragment shader
-    static constexpr const char* kTileFragmentShader = R"(
-#version 330 core
+    static constexpr const char* kTileFragmentShader = EARTH_MAP_GLSL_PREAMBLE R"(
 in vec3 FragPos;
 in vec3 Normal;
 in vec2 TexCoord;
@@ -511,23 +641,62 @@ uniform ivec2 uIndirectionOffset1;
 uniform ivec2 uIndirectionOffset2;
 uniform ivec2 uIndirectionOffset3;
 uniform ivec2 uIndirectionOffset4;
+uniform vec3 uCameraPosition;
+uniform mat3 uCameraToWorld;
+uniform vec2 uProjectionScale;
+uniform float uRaySphereC;
+uniform ivec4 uViewport;
 uniform vec3 uLightPos;
 uniform vec3 uLightColor;
 
-vec2 worldToGeo(vec3 pos) {
-    vec3 n = normalize(pos);
-    return vec2(atan(n.x, n.z) * 180.0 / 3.14159265359,
-                asin(n.y) * 180.0 / 3.14159265359);
+bool canonicalSurfacePoint(out vec3 point) {
+    vec2 viewportSize = vec2(uViewport.z, uViewport.w);
+    vec2 viewportOrigin = vec2(uViewport.x, uViewport.y);
+    vec2 ndc = ((gl_FragCoord.xy - viewportOrigin) / viewportSize) * 2.0 - 1.0;
+    vec3 cameraRay = vec3(ndc / uProjectionScale, -1.0);
+    vec3 rayDirection = normalize(uCameraToWorld * cameraRay);
+    float halfB = dot(uCameraPosition, rayDirection);
+    float discriminant = halfB * halfB - uRaySphereC;
+    if (discriminant < 0.0) return false;
+
+    float root = sqrt(discriminant);
+    float farT = -halfB + root;
+    float nearT = abs(farT) > 1e-8 ? uRaySphereC / farT : -halfB - root;
+    float t = nearT > 0.0 ? nearT : farT;
+    if (t <= 0.0) return false;
+
+    point = uCameraPosition + t * rayDirection;
+    return true;
 }
 
-void geoToTileAndFrac(vec2 geo, int zoom, out ivec2 tile, out vec2 frac) {
-    const float PI = 3.14159265359;
+void surfaceToTileAndFrac(vec3 point, int zoom, out ivec2 tile, out vec2 frac) {
+    const float PI = 3.14159265358979323846;
+    // The map surface is the sphere hit by the view ray, not the interpolated
+    // icosphere triangle. The intersection has small floating-point radial
+    // error, so normalize before treating Y as sin(latitude). The CPU path
+    // does the same before converting to canonical Web-Mercator coordinates.
+    vec3 unitPoint = normalize(point);
+    const float maxMercatorSinLatitude = 0.9962721;
+    float norm_x = (atan(unitPoint.x, unitPoint.z) / PI + 1.0) * 0.5;
+    float sinLatitude = clamp(unitPoint.y,
+                              -maxMercatorSinLatitude,
+                              maxMercatorSinLatitude);
+    float norm_y = (1.0 - 0.5 * log((1.0 + sinLatitude) /
+                                    (1.0 - sinLatitude)) / PI) * 0.5;
+
+    // Scale by tile count at this zoom level
     int n = 1 << zoom;
-    float fx = ((geo.x + 180.0) / 360.0) * float(n);
-    float lat_rad = clamp(geo.y, -85.0511, 85.0511) * PI / 180.0;
-    float fy = ((1.0 - log(tan(PI / 4.0 + lat_rad / 2.0)) / PI) / 2.0) * float(n);
-    tile = ivec2(clamp(int(floor(fx)), 0, n - 1), clamp(int(floor(fy)), 0, n - 1));
-    frac = vec2(fract(fx), fract(fy));
+    float fx = norm_x * float(n);
+    float fy = norm_y * float(n);
+
+    int tileX = int(floor(fx));
+    // TileMatrixSet declares XYZ longitude as horizontally wrapping. atan()
+    // can produce +PI at the anti-meridian, where floor(fx) equals n.
+    tileX = tileX == n ? 0 : clamp(tileX, 0, n - 1);
+    tile = ivec2(tileX, clamp(int(floor(fy)), 0, n - 1));
+
+    // Use subtraction instead of fract() to avoid precision loss on large values
+    frac = vec2(fx - floor(fx), fy - floor(fy));
 }
 
 uint safeFetch(usampler2D tex, ivec2 coord) {
@@ -545,6 +714,19 @@ uint lookupLayer(int level, ivec2 tile) {
     else                 return safeFetch(uIndirection4, tile - uIndirectionOffset4);
 }
 
+// Diagnostic visualization: shows which fallback level is being used.
+// Keep this disabled for normal rendering; flip to 1 only while diagnosing
+// virtual-texture residency.
+const int kDiagnosticMode = 0;
+
+// Fallback level colors (RGB)
+const vec3 kColorLevel0 = vec3(0.0, 1.0, 0.0);  // Green = exact zoom
+const vec3 kColorLevel1 = vec3(1.0, 1.0, 0.0);  // Yellow = parent
+const vec3 kColorLevel2 = vec3(1.0, 0.5, 0.0);  // Orange = grandparent
+const vec3 kColorLevel3 = vec3(1.0, 0.0, 0.0);  // Red = great-grandparent
+const vec3 kColorLevel4 = vec3(1.0, 0.0, 1.0);  // Magenta = great-great-grandparent
+const vec3 kColorMissing = vec3(0.5, 0.5, 0.5); // Gray = no tile found
+
 void main() {
     float ambientStrength = 0.25;
     vec3 ambient = ambientStrength * uLightColor;
@@ -553,7 +735,12 @@ void main() {
     float diff = max(dot(norm, lightDir), 0.0);
     vec3 diffuse = diff * uLightColor;
 
-    vec2 geo = worldToGeo(FragPos);
+    vec3 surfacePoint;
+    if (!canonicalSurfacePoint(surfacePoint)) {
+        // A valid globe pixel has a forward ray/sphere hit. Retain a safe
+        // fallback only for malformed camera state.
+        surfacePoint = normalize(FragPos);
+    }
 
     for (int level = 0; level < uNumFallbackLevels; level++) {
         int zoom = uZoomLevel - level;
@@ -561,28 +748,47 @@ void main() {
 
         ivec2 tile;
         vec2 frac;
-        geoToTileAndFrac(geo, zoom, tile, frac);
+        surfaceToTileAndFrac(surfacePoint, zoom, tile, frac);
 
         uint layerIdx = lookupLayer(level, tile);
 
         if (layerIdx != 0xFFFFu) {
-            vec4 texColor = texture(uTilePool, vec3(frac, float(layerIdx)));
-            FragColor = vec4((ambient + diffuse) * texColor.rgb, texColor.a);
+            // Clamp UV to prevent GL_LINEAR filtering from sampling outside tile boundaries.
+            // Half-texel inset prevents bleeding from adjacent tiles in the texture array.
+            const float kHalfTexel = 0.5 / 256.0;
+            vec2 clamped_frac = clamp(frac, kHalfTexel, 1.0 - kHalfTexel);
+            vec4 texColor = texture(uTilePool, vec3(clamped_frac, float(layerIdx)));
+
+            // Apply diagnostic overlay if enabled
+            vec3 finalColor = (ambient + diffuse) * texColor.rgb;
+            if (kDiagnosticMode == 1) {
+                vec3 diagColor;
+                if (level == 0) diagColor = kColorLevel0;
+                else if (level == 1) diagColor = kColorLevel1;
+                else if (level == 2) diagColor = kColorLevel2;
+                else if (level == 3) diagColor = kColorLevel3;
+                else diagColor = kColorLevel4;
+
+                // Blend tile color with diagnostic color (50/50 blend)
+                finalColor = mix(finalColor, diagColor, 0.5);
+            }
+
+            FragColor = vec4(finalColor, texColor.a);
             return;
         }
     }
 
-    vec3 baseColor = vec3(0.85, 0.82, 0.75);
+    vec3 baseColor = kDiagnosticMode == 1 ? kColorMissing : vec3(0.85, 0.82, 0.75);
     FragColor = vec4((ambient + diffuse) * baseColor, 1.0);
 }
 )";
 
     bool InitializeOpenGLState() {
         tile_shader_program_ = ShaderLoader::CreateProgram(
-            kTileVertexShader, kTileFragmentShader, "tile_atlas");
+            kTileVertexShader, kTileFragmentShader, "virtual_imagery_globe");
 
         if (tile_shader_program_ == 0) {
-            spdlog::error("Failed to create tile atlas shader program");
+            spdlog::error("Failed to create virtual imagery globe shader program");
             return false;
         }
 
@@ -590,6 +796,15 @@ void main() {
         uniform_locs_.view = glGetUniformLocation(tile_shader_program_, "uView");
         uniform_locs_.projection = glGetUniformLocation(tile_shader_program_, "uProjection");
         uniform_locs_.model = glGetUniformLocation(tile_shader_program_, "uModel");
+        uniform_locs_.camera_position =
+            glGetUniformLocation(tile_shader_program_, "uCameraPosition");
+        uniform_locs_.camera_to_world =
+            glGetUniformLocation(tile_shader_program_, "uCameraToWorld");
+        uniform_locs_.projection_scale =
+            glGetUniformLocation(tile_shader_program_, "uProjectionScale");
+        uniform_locs_.ray_sphere_c =
+            glGetUniformLocation(tile_shader_program_, "uRaySphereC");
+        uniform_locs_.viewport = glGetUniformLocation(tile_shader_program_, "uViewport");
         uniform_locs_.light_pos = glGetUniformLocation(tile_shader_program_, "uLightPos");
         uniform_locs_.light_color = glGetUniformLocation(tile_shader_program_, "uLightColor");
         uniform_locs_.zoom_level = glGetUniformLocation(tile_shader_program_, "uZoomLevel");
@@ -612,7 +827,7 @@ void main() {
         spdlog::info("Tile renderer OpenGL state initialized (mesh will be uploaded when provided)");
         return true;
     }
-    
+
     bool UploadMeshToGPU() {
         // Upload the provided icosahedron mesh to GPU
         // This replaces the old sphere generation - we now use the actual displaced globe mesh
@@ -690,7 +905,7 @@ void main() {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, globe_ebo_);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, globe_indices_.size() * sizeof(unsigned int),
                     globe_indices_.data(), GL_STATIC_DRAW);
-        
+
         // Set vertex attributes
         // Position (location = 0)
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
@@ -714,7 +929,7 @@ void main() {
 
         return true;
     }
-    
+
     void Cleanup() {
         if (globe_vao_) {
             glDeleteVertexArrays(1, &globe_vao_);
@@ -746,10 +961,9 @@ void main() {
         // matching the tile pyramid where each level doubles tile count.
         const float zoom = std::log2(kZoomAltitudeScale / altitude);
 
-        spdlog::info("Tag. Picked zoom: {} for camera distance: {}", zoom, camera_distance);
         return std::clamp(static_cast<int>(zoom), kMinZoom, kMaxZoom);
     }
-    
+
     BoundingBox2D CalculateVisibleGeographicBounds(const glm::vec3& camera_position,
                                                const glm::mat4& view_matrix,
                                                const glm::mat4& projection_matrix) const {
@@ -785,33 +999,7 @@ void main() {
         // return BoundingBox2D(reduced_min, reduced_max);
         return BoundingBox2D(min, max);
     }
-    
-    bool IsTileInFrustum(const TileCoordinates& tile, const Frustum& frustum) const {
-        // Calculate tile's geographic bounds
-        const BoundingBox2D bounds = TileMathematics::GetTileBounds(tile);
-        const glm::dvec2 center = bounds.GetCenter();
 
-        // Convert tile center to 3D position on unit sphere
-        const double lon_rad = glm::radians(center.x);
-        const double lat_rad = glm::radians(center.y);
-
-        // Calculate 3D position on unit sphere (Earth radius = 1.0)
-        const glm::vec3 tile_center = glm::vec3(
-            static_cast<float>(std::cos(lat_rad) * std::sin(lon_rad)),
-            static_cast<float>(std::sin(lat_rad)),
-            static_cast<float>(std::cos(lat_rad) * std::cos(lon_rad))
-        );
-
-        // Estimate tile radius on sphere surface based on zoom level
-        // Higher zoom = smaller tiles = smaller bounding sphere
-        // At zoom 0, tile covers 180 degrees, at zoom n, tile covers 180/2^n degrees
-        const float tile_angular_size = 180.0f / static_cast<float>(1 << tile.zoom);
-        const float tile_radius = glm::radians(tile_angular_size) * 0.5f;  // Half the angular size
-
-        // Use frustum sphere intersection test
-        return frustum.Intersects(tile_center, tile_radius);
-    }
-    
     float CalculateTileLOD(const TileCoordinates& tile, float /*camera_distance*/) const {
         return static_cast<float>(tile.zoom);
     }
@@ -820,8 +1008,8 @@ void main() {
         // For now, use zoom as priority (higher zoom = higher priority)
         return static_cast<float>(30 - tile.zoom); // Invert so higher zoom = lower number = higher priority
     }
-    
-    
+
+
 };
 // Note: TriggerTileLoading() removed - tile loading now handled by TileTextureCoordinator
 

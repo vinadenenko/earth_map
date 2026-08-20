@@ -1,7 +1,11 @@
 #include <earth_map/platform/library_info.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#else
 #include <GL/glew.h>
+#endif
 
 namespace earth_map {
 

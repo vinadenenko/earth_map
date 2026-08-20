@@ -137,14 +137,6 @@ TEST_F(CameraTest, MatrixGeneration) {
     EXPECT_GT(glm::length(glm::vec3(view_proj_matrix[0])), 0.0f);
 }
 
-TEST_F(CameraTest, FrustumGeneration) {
-    // Test frustum generation
-    float aspect_ratio = 16.0f / 9.0f;
-    Frustum frustum = camera_->GetFrustum(aspect_ratio);
-    
-    EXPECT_TRUE(frustum.IsValid());
-}
-
 TEST_F(CameraTest, MovementModeControl) {
     // Test movement mode changes
     camera_->SetMovementMode(MovementMode::ORBIT);

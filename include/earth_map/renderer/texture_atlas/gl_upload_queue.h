@@ -10,12 +10,14 @@
  */
 
 #include <earth_map/math/tile_mathematics.h>
+#include <earth_map/imagery/tile_matrix_set.h>
 #include <cstdint>
 #include <vector>
 #include <memory>
 #include <functional>
 #include <deque>
 #include <mutex>
+#include <optional>
 
 namespace earth_map {
 
@@ -26,8 +28,12 @@ namespace earth_map {
  * Transferred from worker threads to GL thread via GLUploadQueue.
  */
 struct GLUploadCommand {
-    /// Tile coordinates (X, Y, Zoom)
+    /// Legacy renderer request address. This is retained only until
+    /// geographic patches replace the icosphere selection path.
     TileCoordinates coords;
+
+    /// Required source-aware identity for a successful imagery upload.
+    std::optional<imagery::ImageTileKey> imagery_key;
 
     /// Decoded pixel data (RGB or RGBA)
     std::vector<std::uint8_t> pixel_data;
@@ -50,9 +56,7 @@ struct GLUploadCommand {
     GLUploadCommand()
         : width(0), height(0), channels(0) {}
 
-    /**
-     * @brief Construct with tile coordinates
-     */
+    /** @brief Construct an empty failure command for a renderer request. */
     explicit GLUploadCommand(const TileCoordinates& tile_coords)
         : coords(tile_coords), width(0), height(0), channels(0) {}
 };

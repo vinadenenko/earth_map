@@ -118,10 +118,6 @@ public:
     glm::mat4 GetProjectionMatrix(float aspect_ratio) const override {
         return camera_->GetProjectionMatrix(aspect_ratio);
     }
-    
-     Frustum GetFrustum(float aspect_ratio) const override {
-         return camera_->GetFrustum(aspect_ratio);
-     }
 
      glm::vec3 GetForwardVector() const override {
          // Extract forward vector from view matrix (negative Z direction in view space)

@@ -4,12 +4,15 @@
  */
 
 #include "../../include/earth_map/coordinates/coordinate_mapper.h"
+#include "../../include/earth_map/constants.h"
+#include "../../include/earth_map/imagery/tile_matrix_set.h"
 #include "../../include/earth_map/math/projection.h"
 #include "../../include/earth_map/math/tile_mathematics.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <optional>
 
 namespace earth_map {
 namespace coordinates {
@@ -33,9 +36,11 @@ Geographic CoordinateMapper::WorldToGeographic(const World& world, float radius)
 
     Geographic geo = CartesianToGeographic(on_surface);
 
-    // Calculate altitude as distance from sphere surface
+    // Geographic altitude is expressed in metres; world coordinates are
+    // normalized to a unit-radius globe.
     float actual_distance = world.Distance();
-    geo.altitude = static_cast<double>(actual_distance - radius);
+    geo.altitude = static_cast<double>(
+        constants::conversion::NormalizedToMeters(actual_distance - radius));
 
     return geo;
 }
@@ -357,26 +362,31 @@ GeographicBounds CoordinateMapper::CalculateVisibleGeographicBounds(
         }
         ray_dir /= ray_length;  // Normalize
 
-        // Ray-sphere intersection using quadratic formula
-        // Ray: P = camera_pos + t * ray_dir
-        // Sphere: |P|² = globe_radius²
-        // Expand: |camera_pos + t * ray_dir|² = globe_radius²
-        const float a = 1.0f;  // glm::dot(ray_dir, ray_dir) = 1.0 (normalized)
-        const float b = 2.0f * glm::dot(camera_pos, ray_dir);
+        // Same half-b form as the render shader. The common
+        // (-b - sqrt(discriminant)) / 2 expression loses the near hit when
+        // the camera is close to the sphere, which becomes visible as a
+        // systematic Web-Mercator Y drift at high zoom.
+        const float half_b = glm::dot(camera_pos, ray_dir);
         const float c = glm::dot(camera_pos, camera_pos) - globe_radius * globe_radius;
-        const float discriminant = b * b - 4.0f * a * c;
+        const float discriminant = half_b * half_b - c;
 
         if (discriminant >= 0.0f) {
-            // Take the nearest intersection (smaller t, in front of camera)
-            const float sqrt_discriminant = std::sqrt(discriminant);
-            const float t1 = (-b - sqrt_discriminant) / (2.0f * a);
-            const float t2 = (-b + sqrt_discriminant) / (2.0f * a);
-
-            // Use the nearest positive t (intersection in front of camera)
-            float t = (t1 > 0.0f) ? t1 : t2;
+            const float root = std::sqrt(discriminant);
+            const float far_t = -half_b + root;
+            const float near_t = std::abs(far_t) > 1e-8f
+                ? c / far_t
+                : -half_b - root;
+            const float t = near_t > 0.0f ? near_t : far_t;
             if (t > 0.0f) {
                 glm::vec3 intersection = camera_pos + t * ray_dir;
-                Geographic geo = CartesianToGeographic(intersection);
+                // `intersection` is already on the canonical unit sphere.
+                // Do not normalize it again: the GPU uses this same surface
+                // coordinate directly for its Web-Mercator Y calculation.
+                const double latitude = glm::degrees(
+                    std::asin(std::clamp(intersection.y, -1.0f, 1.0f)));
+                const double longitude = glm::degrees(
+                    std::atan2(intersection.x, intersection.z));
+                Geographic geo(latitude, longitude, 0.0);
 
                 // Update bounds
                 min_lat = std::min(min_lat, geo.latitude);
@@ -438,11 +448,17 @@ glm::vec3 CoordinateMapper::GeographicToCartesian(const Geographic& geo, float r
     double lat_rad = glm::radians(geo.latitude);
     double lon_rad = glm::radians(geo.longitude);
 
+    // Geographic altitude is in metres, while world space uses a unit-radius
+    // globe.  Apply it radially before the spherical conversion so every
+    // Geographic -> World path uses the same length scale as the camera.
+    const float world_radius = radius + constants::conversion::MetersToNormalized(
+        static_cast<float>(geo.altitude));
+
     // Spherical to Cartesian conversion
     // Convention: lon=0° → +Z, lon=90°E → +X, lat=90°N → +Y
-    float x = radius * static_cast<float>(std::cos(lat_rad) * std::sin(lon_rad));
-    float y = radius * static_cast<float>(std::sin(lat_rad));
-    float z = radius * static_cast<float>(std::cos(lat_rad) * std::cos(lon_rad));
+    float x = world_radius * static_cast<float>(std::cos(lat_rad) * std::sin(lon_rad));
+    float y = world_radius * static_cast<float>(std::sin(lat_rad));
+    float z = world_radius * static_cast<float>(std::cos(lat_rad) * std::cos(lon_rad));
 
     return glm::vec3(x, y, z);
 }
@@ -529,65 +545,35 @@ bool CoordinateMapper::RaySphereIntersection(
 TileCoordinates CoordinateMapper::GeographicToSphericalTile(
     const Geographic& geo,
     int32_t zoom) noexcept {
+    // TileMatrixSet is the canonical Web-Mercator contract for providers,
+    // cache keys, page tables, and shader conformance. This legacy
+    // normalized-sphere boundary adapts degree inputs to the authoritative
+    // radians-based imagery contract instead of maintaining a second formula.
+    if (!geo.IsValid() || zoom < 0) {
+        return TileCoordinates{};
+    }
 
-    // For 3D sphere rendering with Web Mercator tiles:
-    // - Vertex positions use simple sphere math (no distortion)
-    // - Tile coordinates use Web Mercator (to match XYZ tile server layout)
-    // This function maps 3D vertex positions to Web Mercator tile coordinates
+    const imagery::TileMatrixSet matrix_set =
+        imagery::TileMatrixSet::WebMercatorXYZ();
+    const geodesy::GeodeticPosition geodetic{
+        std::clamp(
+            geo.latitude * constants::math::PI / 180.0,
+            matrix_set.minimum_latitude_radians,
+            matrix_set.maximum_latitude_radians),
+        geo.longitude * constants::math::PI / 180.0,
+        geo.altitude,
+    };
+    const auto address = matrix_set.GeodeticToTile(
+        geodetic, static_cast<std::uint32_t>(zoom));
+    if (!address.has_value()) {
+        return TileCoordinates{};
+    }
 
-    const int32_t n = 1 << zoom;  // 2^zoom
-
-    // Longitude: simple linear mapping
-    const double norm_lon = (geo.longitude + 180.0) / 360.0;
-
-    // Latitude: Web Mercator projection (to match tile server)
-    const double lat_clamped = std::clamp(geo.latitude, -85.0511, 85.0511);
-    const double lat_clamped_rad = lat_clamped * M_PI / 180.0;
-
-    // Web Mercator Y: y = ln(tan(π/4 + lat/2))
-    const double merc_y = std::log(std::tan(M_PI / 4.0 + lat_clamped_rad / 2.0));
-    // Normalize to [0, 1]: y ∈ [-π, π] → [0, 1]
-    const double norm_lat = (1.0 - merc_y / M_PI) / 2.0;
-
-    // Convert to tile coordinates
-    const int32_t tile_x = static_cast<int32_t>(std::floor(norm_lon * n));
-    const int32_t tile_y = static_cast<int32_t>(std::floor(norm_lat * n));
-
-    // Clamp to valid range [0, n-1]
-    const int32_t clamped_x = std::clamp(tile_x, 0, n - 1);
-    const int32_t clamped_y = std::clamp(tile_y, 0, n - 1);
-
-    return TileCoordinates{clamped_x, clamped_y, zoom};
-}
-
-glm::vec2 CoordinateMapper::GetTileFraction(
-    const Geographic& geo,
-    const TileCoordinates& tile) noexcept {
-
-    const int32_t n = 1 << tile.zoom;  // 2^zoom
-
-    // Longitude: simple linear mapping
-    const double norm_lon = (geo.longitude + 180.0) / 360.0;
-
-    // Latitude: Web Mercator projection (to match tile server)
-    const double lat_clamped = std::clamp(geo.latitude, -85.0511, 85.0511);
-    const double lat_clamped_rad = lat_clamped * M_PI / 180.0;
-    const double merc_y = std::log(std::tan(M_PI / 4.0 + lat_clamped_rad / 2.0));
-    const double norm_lat = (1.0 - merc_y / M_PI) / 2.0;
-
-    // Calculate tile-space coordinates (continuous)
-    const double tile_lon = norm_lon * n;
-    const double tile_lat = norm_lat * n;
-
-    // Calculate fractional position within tile
-    const double frac_x = tile_lon - tile.x;
-    const double frac_y = tile_lat - tile.y;
-
-    // Clamp to [0, 1] and convert to float
-    return glm::vec2(
-        static_cast<float>(std::clamp(frac_x, 0.0, 1.0)),
-        static_cast<float>(std::clamp(frac_y, 0.0, 1.0))
-    );
+    return TileCoordinates{
+        static_cast<std::int32_t>(address->column),
+        static_cast<std::int32_t>(address->row),
+        static_cast<std::int32_t>(address->level),
+    };
 }
 
 } // namespace coordinates
