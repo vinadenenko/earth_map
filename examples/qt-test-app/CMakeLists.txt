@@ -39,6 +39,15 @@ qt_add_executable(appqt-test-app
     main.cpp
 )
 
+# libcurl requires a filesystem path for CURLOPT_CAINFO, so the Android app
+# copies this embedded bundle into its private app-data directory at startup.
+qt_add_resources(appqt-test-app "earth_map_tls_assets"
+    PREFIX "/earth-map"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+    FILES
+        resources/cacert.pem
+)
+
 qt_add_qml_module(appqt-test-app
     URI qt-test-app
     VERSION 1.0

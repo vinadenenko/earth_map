@@ -11,11 +11,15 @@
 #include "EarthMapQuickItem.h"
 
 #include <QDateTime>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QHoverEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QRunnable>
+#include <QSaveFile>
+#include <QStandardPaths>
 #include <QTouchEvent>
 #include <QWheelEvent>
 
@@ -23,6 +27,8 @@
 #include <earth_map/earth_map.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <utility>
 
 namespace {
@@ -73,6 +79,34 @@ constexpr float kQtWheelUnitsPerNotch = 120.0f;
 
 uint64_t NowMillis() {
     return static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch());
+}
+
+std::string InstallCaBundle() {
+    const QString app_data_path =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (app_data_path.isEmpty() || !QDir().mkpath(app_data_path)) {
+        qFatal("EarthMapRenderer: cannot create private app-data directory for CA bundle");
+    }
+
+    QFile bundled_bundle(":/earth-map/cacert.pem");
+    if (!bundled_bundle.open(QIODevice::ReadOnly)) {
+        qFatal("EarthMapRenderer: cannot open embedded CA bundle");
+    }
+
+    const QByteArray bundle_data = bundled_bundle.readAll();
+    if (bundle_data.isEmpty()) {
+        qFatal("EarthMapRenderer: embedded CA bundle is empty");
+    }
+
+    const QString installed_bundle_path = app_data_path + "/cacert.pem";
+    QSaveFile installed_bundle(installed_bundle_path);
+    if (!installed_bundle.open(QIODevice::WriteOnly) ||
+        installed_bundle.write(bundle_data) != bundle_data.size() ||
+        !installed_bundle.commit()) {
+        qFatal("EarthMapRenderer: cannot install CA bundle in private app-data directory");
+    }
+
+    return installed_bundle_path.toStdString();
 }
 
 }  // namespace
@@ -300,6 +334,12 @@ public slots:
         earth_map::Configuration config;
         config.screen_width = static_cast<std::uint32_t>(std::max(1, viewport_rect_.width()));
         config.screen_height = static_cast<std::uint32_t>(std::max(1, viewport_rect_.height()));
+#ifdef __ANDROID__
+        // Android's native trust store is not automatically visible to the
+        // packaged OpenSSL/libcurl backend. Keep strict TLS verification and
+        // point libcurl at the current Mozilla CA bundle embedded above.
+        config.tile_loader_config.ca_cert_path = InstallCaBundle();
+#endif
 
         // Matches examples/basic_example.cpp's googleProvider exactly,
         // including the placeholder API key -- Google's tile endpoint
