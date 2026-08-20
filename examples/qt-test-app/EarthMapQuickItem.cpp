@@ -1,22 +1,34 @@
 // GLEW must be included before anything that might pull in the system GL
 // headers (Qt's OpenGL-adjacent headers below do) -- same ordering
-// requirement as examples/basic_example.cpp.
+// requirement as examples/basic_example.cpp. Not applicable on Android:
+// GLES entry points are directly linked, no loader needed.
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#else
 #include <GL/glew.h>
+#endif
 
 #include "EarthMapQuickItem.h"
 
 #include <QDateTime>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QHoverEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QRunnable>
+#include <QSaveFile>
+#include <QStandardPaths>
+#include <QTouchEvent>
 #include <QWheelEvent>
 
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/earth_map.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <utility>
 
 namespace {
@@ -69,11 +81,40 @@ uint64_t NowMillis() {
     return static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch());
 }
 
+std::string InstallCaBundle() {
+    const QString app_data_path =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (app_data_path.isEmpty() || !QDir().mkpath(app_data_path)) {
+        qFatal("EarthMapRenderer: cannot create private app-data directory for CA bundle");
+    }
+
+    QFile bundled_bundle(":/earth-map/cacert.pem");
+    if (!bundled_bundle.open(QIODevice::ReadOnly)) {
+        qFatal("EarthMapRenderer: cannot open embedded CA bundle");
+    }
+
+    const QByteArray bundle_data = bundled_bundle.readAll();
+    if (bundle_data.isEmpty()) {
+        qFatal("EarthMapRenderer: embedded CA bundle is empty");
+    }
+
+    const QString installed_bundle_path = app_data_path + "/cacert.pem";
+    QSaveFile installed_bundle(installed_bundle_path);
+    if (!installed_bundle.open(QIODevice::WriteOnly) ||
+        installed_bundle.write(bundle_data) != bundle_data.size() ||
+        !installed_bundle.commit()) {
+        qFatal("EarthMapRenderer: cannot install CA bundle in private app-data directory");
+    }
+
+    return installed_bundle_path.toStdString();
+}
+
 }  // namespace
 
 EarthMapQuickItem::EarthMapQuickItem(QQuickItem* parent) : QQuickItem(parent) {
     setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton | Qt::RightButton);
     setAcceptHoverEvents(true);
+    setAcceptTouchEvents(true);
     setFlag(QQuickItem::ItemIsFocusScope, true);
     connect(this, &QQuickItem::windowChanged, this, &EarthMapQuickItem::handleWindowChanged);
 }
@@ -103,6 +144,14 @@ QRect EarthMapQuickItem::DeviceViewportRect() const {
 
 void EarthMapQuickItem::QueueEvent(const earth_map::InputEvent& event) {
     pending_events_.push_back(event);
+    // Matches Squircle::setT() in Qt's own "Scene Graph - OpenGL Under QML"
+    // example: request a sync+render cycle the moment new GUI-thread state
+    // arrives, from the GUI thread, rather than relying solely on paint()'s
+    // own window_->update() call at the end of each frame to eventually
+    // pick it up.
+    if (window()) {
+        window()->update();
+    }
 }
 
 std::vector<earth_map::InputEvent> EarthMapQuickItem::TakePendingEvents() {
@@ -113,8 +162,8 @@ void EarthMapQuickItem::mousePressEvent(QMouseEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS;
     input_event.button = ToEarthMapButton(event->button());
-    input_event.x = static_cast<float>(event->position().x());
-    input_event.y = static_cast<float>(event->position().y());
+    input_event.x = static_cast<float>(event->scenePosition().x());
+    input_event.y = static_cast<float>(event->scenePosition().y());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
     event->accept();
@@ -124,8 +173,8 @@ void EarthMapQuickItem::mouseReleaseEvent(QMouseEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE;
     input_event.button = ToEarthMapButton(event->button());
-    input_event.x = static_cast<float>(event->position().x());
-    input_event.y = static_cast<float>(event->position().y());
+    input_event.x = static_cast<float>(event->scenePosition().x());
+    input_event.y = static_cast<float>(event->scenePosition().y());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
     event->accept();
@@ -134,8 +183,8 @@ void EarthMapQuickItem::mouseReleaseEvent(QMouseEvent* event) {
 void EarthMapQuickItem::mouseMoveEvent(QMouseEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::MOUSE_MOVE;
-    input_event.x = static_cast<float>(event->position().x());
-    input_event.y = static_cast<float>(event->position().y());
+    input_event.x = static_cast<float>(event->scenePosition().x());
+    input_event.y = static_cast<float>(event->scenePosition().y());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
     event->accept();
@@ -144,8 +193,8 @@ void EarthMapQuickItem::mouseMoveEvent(QMouseEvent* event) {
 void EarthMapQuickItem::hoverMoveEvent(QHoverEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::MOUSE_MOVE;
-    input_event.x = static_cast<float>(event->position().x());
-    input_event.y = static_cast<float>(event->position().y());
+    input_event.x = static_cast<float>(event->scenePosition().x());
+    input_event.y = static_cast<float>(event->scenePosition().y());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
     event->accept();
@@ -161,8 +210,8 @@ void EarthMapQuickItem::mouseDoubleClickEvent(QMouseEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::DOUBLE_CLICK;
     input_event.button = ToEarthMapButton(event->button());
-    input_event.x = static_cast<float>(event->position().x());
-    input_event.y = static_cast<float>(event->position().y());
+    input_event.x = static_cast<float>(event->scenePosition().x());
+    input_event.y = static_cast<float>(event->scenePosition().y());
     input_event.timestamp = NowMillis();
     QueueEvent(input_event);
     event->accept();
@@ -203,6 +252,107 @@ void EarthMapQuickItem::keyReleaseEvent(QKeyEvent* event) {
     event->accept();
 }
 
+void EarthMapQuickItem::touchEvent(QTouchEvent* event) {
+    const auto& points = event->points();
+    if (points.isEmpty()) {
+        if (touch_drag_active_) {
+            earth_map::InputEvent input_event;
+            input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE;
+            input_event.button = 0;
+            input_event.timestamp = NowMillis();
+            QueueEvent(input_event);
+        }
+        touch_drag_active_ = false;
+        pinch_active_ = false;
+        pinch_distance_ = 0.0f;
+        event->accept();
+        return;
+    }
+
+    std::array<const QEventPoint*, 2> active_points{};
+    std::size_t active_point_count = 0;
+    for (const QEventPoint& point : points) {
+        if (point.state() == QEventPoint::Released ||
+            point.state() == QEventPoint::Unknown) {
+            continue;
+        }
+        if (active_point_count < active_points.size()) {
+            active_points[active_point_count] = &point;
+        }
+        ++active_point_count;
+    }
+
+    const auto queue_drag_event = [this](const QEventPoint& point,
+                                         earth_map::InputEvent::Type type) {
+        earth_map::InputEvent input_event;
+        input_event.type = type;
+        input_event.button = 0;  // left mouse button / globe rotation drag
+        input_event.x = static_cast<float>(point.scenePosition().x());
+        input_event.y = static_cast<float>(point.scenePosition().y());
+        input_event.timestamp = NowMillis();
+        QueueEvent(input_event);
+    };
+
+    if (active_point_count >= 2) {
+        const QPointF separation = active_points[0]->scenePosition() -
+                                   active_points[1]->scenePosition();
+        const float distance = static_cast<float>(std::hypot(separation.x(), separation.y()));
+
+        if (!pinch_active_) {
+            // A second finger must not leave the camera in drag mode while
+            // it is being pinched.
+            if (touch_drag_active_) {
+                queue_drag_event(*active_points[0],
+                                 earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE);
+                touch_drag_active_ = false;
+            }
+            pinch_active_ = true;
+            pinch_distance_ = distance;
+        } else if (distance > 0.0f && pinch_distance_ > 0.0f) {
+            // Scroll deltas are multiplicative in the camera controller, so
+            // use the logarithmic change in finger separation. This makes a
+            // 10% pinch feel the same at every absolute finger spacing.
+            constexpr float kPinchZoomSensitivity = 4.0f;
+            const float delta = std::clamp(
+                std::log(distance / pinch_distance_) * kPinchZoomSensitivity,
+                -1.0f,
+                1.0f);
+            if (delta != 0.0f) {
+                earth_map::InputEvent input_event;
+                input_event.type = earth_map::InputEvent::Type::MOUSE_SCROLL;
+                input_event.scroll_delta = delta;
+                input_event.timestamp = NowMillis();
+                QueueEvent(input_event);
+            }
+            pinch_distance_ = distance;
+        }
+    } else if (active_point_count == 1) {
+        const QEventPoint& point = *active_points[0];
+        if (pinch_active_) {
+            // Continue naturally as a one-finger drag once one finger of a
+            // pinch is lifted.
+            pinch_active_ = false;
+            pinch_distance_ = 0.0f;
+            queue_drag_event(point, earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS);
+            touch_drag_active_ = true;
+        } else if (point.state() == QEventPoint::Pressed) {
+            queue_drag_event(point, earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS);
+            touch_drag_active_ = true;
+        } else if (point.state() == QEventPoint::Updated && touch_drag_active_) {
+            queue_drag_event(point, earth_map::InputEvent::Type::MOUSE_MOVE);
+        }
+    } else {
+        if (touch_drag_active_) {
+            queue_drag_event(points.first(), earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE);
+        }
+        touch_drag_active_ = false;
+        pinch_active_ = false;
+        pinch_distance_ = 0.0f;
+    }
+
+    event->accept();
+}
+
 namespace earth_map_qt_detail {
 
 // Owns the earth_map::EarthMap instance and does the actual GL work.
@@ -229,19 +379,40 @@ public slots:
             return;
         }
 
+#ifndef __ANDROID__
         // GLEW's default extension query (glGetString(GL_EXTENSIONS)) is
         // invalid on some contexts Qt Quick's OpenGL RHI backend creates;
         // glewExperimental switches GLEW to the glGetStringi-based query.
+        // Not applicable on Android: GLES entry points are directly
+        // linked, no loader/init step needed.
         glewExperimental = GL_TRUE;
         if (glewInit() != GLEW_OK) {
             qFatal("EarthMapRenderer: glewInit() failed");
         }
+#endif
 
         earth_map::Configuration config;
         config.screen_width = static_cast<std::uint32_t>(std::max(1, viewport_rect_.width()));
         config.screen_height = static_cast<std::uint32_t>(std::max(1, viewport_rect_.height()));
-        // tile_provider left unset: EarthMapImpl::Initialize() falls back
-        // to TileProviders::OpenStreetMap (src/core/earth_map_impl.cpp).
+#ifdef __ANDROID__
+        // Android's native trust store is not automatically visible to the
+        // packaged OpenSSL/libcurl backend. Keep strict TLS verification and
+        // point libcurl at the current Mozilla CA bundle embedded above.
+        config.tile_loader_config.ca_cert_path = InstallCaBundle();
+#endif
+
+        // Matches examples/basic_example.cpp's googleProvider exactly,
+        // including the placeholder API key -- Google's tile endpoint
+        // needs a real key to actually serve imagery; this just mirrors
+        // basic_example's provider wiring, not a working Google Maps key.
+        auto google_provider = std::make_shared<earth_map::BasicXYZTileProvider>(
+            "GoogleMaps",
+            "https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=YOUR_API_KEY",
+            "0123",  // Subdomains for load balancing
+            0,       // Min zoom
+            21,      // Max zoom
+            "png");
+        config.tile_provider = google_provider;
 
         try {
             earth_map_ = earth_map::EarthMap::Create(config);

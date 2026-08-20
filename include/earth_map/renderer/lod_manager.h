@@ -276,7 +276,6 @@ private:
     float average_gpu_time_ = 0.0f;
     
     // Performance metrics
-    float last_frame_time_ = 0.0f;
     std::uint8_t hysteresis_state_ = 0;
     
     /**

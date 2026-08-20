@@ -62,6 +62,11 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
 
+    // earth_map has a generic InputEvent interface rather than platform
+    // gesture handling. Single-finger touch becomes a left drag; a two-finger
+    // pinch becomes the existing scroll-based zoom input.
+    void touchEvent(QTouchEvent* event) override;
+
 private slots:
     void handleWindowChanged(QQuickWindow* window);
 
@@ -82,5 +87,8 @@ private:
     QRect DeviceViewportRect() const;
 
     std::vector<earth_map::InputEvent> pending_events_;
+    bool touch_drag_active_ = false;
+    bool pinch_active_ = false;
+    float pinch_distance_ = 0.0f;
     earth_map_qt_detail::EarthMapRenderer* renderer_ = nullptr;
 };

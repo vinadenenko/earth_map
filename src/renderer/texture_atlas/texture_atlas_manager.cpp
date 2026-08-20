@@ -4,9 +4,14 @@
  */
 
 #include <earth_map/renderer/texture_atlas/texture_atlas_manager.h>
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#else
 #include <GL/glew.h>
+#endif
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <array>
 #include <limits>
 
 namespace earth_map {

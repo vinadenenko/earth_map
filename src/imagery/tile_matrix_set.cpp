@@ -1,10 +1,10 @@
 #include <earth_map/imagery/tile_matrix_set.h>
+#include <earth_map/constants.h>
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <limits>
-#include <numbers>
 #include <utility>
 
 namespace earth_map::imagery {
@@ -55,8 +55,8 @@ bool TileMatrixSet::IsValid() const noexcept {
            std::isfinite(minimum_latitude_radians) &&
            std::isfinite(maximum_latitude_radians) &&
            minimum_latitude_radians < maximum_latitude_radians &&
-           minimum_latitude_radians >= -std::numbers::pi_v<double> * 0.5 &&
-           maximum_latitude_radians <= std::numbers::pi_v<double> * 0.5;
+           minimum_latitude_radians >= -constants::math::PI * 0.5 &&
+           maximum_latitude_radians <= constants::math::PI * 0.5;
 }
 
 bool TileMatrixSet::IsLevelSupported(std::uint32_t level) const noexcept {
@@ -116,11 +116,11 @@ std::optional<ImageTileAddress> TileMatrixSet::GeodeticToTile(
 
     const double dimension = static_cast<double>(MatrixDimension(level));
     const double normalized_x =
-        (geodetic.longitude_radians + std::numbers::pi_v<double>) /
-        (2.0 * std::numbers::pi_v<double>);
+        (geodetic.longitude_radians + constants::math::PI) /
+        (2.0 * constants::math::PI);
     const double north_to_south_y = 0.5 -
         std::asinh(std::tan(geodetic.latitude_radians)) /
-            (2.0 * std::numbers::pi_v<double>);
+            (2.0 * constants::math::PI);
     const double source_y = row_order == TileRowOrder::NorthToSouth
         ? north_to_south_y
         : 1.0 - north_to_south_y;

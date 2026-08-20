@@ -4,6 +4,7 @@
 #include <earth_map/core/scene_manager.h>
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/platform/library_info.h>
+#include "platform/platform_logging.h"
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 
@@ -11,6 +12,7 @@ namespace earth_map {
 
 EarthMapImpl::EarthMapImpl(const Configuration& config) 
     : config_(config) {
+    platform::ConfigurePlatformLogging();
     spdlog::info("Creating Earth Map instance v{}", LibraryInfo::GetVersion());
     
     if (!ValidateConfiguration(config)) {
@@ -172,8 +174,11 @@ bool EarthMapImpl::InitializeSubsystems() {
         auto tile_cache = std::shared_ptr<TileCache>(CreateTileCache().release());
         // TODO: remove double config passing (constructor and Initialize)
         tile_cache->Initialize({});
-        auto tile_loader = std::shared_ptr<TileLoader>(CreateTileLoader().release());
-        tile_loader->Initialize({});
+        TileLoaderConfig tile_loader_config = config_.tile_loader_config;
+        tile_loader_config.user_agent = config_.user_agent;
+        auto tile_loader = std::shared_ptr<TileLoader>(
+            CreateTileLoader(tile_loader_config).release());
+        tile_loader->Initialize(tile_loader_config);
 
         // Set tile provider
         if (config_.tile_provider) {

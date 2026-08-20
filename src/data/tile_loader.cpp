@@ -6,12 +6,15 @@
 #include <earth_map/data/tile_loader.h>
 #include <earth_map/math/tile_mathematics.h>
 #include <algorithm>
+#include <array>
 #include <sstream>
 #include <iomanip>
+#include <map>
 #include <random>
 #include <thread>
 #include <future>
 #include <set>
+#include <unordered_map>
 #include <unordered_set>
 #include <regex>
 #include <queue>
@@ -232,7 +235,6 @@ private:
                         std::vector<std::uint8_t>& data) const;
     std::uint64_t GetCurrentTimeMs() const;
     void UpdateStats(const TileLoadResult& result);
-    TileCoordinatesHash hasher_;
 };
 
 // Factory function
@@ -258,6 +260,10 @@ bool BasicTileLoader::Initialize(const TileLoaderConfig& config) {
     
     spdlog::info("Tile loader initialized with {} providers and {} threads", 
                 providers_.size(), config_.max_concurrent_downloads);
+    if (!config_.ca_cert_path.empty()) {
+        spdlog::info("Tile loader: using configured CA bundle '{}'",
+                     config_.ca_cert_path);
+    }
     return true;
 }
 
@@ -632,6 +638,18 @@ CURL* BasicTileLoader::CreateCurlHandle() const {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, config_.verify_ssl ? 2L : 0L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L); // Prevent signals for thread safety
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // Enable all supported encodings
+
+    if (!config_.ca_cert_path.empty()) {
+        const CURLcode ca_cert_result = curl_easy_setopt(
+            curl, CURLOPT_CAINFO, config_.ca_cert_path.c_str());
+        if (ca_cert_result != CURLE_OK) {
+            spdlog::error("Tile loader: failed to configure CA bundle '{}': {}",
+                          config_.ca_cert_path,
+                          curl_easy_strerror(ca_cert_result));
+            curl_easy_cleanup(curl);
+            return nullptr;
+        }
+    }
     
     if (config_.enable_http2) {
         curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);

@@ -6,6 +6,7 @@
 #include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
 #include <spdlog/spdlog.h>
 
+#include <array>
 #include <utility>
 
 namespace earth_map {

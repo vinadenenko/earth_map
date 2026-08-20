@@ -1,12 +1,12 @@
 #include <earth_map/geodesy/wgs84_ellipsoid.h>
+#include <earth_map/constants.h>
 
 #include <cmath>
-#include <numbers>
 
 namespace earth_map::geodesy {
 namespace {
 
-constexpr double kHalfPi = std::numbers::pi_v<double> * 0.5;
+constexpr double kHalfPi = constants::math::PI * 0.5;
 constexpr double kEcefCenterEpsilonMeters = 1e-9;
 
 [[nodiscard]] bool IsFinite(const glm::dvec3& value) noexcept {
@@ -19,8 +19,8 @@ bool GeodeticPosition::IsValid() const noexcept {
     return std::isfinite(latitude_radians) && std::isfinite(longitude_radians) &&
            std::isfinite(ellipsoid_height_meters) &&
            latitude_radians >= -kHalfPi && latitude_radians <= kHalfPi &&
-           longitude_radians >= -std::numbers::pi_v<double> &&
-           longitude_radians <= std::numbers::pi_v<double>;
+           longitude_radians >= -constants::math::PI &&
+           longitude_radians <= constants::math::PI;
 }
 
 EcefPosition Wgs84Ellipsoid::ToEcef(const GeodeticPosition& geodetic) noexcept {
