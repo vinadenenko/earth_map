@@ -17,7 +17,7 @@
  * - Thread safety: GL thread only (same as TextureAtlasManager)
  */
 
-#include <earth_map/math/tile_mathematics.h>
+#include <earth_map/imagery/tile_matrix_set.h>
 #include <chrono>
 #include <cstdint>
 #include <list>
@@ -32,8 +32,9 @@ namespace earth_map {
 /**
  * @brief Tile texture pool using GL_TEXTURE_2D_ARRAY
  *
- * Each tile occupies one layer in the array. Layers are managed with LRU
- * eviction. The shader samples via texture(sampler2DArray, vec3(u, v, layer)).
+ * Each canonical imagery page occupies one layer in the array. Layers are
+ * managed with LRU eviction. The shader samples via
+ * texture(sampler2DArray, vec3(u, v, layer)).
  *
  * Thread Safety: NOT thread-safe — GL thread only.
  */
@@ -63,43 +64,44 @@ public:
     /**
      * @brief Upload tile pixels to a layer
      *
-     * If the tile already exists, updates in place. If the pool is full,
-     * evicts the LRU tile.
+     * If the imagery page already exists, updates it in place. If the pool is
+     * full, returns failure; the residency coordinator selects and evicts an
+     * LRU page explicitly so it can clear the matching page-table entry.
      *
      * @return Layer index (0 to max_layers-1), or -1 on failure
      */
     int UploadTile(
-        const TileCoordinates& coords,
+        const imagery::ImageTileKey& imagery_key,
         const std::uint8_t* pixel_data,
         std::uint32_t width,
         std::uint32_t height,
         std::uint8_t channels);
 
     /**
-     * @brief Evict a tile from the pool
+     * @brief Evict an imagery page from the pool
      *
      * Frees the layer for reuse. No-op if tile is not in pool.
      */
-    void EvictTile(const TileCoordinates& coords);
+    void EvictTile(const imagery::ImageTileKey& imagery_key);
 
     /**
-     * @brief Check if a tile is loaded in the pool
+     * @brief Check if an imagery page is loaded in the pool
      */
-    bool IsTileLoaded(const TileCoordinates& coords) const;
+    bool IsTileLoaded(const imagery::ImageTileKey& imagery_key) const;
 
     /**
-     * @brief Get the layer index for a tile
+     * @brief Get the layer index for an imagery page
      *
      * @return Layer index, or -1 if not loaded
      */
-    int GetLayerIndex(const TileCoordinates& coords) const;
+    int GetLayerIndex(const imagery::ImageTileKey& imagery_key) const;
 
     /**
-     * @brief Update LRU timestamp for a tile without re-uploading
+     * @brief Update an imagery page's LRU timestamp without re-uploading
      *
      * Call this when a tile is accessed/rendered to prevent eviction.
      */
-    void TouchTile(const TileCoordinates& coords);
+    void TouchTile(const imagery::ImageTileKey& imagery_key);
 
     /** @brief Get OpenGL texture array ID (0 if GL not initialized) */
     std::uint32_t GetTextureArrayID() const { return texture_array_id_; }
@@ -111,32 +113,32 @@ public:
     std::uint32_t GetTileSize() const { return tile_size_; }
 
     /** @brief Get number of occupied layers */
-    std::size_t GetOccupiedLayers() const { return coord_to_layer_.size(); }
+    std::size_t GetOccupiedLayers() const { return imagery_key_to_layer_.size(); }
 
     /** @brief Get number of free layers */
     std::size_t GetFreeLayers() const { return free_layers_.size(); }
 
     /**
-     * @brief Get the last-used timestamp for a tile
+     * @brief Get the last-used timestamp for an imagery page
      *
      * @return Time point of last access, or time_point::min() if not loaded
      */
     std::chrono::steady_clock::time_point GetLastUsedTime(
-        const TileCoordinates& coords) const;
+        const imagery::ImageTileKey& imagery_key) const;
 
     /**
      * @brief Get the LRU eviction candidate
      *
-     * Returns the coordinates of the least-recently-used tile in the pool.
+     * Returns the canonical identity of the least-recently-used imagery page.
      * Does NOT evict — the caller must call EvictTile() explicitly.
      *
-     * @return Tile coordinates, or nullopt if pool is empty
+     * @return Imagery key, or nullopt if pool is empty
      */
-    std::optional<TileCoordinates> GetEvictionCandidate() const;
+    std::optional<imagery::ImageTileKey> GetEvictionCandidate() const;
 
 private:
     struct LayerSlot {
-        TileCoordinates coords;
+        imagery::ImageTileKey imagery_key;
         bool occupied = false;
         std::chrono::steady_clock::time_point last_used;
         int layer_index = -1;
@@ -159,7 +161,8 @@ private:
 
     std::vector<LayerSlot> layers_;
     std::queue<int> free_layers_;
-    std::unordered_map<TileCoordinates, int, TileCoordinatesHash> coord_to_layer_;
+    std::unordered_map<imagery::ImageTileKey, int, imagery::ImageTileKeyHash>
+        imagery_key_to_layer_;
 
     /// LRU order: front = most recently used, back = eviction candidate
     std::list<int> lru_order_;

@@ -1,0 +1,16 @@
+# Qt Creator out-of-source build directories (e.g.
+# build/Desktop_Qt_6_6_3_GCC_64bit-Debug/), including everything
+# conan_handler.cmake's handle_conan_deps() writes under
+# <build-dir>/conan/ (conan_toolchain.cmake, *Config.cmake, etc.).
+build/
+
+# Qt Creator per-machine project state.
+CMakeLists.txt.user
+CMakeLists.txt.user.*
+
+# AUTOMOC output, if ever generated next to the source instead of in build/.
+*.moc
+
+# Conan/CMake files that could in principle land at this level.
+CMakeUserPresets.json
+conan_toolchain.cmake

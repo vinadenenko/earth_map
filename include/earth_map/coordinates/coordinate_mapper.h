@@ -113,7 +113,7 @@ public:
      * - Each tile is 256×256 pixels
      *
      * @param geo Geographic position
-     * @param zoom Zoom level (0-30)
+     * @param zoom Source-matrix zoom level supported by the active imagery contract
      * @return Tile coordinates containing this point
      */
     [[nodiscard]] static TileCoordinates GeographicToTile(const Geographic& geo,
@@ -157,20 +157,6 @@ public:
     [[nodiscard]] static TileCoordinates GeographicToSphericalTile(
         const Geographic& geo,
         int32_t zoom) noexcept;
-
-    /**
-     * @brief Calculate fractional position within a tile (0-1 range)
-     *
-     * Given a geographic point and its containing tile, calculate the
-     * fractional position within that tile for texture coordinate interpolation.
-     *
-     * @param geo Geographic coordinates
-     * @param tile Tile containing this point
-     * @return Fractional position (x, y) in [0, 1] within tile
-     */
-    [[nodiscard]] static glm::vec2 GetTileFraction(
-        const Geographic& geo,
-        const TileCoordinates& tile) noexcept;
 
     // ========================================================================
     // GEOGRAPHIC ↔ SCREEN (User Interaction)

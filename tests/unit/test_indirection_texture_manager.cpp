@@ -1,312 +1,153 @@
 #include <gtest/gtest.h>
+
 #include <earth_map/renderer/tile_pool/indirection_texture_manager.h>
-#include <earth_map/math/tile_mathematics.h>
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace earth_map::tests {
+namespace {
+
+imagery::ImageTileKey MakeImageKey(
+    std::uint32_t column,
+    std::uint32_t row,
+    std::uint32_t level,
+    std::string source_id = "page-table-test-imagery",
+    std::string matrix_set_id = "WebMercatorQuad") {
+    return {std::move(source_id), std::move(matrix_set_id), {level, column, row}};
+}
+
+}  // namespace
 
 class IndirectionTextureManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        manager_ = std::make_unique<IndirectionTextureManager>(true);  // skip GL
-    }
-
-    void TearDown() override {
-        manager_.reset();
+        manager_ = std::make_unique<IndirectionTextureManager>(true);
     }
 
     std::unique_ptr<IndirectionTextureManager> manager_;
 };
 
-// ============================================================================
-// Initialization Tests
-// ============================================================================
-
-TEST_F(IndirectionTextureManagerTest, InitiallyEmpty) {
+TEST_F(IndirectionTextureManagerTest, InitiallyHasNoAllocatedPageTables) {
     EXPECT_TRUE(manager_->GetActiveZoomLevels().empty());
+    EXPECT_EQ(manager_->GetTextureID(imagery::ImageTileKey{}), 0U);
 }
 
-TEST_F(IndirectionTextureManagerTest, TextureID_ZeroBeforeAllocation) {
-    EXPECT_EQ(manager_->GetTextureID(5), 0u);
+TEST_F(IndirectionTextureManagerTest, MapsCanonicalPageInFullTable) {
+    const auto key = MakeImageKey(3, 2, 4);
+
+    EXPECT_TRUE(manager_->SetTileLayer(key, 42));
+    EXPECT_EQ(manager_->GetTileLayer(key), 42U);
+    EXPECT_EQ(manager_->GetWindowOffset(key).x, 0);
+    EXPECT_EQ(manager_->GetWindowOffset(key).y, 0);
+    EXPECT_EQ(manager_->GetActiveZoomLevels(), std::vector<int>({4}));
+
+    const auto window = manager_->GetPageTableWindow(key);
+    ASSERT_TRUE(window.has_value());
+    EXPECT_TRUE(window->Matches(key));
+    EXPECT_EQ(window->imagery_source_id, "page-table-test-imagery");
+    EXPECT_EQ(window->matrix_set_id, "WebMercatorQuad");
+    EXPECT_EQ(window->generation, 1U);
+
+    const auto binding = manager_->GetPageTableBinding(key);
+    ASSERT_TRUE(binding.has_value());
+    EXPECT_EQ(binding->texture_id, manager_->GetTextureID(key));
+    EXPECT_EQ(binding->window.generation, window->generation);
+    EXPECT_EQ(binding->window.origin_column, window->origin_column);
+    EXPECT_EQ(binding->window.origin_row, window->origin_row);
 }
 
-// ============================================================================
-// Full Mode Tests (zoom 0-12)
-// ============================================================================
+TEST_F(IndirectionTextureManagerTest, KeepsSourcesWithSameAddressSeparate) {
+    const auto first_source = MakeImageKey(3, 2, 4, "imagery-a");
+    const auto second_source = MakeImageKey(3, 2, 4, "imagery-b");
 
-TEST_F(IndirectionTextureManagerTest, SetTileLayer_CreatesZoomTexture) {
-    TileCoordinates tile(3, 2, 4);
-    manager_->SetTileLayer(tile, 42);
+    ASSERT_TRUE(manager_->SetTileLayer(first_source, 11));
+    ASSERT_TRUE(manager_->SetTileLayer(second_source, 22));
 
-    auto active = manager_->GetActiveZoomLevels();
-    ASSERT_EQ(active.size(), 1u);
-    EXPECT_EQ(active[0], 4);
+    EXPECT_EQ(manager_->GetTileLayer(first_source), 11U);
+    EXPECT_EQ(manager_->GetTileLayer(second_source), 22U);
 }
 
-TEST_F(IndirectionTextureManagerTest, GetTileLayer_ReturnsSetValue) {
-    TileCoordinates tile(3, 2, 4);
-    manager_->SetTileLayer(tile, 42);
+TEST_F(IndirectionTextureManagerTest, KeepsMatrixSetsWithSameAddressSeparate) {
+    const auto first_matrix = MakeImageKey(3, 2, 4, "imagery", "matrix-a");
+    const auto second_matrix = MakeImageKey(3, 2, 4, "imagery", "matrix-b");
 
-    std::uint16_t layer = manager_->GetTileLayer(tile);
-    EXPECT_EQ(layer, 42u);
+    ASSERT_TRUE(manager_->SetTileLayer(first_matrix, 11));
+    ASSERT_TRUE(manager_->SetTileLayer(second_matrix, 22));
+
+    EXPECT_EQ(manager_->GetTileLayer(first_matrix), 11U);
+    EXPECT_EQ(manager_->GetTileLayer(second_matrix), 22U);
 }
 
-TEST_F(IndirectionTextureManagerTest, GetTileLayer_ReturnsInvalidForUnsetTile) {
-    TileCoordinates tile(3, 2, 4);
-    std::uint16_t layer = manager_->GetTileLayer(tile);
-    EXPECT_EQ(layer, IndirectionTextureManager::kInvalidLayer);
+TEST_F(IndirectionTextureManagerTest, ClearsOnlySpecifiedCanonicalPage) {
+    const auto first = MakeImageKey(3, 2, 4, "imagery-a");
+    const auto second = MakeImageKey(3, 2, 4, "imagery-b");
+
+    ASSERT_TRUE(manager_->SetTileLayer(first, 11));
+    ASSERT_TRUE(manager_->SetTileLayer(second, 22));
+    manager_->ClearTile(first);
+
+    EXPECT_EQ(manager_->GetTileLayer(first), IndirectionTextureManager::kInvalidLayer);
+    EXPECT_EQ(manager_->GetTileLayer(second), 22U);
 }
 
-TEST_F(IndirectionTextureManagerTest, ClearTile_ResetsToInvalid) {
-    TileCoordinates tile(3, 2, 4);
-    manager_->SetTileLayer(tile, 42);
-    manager_->ClearTile(tile);
+TEST_F(IndirectionTextureManagerTest, RejectsWindowedPageOutsideOwnedWindow) {
+    const auto center = MakeImageKey(1000, 1000, 13);
+    const auto outside = MakeImageKey(100, 100, 13);
+    manager_->UpdateWindowCenter(center);
 
-    std::uint16_t layer = manager_->GetTileLayer(tile);
-    EXPECT_EQ(layer, IndirectionTextureManager::kInvalidLayer);
+    EXPECT_FALSE(manager_->SetTileLayer(outside, 42));
+    EXPECT_EQ(manager_->GetTileLayer(outside), IndirectionTextureManager::kInvalidLayer);
 }
 
-TEST_F(IndirectionTextureManagerTest, MultipleTilesInSameZoom) {
-    TileCoordinates tile_a(0, 0, 2);
-    TileCoordinates tile_b(1, 1, 2);
-    TileCoordinates tile_c(3, 2, 2);
+TEST_F(IndirectionTextureManagerTest, WindowedPageUsesAndMovesSourceAwareWindow) {
+    const auto key = MakeImageKey(16000, 12000, 15);
+    manager_->UpdateWindowCenter(key);
+    ASSERT_TRUE(manager_->SetTileLayer(key, 77));
 
-    manager_->SetTileLayer(tile_a, 10);
-    manager_->SetTileLayer(tile_b, 20);
-    manager_->SetTileLayer(tile_c, 30);
+    EXPECT_EQ(manager_->GetTileLayer(key), 77U);
+    EXPECT_EQ(manager_->GetWindowOffset(key).x, 15744);
+    EXPECT_EQ(manager_->GetWindowOffset(key).y, 11744);
 
-    EXPECT_EQ(manager_->GetTileLayer(tile_a), 10u);
-    EXPECT_EQ(manager_->GetTileLayer(tile_b), 20u);
-    EXPECT_EQ(manager_->GetTileLayer(tile_c), 30u);
+    const auto first_window = manager_->GetPageTableWindow(key);
+    ASSERT_TRUE(first_window.has_value());
+    const auto nearby_center = MakeImageKey(16010, 12010, 15);
+    manager_->UpdateWindowCenter(nearby_center);
+    EXPECT_EQ(manager_->GetTileLayer(key), 77U);
+
+    const auto shifted_window = manager_->GetPageTableWindow(key);
+    ASSERT_TRUE(shifted_window.has_value());
+    EXPECT_GT(shifted_window->generation, first_window->generation);
+
+    const auto binding = manager_->GetPageTableBinding(key);
+    ASSERT_TRUE(binding.has_value());
+    EXPECT_EQ(binding->window.generation, shifted_window->generation);
+    EXPECT_EQ(binding->window.origin_column, shifted_window->origin_column);
+    EXPECT_EQ(binding->window.origin_row, shifted_window->origin_row);
 }
 
-TEST_F(IndirectionTextureManagerTest, MultipleZoomLevels) {
-    TileCoordinates tile_z2(0, 0, 2);
-    TileCoordinates tile_z5(10, 15, 5);
-    TileCoordinates tile_z10(500, 300, 10);
+TEST_F(IndirectionTextureManagerTest, FarWindowMoveDropsOldEntries) {
+    const auto key = MakeImageKey(16000, 12000, 15);
+    manager_->UpdateWindowCenter(key);
+    ASSERT_TRUE(manager_->SetTileLayer(key, 77));
 
-    manager_->SetTileLayer(tile_z2, 1);
-    manager_->SetTileLayer(tile_z5, 2);
-    manager_->SetTileLayer(tile_z10, 3);
-
-    auto active = manager_->GetActiveZoomLevels();
-    EXPECT_EQ(active.size(), 3u);
-
-    EXPECT_EQ(manager_->GetTileLayer(tile_z2), 1u);
-    EXPECT_EQ(manager_->GetTileLayer(tile_z5), 2u);
-    EXPECT_EQ(manager_->GetTileLayer(tile_z10), 3u);
+    manager_->UpdateWindowCenter(MakeImageKey(1000, 1000, 15));
+    EXPECT_EQ(manager_->GetTileLayer(key), IndirectionTextureManager::kInvalidLayer);
 }
 
-TEST_F(IndirectionTextureManagerTest, OverwriteTileLayer) {
-    TileCoordinates tile(3, 2, 4);
-    manager_->SetTileLayer(tile, 42);
-    manager_->SetTileLayer(tile, 99);
+TEST_F(IndirectionTextureManagerTest, ReleasingPageTableRemovesOnlyMatchingIdentity) {
+    const auto first = MakeImageKey(3, 2, 4, "imagery-a");
+    const auto second = MakeImageKey(3, 2, 4, "imagery-b");
+    ASSERT_TRUE(manager_->SetTileLayer(first, 11));
+    ASSERT_TRUE(manager_->SetTileLayer(second, 22));
 
-    EXPECT_EQ(manager_->GetTileLayer(tile), 99u);
+    manager_->ReleasePageTable(first);
+
+    EXPECT_EQ(manager_->GetTileLayer(first), IndirectionTextureManager::kInvalidLayer);
+    EXPECT_EQ(manager_->GetTileLayer(second), 22U);
 }
 
-TEST_F(IndirectionTextureManagerTest, ReleaseZoomLevel) {
-    TileCoordinates tile(3, 2, 4);
-    manager_->SetTileLayer(tile, 42);
-
-    manager_->ReleaseZoomLevel(4);
-
-    auto active = manager_->GetActiveZoomLevels();
-    EXPECT_TRUE(active.empty());
-    EXPECT_EQ(manager_->GetTileLayer(tile), IndirectionTextureManager::kInvalidLayer);
-}
-
-// ============================================================================
-// Window Offset Tests (zoom 0-12: offset is always 0,0)
-// ============================================================================
-
-TEST_F(IndirectionTextureManagerTest, FullMode_OffsetIsZero) {
-    TileCoordinates tile(3, 2, 4);
-    manager_->SetTileLayer(tile, 42);
-
-    auto offset = manager_->GetWindowOffset(4);
-    EXPECT_EQ(offset.x, 0);
-    EXPECT_EQ(offset.y, 0);
-}
-
-// ============================================================================
-// Windowed Mode Tests (zoom 13+)
-// ============================================================================
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_SetAndGetTile) {
-    // Zoom 15 is windowed mode
-    TileCoordinates tile(16000, 12000, 15);
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-    manager_->SetTileLayer(tile, 77);
-
-    EXPECT_EQ(manager_->GetTileLayer(tile), 77u);
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_OffsetNonZero) {
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-
-    auto offset = manager_->GetWindowOffset(15);
-    // Offset should center the window around (16000, 12000)
-    // Window size is 512, so offset = center - 256
-    EXPECT_EQ(offset.x, 16000 - 256);
-    EXPECT_EQ(offset.y, 12000 - 256);
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_TileOutsideWindow) {
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-
-    // Tile far from window center
-    TileCoordinates far_tile(0, 0, 15);
-    manager_->SetTileLayer(far_tile, 50);
-
-    // Should return invalid since tile is outside window
-    EXPECT_EQ(manager_->GetTileLayer(far_tile), IndirectionTextureManager::kInvalidLayer);
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_RecenterClearsOldData) {
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-
-    TileCoordinates tile(16000, 12000, 15);
-    manager_->SetTileLayer(tile, 77);
-    ASSERT_EQ(manager_->GetTileLayer(tile), 77u);
-
-    // Recenter far away — old tile should be cleared
-    manager_->UpdateWindowCenter(15, 1000, 1000);
-    EXPECT_EQ(manager_->GetTileLayer(tile), IndirectionTextureManager::kInvalidLayer);
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_NearbyRecenterPreservesOverlappingData) {
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-
-    // Set a tile that will remain in the window after a small shift
-    TileCoordinates tile(16000, 12000, 15);
-    manager_->SetTileLayer(tile, 77);
-
-    // Move 10 tiles — tile (16000, 12000) is still within the new window
-    // (new center 16010,12010 → offset ~15754,11754; tile is still inside)
-    manager_->UpdateWindowCenter(15, 16010, 12010);
-
-    // Overlapping tile should survive the shift
-    EXPECT_EQ(manager_->GetTileLayer(tile), 77u);
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_NearbyRecenterClearsExposedStrips) {
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-
-    // Set a tile near the edge that will fall outside after shift
-    // Window offset = (16000 - 256, 12000 - 256) = (15744, 11744)
-    // Tile at (15744, 11744) is at texel (0, 0)
-    TileCoordinates edge_tile(15744, 11744, 15);
-    manager_->SetTileLayer(edge_tile, 88);
-    ASSERT_EQ(manager_->GetTileLayer(edge_tile), 88u);
-
-    // Shift right by 10 tiles: new offset = (15754, 11754)
-    // edge_tile at (15744, 11744) → local = (15744-15754, ...) = (-10, -10) → outside
-    manager_->UpdateWindowCenter(15, 16010, 12010);
-
-    EXPECT_EQ(manager_->GetTileLayer(edge_tile), IndirectionTextureManager::kInvalidLayer);
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_ShiftXOnly_PreservesData) {
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-
-    TileCoordinates tile(16000, 12000, 15);
-    manager_->SetTileLayer(tile, 42);
-
-    // Shift X only (center moves right by 5)
-    manager_->UpdateWindowCenter(15, 16005, 12000);
-
-    // Tile should survive (still in window)
-    EXPECT_EQ(manager_->GetTileLayer(tile), 42u);
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_ShiftYOnly_PreservesData) {
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-
-    TileCoordinates tile(16000, 12000, 15);
-    manager_->SetTileLayer(tile, 55);
-
-    // Shift Y only (center moves down by 5)
-    manager_->UpdateWindowCenter(15, 16000, 12005);
-
-    EXPECT_EQ(manager_->GetTileLayer(tile), 55u);
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_NegativeShift_PreservesData) {
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-
-    TileCoordinates tile(16000, 12000, 15);
-    manager_->SetTileLayer(tile, 33);
-
-    // Shift in negative direction (center moves left and up by 5)
-    manager_->UpdateWindowCenter(15, 15995, 11995);
-
-    EXPECT_EQ(manager_->GetTileLayer(tile), 33u);
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_MultipleSequentialShifts) {
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-
-    TileCoordinates tile(16000, 12000, 15);
-    manager_->SetTileLayer(tile, 99);
-
-    // Apply 3 successive small shifts
-    manager_->UpdateWindowCenter(15, 16003, 12003);
-    manager_->UpdateWindowCenter(15, 16006, 12006);
-    manager_->UpdateWindowCenter(15, 16009, 12009);
-
-    // Tile should survive all shifts (total delta = 9, well within window)
-    EXPECT_EQ(manager_->GetTileLayer(tile), 99u);
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_MultipleZoomsCombine) {
-    // One full, one windowed
-    TileCoordinates full_tile(3, 2, 4);
-    TileCoordinates windowed_tile(16000, 12000, 15);
-
-    manager_->SetTileLayer(full_tile, 10);
-    manager_->UpdateWindowCenter(15, 16000, 12000);
-    manager_->SetTileLayer(windowed_tile, 20);
-
-    EXPECT_EQ(manager_->GetTileLayer(full_tile), 10u);
-    EXPECT_EQ(manager_->GetTileLayer(windowed_tile), 20u);
-
-    auto active = manager_->GetActiveZoomLevels();
-    EXPECT_EQ(active.size(), 2u);
-}
-
-// ============================================================================
-// Boundary Tests
-// ============================================================================
-
-TEST_F(IndirectionTextureManagerTest, Zoom12_IsFullMode) {
-    TileCoordinates tile(2048, 2048, 12);
-    manager_->SetTileLayer(tile, 5);
-
-    auto offset = manager_->GetWindowOffset(12);
-    EXPECT_EQ(offset.x, 0);
-    EXPECT_EQ(offset.y, 0);
-    EXPECT_EQ(manager_->GetTileLayer(tile), 5u);
-}
-
-TEST_F(IndirectionTextureManagerTest, Zoom13_IsWindowedMode) {
-    TileCoordinates tile(4096, 4096, 13);
-    manager_->UpdateWindowCenter(13, 4096, 4096);
-    manager_->SetTileLayer(tile, 5);
-
-    auto offset = manager_->GetWindowOffset(13);
-    // Should have non-zero offset
-    EXPECT_NE(offset.x, 0);
-    EXPECT_NE(offset.y, 0);
-    EXPECT_EQ(manager_->GetTileLayer(tile), 5u);
-}
-
-TEST_F(IndirectionTextureManagerTest, ClearTile_NonExistentZoom_NoOp) {
-    TileCoordinates tile(3, 2, 4);
-    manager_->ClearTile(tile);  // Should not crash
-}
-
-TEST_F(IndirectionTextureManagerTest, WindowedMode_WindowSize) {
-    EXPECT_EQ(IndirectionTextureManager::kWindowSize, 512u);
-}
-
-} // namespace earth_map::tests
+}  // namespace earth_map::tests

@@ -2,10 +2,11 @@
 
 /**
  * @file indirection_texture_manager.h
- * @brief Per-zoom indirection textures mapping tile (x,y) to pool layer index
+ * @brief Source-aware page tables mapping imagery keys to pool-layer indices
  *
- * Manages indirection textures that map tile coordinates to layer indices in
- * the TileTexturePool. Two modes:
+ * Manages indirection textures that map canonical imagery keys to layer
+ * indices in the TileTexturePool. Each table is owned by one imagery source,
+ * matrix set, level, and PageTableWindow generation. Two modes:
  *
  * - Full mode (zoom 0-12): Complete GL_TEXTURE_2D of size 2^zoom x 2^zoom
  * - Windowed mode (zoom 13+): Fixed 512x512 texture with offset, centered
@@ -17,11 +18,12 @@
  * Thread Safety: NOT thread-safe — GL thread only.
  */
 
-#include <earth_map/math/tile_mathematics.h>
+#include <earth_map/imagery/tile_matrix_set.h>
 #include <glm/vec2.hpp>
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -32,6 +34,18 @@ public:
     static constexpr int kMaxFullIndirectionZoom = 12;
     static constexpr std::uint16_t kInvalidLayer = 0xFFFF;
     static constexpr std::uint32_t kWindowSize = 512;
+
+    /**
+     * Immutable binding for one page-table generation.
+     *
+     * The renderer must bind the texture and derive its lookup offset from
+     * this same value.  Keeping them together prevents a frame from mixing a
+     * texture from one window generation with coordinates from another.
+     */
+    struct PageTableBinding {
+        std::uint32_t texture_id = 0;
+        imagery::PageTableWindow window;
+    };
 
     /**
      * @brief Constructor
@@ -46,46 +60,62 @@ public:
     IndirectionTextureManager& operator=(IndirectionTextureManager&&) = delete;
 
     /**
-     * @brief Set the pool layer index for a tile
+     * @brief Set the pool layer index for a canonical imagery page
      *
      * Lazily creates the indirection texture for the zoom level if needed.
      * For windowed mode (zoom > 12), the tile must fall within the current
-     * window; otherwise the call is silently ignored.
+     * window; otherwise no entry is written and false is returned.
      */
-    void SetTileLayer(const TileCoordinates& coords, std::uint16_t layer_index);
+    /**
+     * @return true when the entry is represented by the current page-table
+     * window; false when the tile is outside that window or cannot be stored.
+     */
+    bool SetTileLayer(const imagery::ImageTileKey& imagery_key, std::uint16_t layer_index);
 
     /**
-     * @brief Clear a tile entry (reset to kInvalidLayer)
+     * @brief Clear an imagery-page entry (reset to kInvalidLayer)
      *
      * Called when a tile is evicted from the pool. No-op if zoom level
      * has no indirection texture or tile is outside window.
      */
-    void ClearTile(const TileCoordinates& coords);
+    void ClearTile(const imagery::ImageTileKey& imagery_key);
 
     /**
-     * @brief Get the stored layer index for a tile (for testing/debugging)
+     * @brief Get the stored layer index for an imagery page (testing/debugging)
      *
      * @return Layer index, or kInvalidLayer if not set / outside window
      */
-    std::uint16_t GetTileLayer(const TileCoordinates& coords) const;
+    std::uint16_t GetTileLayer(const imagery::ImageTileKey& imagery_key) const;
 
     /**
-     * @brief Get GL texture ID for a zoom level
+     * @brief Get GL texture ID for an imagery page's page table
      * @return Texture ID, or 0 if not allocated
      */
-    std::uint32_t GetTextureID(int zoom) const;
+    std::uint32_t GetTextureID(const imagery::ImageTileKey& imagery_key) const;
 
     /**
-     * @brief Get window offset for a zoom level
+     * @brief Get window offset for an imagery page's page table
      *
      * For full mode (zoom <= 12), returns (0, 0).
      * For windowed mode, returns the offset that the shader must subtract
      * from tile coordinates before texelFetch.
      */
-    glm::ivec2 GetWindowOffset(int zoom) const;
+    glm::ivec2 GetWindowOffset(const imagery::ImageTileKey& imagery_key) const;
+
+    /** Returns the immutable source-aware window used by an allocated table. */
+    std::optional<imagery::PageTableWindow> GetPageTableWindow(
+        const imagery::ImageTileKey& imagery_key) const;
 
     /**
-     * @brief Update window center for a windowed zoom level
+     * Returns the texture and immutable window as one generation-consistent
+     * render binding. Returns nullopt when that page table has not been
+     * allocated; callers may bind the dummy table in that case.
+     */
+    std::optional<PageTableBinding> GetPageTableBinding(
+        const imagery::ImageTileKey& imagery_key) const;
+
+    /**
+     * @brief Update window center for a source-aware windowed page table
      *
      * Re-centers the indirection window around the given tile position.
      * If the new center is far from the old one, the texture is cleared
@@ -93,34 +123,55 @@ public:
      *
      * No-op for full-mode zoom levels (0-12).
      */
-    void UpdateWindowCenter(int zoom, int center_tile_x, int center_tile_y);
+    /**
+     * @return true only when the active window changed generation.
+     *
+     * The caller must rebuild the entries for resident pages after true is
+     * returned. The page table is a derived view of residency, not residency
+     * itself.
+     */
+    bool UpdateWindowCenter(const imagery::ImageTileKey& center_tile);
 
     /**
-     * @brief Get all zoom levels that have allocated indirection textures
+     * @brief Get all levels that have allocated indirection textures
      */
     std::vector<int> GetActiveZoomLevels() const;
 
     /**
-     * @brief Release/destroy indirection texture for a zoom level
+     * @brief Release/destroy the page table for an imagery source/matrix/level
      */
-    void ReleaseZoomLevel(int zoom);
+    void ReleasePageTable(const imagery::ImageTileKey& imagery_key);
 
 private:
-    struct ZoomTexture {
+    struct PageTableIdentity {
+        std::string imagery_source_id;
+        std::string matrix_set_id;
+        std::uint32_t level = 0;
+
+        bool operator==(const PageTableIdentity& other) const noexcept = default;
+    };
+
+    struct PageTableIdentityHash {
+        std::size_t operator()(const PageTableIdentity& identity) const noexcept;
+    };
+
+    struct PageTableTexture {
         std::uint32_t texture_id = 0;
-        int zoom = -1;
         std::uint32_t width = 0;
         std::uint32_t height = 0;
-        bool windowed = false;
-        glm::ivec2 window_offset{0, 0};
+        imagery::PageTableWindow window;
 
         // CPU-side mirror for skip_gl_init mode and fast reads
         std::vector<std::uint16_t> data;
     };
 
-    bool IsWindowedMode(int zoom) const { return zoom > kMaxFullIndirectionZoom; }
-    void CreateZoomTexture(int zoom);
-    void ClearZoomTextureData(ZoomTexture& zt);
+    bool IsWindowedMode(std::uint32_t level) const {
+        return level > static_cast<std::uint32_t>(kMaxFullIndirectionZoom);
+    }
+    static PageTableIdentity GetIdentity(const imagery::ImageTileKey& imagery_key);
+    static glm::ivec2 GetWindowOffset(const imagery::PageTableWindow& window);
+    void CreatePageTable(const imagery::ImageTileKey& imagery_key);
+    void ClearPageTableData(PageTableTexture& page_table);
 
     /**
      * @brief Shift window data by (dx, dy), preserving overlapping tiles
@@ -129,12 +180,14 @@ private:
      * their correct new texel positions. Newly exposed texels are set to
      * kInvalidLayer.
      */
-    void ShiftWindowData(ZoomTexture& zt, int dx, int dy);
+    void ShiftWindowData(PageTableTexture& page_table, int dx, int dy);
 
     /**
      * @brief Check if tile coords fall within the windowed texture
      */
-    bool IsTileInWindow(const ZoomTexture& zt, int tile_x, int tile_y) const;
+    bool IsTileInWindow(
+        const PageTableTexture& page_table,
+        const imagery::ImageTileKey& imagery_key) const;
 
     /**
      * @brief Convert tile coords to texel position in the indirection texture
@@ -142,9 +195,13 @@ private:
      * For full mode: texel = (tile_x, tile_y)
      * For windowed mode: texel = (tile_x - offset_x, tile_y - offset_y)
      */
-    glm::ivec2 TileToTexel(const ZoomTexture& zt, int tile_x, int tile_y) const;
+    glm::ivec2 TileToTexel(
+        const PageTableTexture& page_table,
+        const imagery::ImageTileKey& imagery_key) const;
 
-    std::unordered_map<int, ZoomTexture> zoom_textures_;
+    std::unordered_map<PageTableIdentity, PageTableTexture, PageTableIdentityHash>
+        page_tables_;
+    std::uint64_t next_window_generation_ = 1;
     bool skip_gl_init_;
     std::uint32_t dummy_texture_id_ = 0;
 };

@@ -5,12 +5,14 @@
 
 #include "../../include/earth_map/coordinates/coordinate_mapper.h"
 #include "../../include/earth_map/constants.h"
+#include "../../include/earth_map/imagery/tile_matrix_set.h"
 #include "../../include/earth_map/math/projection.h"
 #include "../../include/earth_map/math/tile_mathematics.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <optional>
 
 namespace earth_map {
 namespace coordinates {
@@ -543,65 +545,35 @@ bool CoordinateMapper::RaySphereIntersection(
 TileCoordinates CoordinateMapper::GeographicToSphericalTile(
     const Geographic& geo,
     int32_t zoom) noexcept {
+    // TileMatrixSet is the canonical Web-Mercator contract for providers,
+    // cache keys, page tables, and shader conformance. This legacy
+    // normalized-sphere boundary adapts degree inputs to the authoritative
+    // radians-based imagery contract instead of maintaining a second formula.
+    if (!geo.IsValid() || zoom < 0) {
+        return TileCoordinates{};
+    }
 
-    // For 3D sphere rendering with Web Mercator tiles:
-    // - Vertex positions use simple sphere math (no distortion)
-    // - Tile coordinates use Web Mercator (to match XYZ tile server layout)
-    // This function maps 3D vertex positions to Web Mercator tile coordinates
+    const imagery::TileMatrixSet matrix_set =
+        imagery::TileMatrixSet::WebMercatorXYZ();
+    const geodesy::GeodeticPosition geodetic{
+        std::clamp(
+            geo.latitude * constants::math::PI / 180.0,
+            matrix_set.minimum_latitude_radians,
+            matrix_set.maximum_latitude_radians),
+        geo.longitude * constants::math::PI / 180.0,
+        geo.altitude,
+    };
+    const auto address = matrix_set.GeodeticToTile(
+        geodetic, static_cast<std::uint32_t>(zoom));
+    if (!address.has_value()) {
+        return TileCoordinates{};
+    }
 
-    const int32_t n = 1 << zoom;  // 2^zoom
-
-    // Longitude: simple linear mapping
-    const double norm_lon = (geo.longitude + 180.0) / 360.0;
-
-    // Latitude: Web Mercator projection (to match tile server)
-    const double lat_clamped = std::clamp(geo.latitude, -85.0511, 85.0511);
-    const double lat_clamped_rad = lat_clamped * M_PI / 180.0;
-
-    // Web Mercator Y: y = ln(tan(π/4 + lat/2))
-    const double merc_y = std::log(std::tan(M_PI / 4.0 + lat_clamped_rad / 2.0));
-    // Normalize to [0, 1]: y ∈ [-π, π] → [0, 1]
-    const double norm_lat = (1.0 - merc_y / M_PI) / 2.0;
-
-    // Convert to tile coordinates
-    const int32_t tile_x = static_cast<int32_t>(std::floor(norm_lon * n));
-    const int32_t tile_y = static_cast<int32_t>(std::floor(norm_lat * n));
-
-    // Clamp to valid range [0, n-1]
-    const int32_t clamped_x = std::clamp(tile_x, 0, n - 1);
-    const int32_t clamped_y = std::clamp(tile_y, 0, n - 1);
-
-    return TileCoordinates{clamped_x, clamped_y, zoom};
-}
-
-glm::vec2 CoordinateMapper::GetTileFraction(
-    const Geographic& geo,
-    const TileCoordinates& tile) noexcept {
-
-    const int32_t n = 1 << tile.zoom;  // 2^zoom
-
-    // Longitude: simple linear mapping
-    const double norm_lon = (geo.longitude + 180.0) / 360.0;
-
-    // Latitude: Web Mercator projection (to match tile server)
-    const double lat_clamped = std::clamp(geo.latitude, -85.0511, 85.0511);
-    const double lat_clamped_rad = lat_clamped * M_PI / 180.0;
-    const double merc_y = std::log(std::tan(M_PI / 4.0 + lat_clamped_rad / 2.0));
-    const double norm_lat = (1.0 - merc_y / M_PI) / 2.0;
-
-    // Calculate tile-space coordinates (continuous)
-    const double tile_lon = norm_lon * n;
-    const double tile_lat = norm_lat * n;
-
-    // Calculate fractional position within tile
-    const double frac_x = tile_lon - tile.x;
-    const double frac_y = tile_lat - tile.y;
-
-    // Clamp to [0, 1] and convert to float
-    return glm::vec2(
-        static_cast<float>(std::clamp(frac_x, 0.0, 1.0)),
-        static_cast<float>(std::clamp(frac_y, 0.0, 1.0))
-    );
+    return TileCoordinates{
+        static_cast<std::int32_t>(address->column),
+        static_cast<std::int32_t>(address->row),
+        static_cast<std::int32_t>(address->level),
+    };
 }
 
 } // namespace coordinates

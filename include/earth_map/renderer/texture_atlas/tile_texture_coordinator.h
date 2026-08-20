@@ -29,6 +29,7 @@
 #include <glm/vec4.hpp>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <shared_mutex>
 #include <cstdint>
@@ -77,6 +78,12 @@ public:
     struct TileState {
         TileStatus status = TileStatus::NotLoaded;
         int pool_layer = -1;  ///< Tile pool layer index (valid if Loaded)
+        /// Canonical physical-residency identity (valid if Loaded).
+        ///
+        /// The request map remains TileCoordinates only until the indirection
+        /// manager migrates in the next step. Physical GPU ownership must
+        /// already use this source-aware identity.
+        std::optional<imagery::ImageTileKey> imagery_key;
         std::chrono::steady_clock::time_point request_time;  ///< When tile was requested
     };
 
@@ -164,7 +171,18 @@ public:
      *
      * @return OpenGL texture ID, or 0 if not allocated
      */
-    std::uint32_t GetIndirectionTextureID(int zoom) const;
+    std::uint32_t GetIndirectionTextureID(
+        const imagery::ImageTileKey& imagery_key) const;
+
+    /**
+     * Returns the current page-table mapping for a canonical page.
+     *
+     * This is an observability/testing query. A page may remain physically
+     * resident while returning kInvalidLayer when it is outside the active
+     * page-table window.
+     */
+    std::uint16_t GetIndirectionLayer(
+        const imagery::ImageTileKey& imagery_key) const;
 
     /**
      * @brief Get indirection window offset for a zoom level
@@ -172,7 +190,17 @@ public:
      * For full-mode zooms (0-12), returns (0,0).
      * For windowed zooms (13+), returns the tile coordinate offset.
      */
-    glm::ivec2 GetIndirectionOffset(int zoom) const;
+    glm::ivec2 GetIndirectionOffset(
+        const imagery::ImageTileKey& imagery_key) const;
+
+    /**
+     * Captures the GL texture and page-table window from one page-table
+     * generation. The renderer uses this single value to build its immutable
+     * per-frame imagery snapshot.
+     */
+    std::optional<IndirectionTextureManager::PageTableBinding>
+    GetIndirectionPageTableBinding(
+        const imagery::ImageTileKey& imagery_key) const;
 
     /**
      * @brief Update indirection window center for windowed zoom levels
@@ -180,7 +208,15 @@ public:
      * Should be called when camera moves to keep the indirection window
      * centered on the visible area.
      */
-    void UpdateIndirectionWindowCenter(int zoom, int center_tile_x, int center_tile_y);
+    void UpdateIndirectionWindowCenter(const imagery::ImageTileKey& center_tile);
+
+    /**
+     * Resolves the legacy renderer request into the default provider's
+     * canonical imagery identity. This is the only coordinate-to-imagery
+     * conversion at the current icosphere renderer boundary.
+     */
+    std::optional<imagery::ImageTileKey> ResolveImageryTileKey(
+        const TileCoordinates& coords) const;
 
     /**
      * @brief Get tile pool layer index for a tile
@@ -207,6 +243,14 @@ public:
      * Performance: O(max_uploads_per_frame)
      */
     void ProcessUploads(int max_uploads_per_frame = 5);
+
+    /**
+     * Marks currently selected resident pages as recently used.
+     *
+     * Must be called from the GL/render thread because it updates the physical
+     * texture-pool LRU state. It does not create GL resources or upload data.
+     */
+    void TouchTiles(const std::vector<TileCoordinates>& tiles);
 
     /**
      * @brief Evict tiles not used recently
@@ -261,6 +305,9 @@ private:
 
     /// Worker pool for loading and decoding tiles
     std::unique_ptr<TileLoadWorkerPool> worker_pool_;
+
+    /// Provider authority for the temporary icosphere request boundary.
+    std::shared_ptr<TileLoader> loader_;
 
     /// GL upload queue (MPSC queue)
     std::shared_ptr<GLUploadQueue> upload_queue_;

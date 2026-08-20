@@ -7,6 +7,7 @@
 #include "../../include/earth_map/coordinates/coordinate_mapper.h"
 #include "../../include/earth_map/renderer/renderer.h"
 #include "../../include/earth_map/renderer/camera.h"
+#include <optional>
 #include <spdlog/spdlog.h>
 
 namespace earth_map {
