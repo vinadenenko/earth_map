@@ -255,39 +255,99 @@ void EarthMapQuickItem::keyReleaseEvent(QKeyEvent* event) {
 void EarthMapQuickItem::touchEvent(QTouchEvent* event) {
     const auto& points = event->points();
     if (points.isEmpty()) {
+        if (touch_drag_active_) {
+            earth_map::InputEvent input_event;
+            input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE;
+            input_event.button = 0;
+            input_event.timestamp = NowMillis();
+            QueueEvent(input_event);
+        }
+        touch_drag_active_ = false;
+        pinch_active_ = false;
+        pinch_distance_ = 0.0f;
         event->accept();
         return;
     }
 
-    // Only the first touch point drives the camera (single-finger drag to
-    // rotate, matching a left-mouse drag); additional simultaneous touches
-    // are ignored rather than misread as a second drag.
-    const QEventPoint& point = points.first();
+    std::array<const QEventPoint*, 2> active_points{};
+    std::size_t active_point_count = 0;
+    for (const QEventPoint& point : points) {
+        if (point.state() == QEventPoint::Released ||
+            point.state() == QEventPoint::Unknown) {
+            continue;
+        }
+        if (active_point_count < active_points.size()) {
+            active_points[active_point_count] = &point;
+        }
+        ++active_point_count;
+    }
 
-    earth_map::InputEvent input_event;
-    input_event.x = static_cast<float>(point.scenePosition().x());
-    input_event.y = static_cast<float>(point.scenePosition().y());
-    input_event.timestamp = NowMillis();
+    const auto queue_drag_event = [this](const QEventPoint& point,
+                                         earth_map::InputEvent::Type type) {
+        earth_map::InputEvent input_event;
+        input_event.type = type;
+        input_event.button = 0;  // left mouse button / globe rotation drag
+        input_event.x = static_cast<float>(point.scenePosition().x());
+        input_event.y = static_cast<float>(point.scenePosition().y());
+        input_event.timestamp = NowMillis();
+        QueueEvent(input_event);
+    };
 
-    switch (point.state()) {
-        case QEventPoint::Pressed:
-            input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS;
-            input_event.button = 0;  // matches a left-mouse drag
-            QueueEvent(input_event);
-            break;
-        case QEventPoint::Updated:
-            input_event.type = earth_map::InputEvent::Type::MOUSE_MOVE;
-            QueueEvent(input_event);
-            break;
-        case QEventPoint::Released:
-            input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE;
-            input_event.button = 0;
-            QueueEvent(input_event);
-            break;
-        case QEventPoint::Stationary:
-        case QEventPoint::Unknown:
-        default:
-            break;
+    if (active_point_count >= 2) {
+        const QPointF separation = active_points[0]->scenePosition() -
+                                   active_points[1]->scenePosition();
+        const float distance = static_cast<float>(std::hypot(separation.x(), separation.y()));
+
+        if (!pinch_active_) {
+            // A second finger must not leave the camera in drag mode while
+            // it is being pinched.
+            if (touch_drag_active_) {
+                queue_drag_event(*active_points[0],
+                                 earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE);
+                touch_drag_active_ = false;
+            }
+            pinch_active_ = true;
+            pinch_distance_ = distance;
+        } else if (distance > 0.0f && pinch_distance_ > 0.0f) {
+            // Scroll deltas are multiplicative in the camera controller, so
+            // use the logarithmic change in finger separation. This makes a
+            // 10% pinch feel the same at every absolute finger spacing.
+            constexpr float kPinchZoomSensitivity = 4.0f;
+            const float delta = std::clamp(
+                std::log(distance / pinch_distance_) * kPinchZoomSensitivity,
+                -1.0f,
+                1.0f);
+            if (delta != 0.0f) {
+                earth_map::InputEvent input_event;
+                input_event.type = earth_map::InputEvent::Type::MOUSE_SCROLL;
+                input_event.scroll_delta = delta;
+                input_event.timestamp = NowMillis();
+                QueueEvent(input_event);
+            }
+            pinch_distance_ = distance;
+        }
+    } else if (active_point_count == 1) {
+        const QEventPoint& point = *active_points[0];
+        if (pinch_active_) {
+            // Continue naturally as a one-finger drag once one finger of a
+            // pinch is lifted.
+            pinch_active_ = false;
+            pinch_distance_ = 0.0f;
+            queue_drag_event(point, earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS);
+            touch_drag_active_ = true;
+        } else if (point.state() == QEventPoint::Pressed) {
+            queue_drag_event(point, earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS);
+            touch_drag_active_ = true;
+        } else if (point.state() == QEventPoint::Updated && touch_drag_active_) {
+            queue_drag_event(point, earth_map::InputEvent::Type::MOUSE_MOVE);
+        }
+    } else {
+        if (touch_drag_active_) {
+            queue_drag_event(points.first(), earth_map::InputEvent::Type::MOUSE_BUTTON_RELEASE);
+        }
+        touch_drag_active_ = false;
+        pinch_active_ = false;
+        pinch_distance_ = 0.0f;
     }
 
     event->accept();

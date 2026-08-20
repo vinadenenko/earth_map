@@ -62,12 +62,9 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
 
-    // earth_map::InputEvent has no touch concept -- the library only knows
-    // about the abstract MOUSE_* actions (press/move/release/scroll). Touch
-    // gestures are an application/UI concern, so single-finger touch is
-    // translated into that same MOUSE_* vocabulary here (button 0, matching
-    // a left-drag) rather than adding touch-specific handling to the
-    // library.
+    // earth_map has a generic InputEvent interface rather than platform
+    // gesture handling. Single-finger touch becomes a left drag; a two-finger
+    // pinch becomes the existing scroll-based zoom input.
     void touchEvent(QTouchEvent* event) override;
 
 private slots:
@@ -90,5 +87,8 @@ private:
     QRect DeviceViewportRect() const;
 
     std::vector<earth_map::InputEvent> pending_events_;
+    bool touch_drag_active_ = false;
+    bool pinch_active_ = false;
+    float pinch_distance_ = 0.0f;
     earth_map_qt_detail::EarthMapRenderer* renderer_ = nullptr;
 };
