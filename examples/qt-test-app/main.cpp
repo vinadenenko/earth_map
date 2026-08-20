@@ -1,3 +1,4 @@
+#include <QApplication>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
@@ -24,7 +25,7 @@ int main(int argc, char *argv[])
     // before QGuiApplication is constructed.
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
 
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
 
     QQmlApplicationEngine engine;
     QObject::connect(
@@ -33,7 +34,7 @@ int main(int argc, char *argv[])
         &app,
         []() { QCoreApplication::exit(-1); },
         Qt::QueuedConnection);
-    engine.loadFromModule("qt-test-app", "Main");
+    engine.loadFromModule("EarthMapExample", "Main");
 
     return app.exec();
 }

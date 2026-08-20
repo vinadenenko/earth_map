@@ -373,6 +373,9 @@ public:
                                 std::make_move_iterator(events.end()));
     }
 
+signals:
+    void lastFrameCpuMsReady(double ms);
+
 public slots:
     void init() {
         if (earth_map_) {
@@ -464,12 +467,20 @@ public slots:
         // no notion of being embedded at an offset. Call it first, then
         // set our own offset viewport afterward so it wins; Render() only
         // reads the currently-bound GL_VIEWPORT, never sets it.
-        earth_map_->Resize(static_cast<std::uint32_t>(viewport_rect_.width()),
-                            static_cast<std::uint32_t>(viewport_rect_.height()));
+        // earth_map_->Resize(static_cast<std::uint32_t>(viewport_rect_.width()),
+        //                     static_cast<std::uint32_t>(viewport_rect_.height()));
         glViewport(viewport_rect_.x(), viewport_rect_.y(), viewport_rect_.width(),
                    viewport_rect_.height());
 
+        const auto start = std::chrono::steady_clock::now();
+
         earth_map_->Render();
+
+        const auto end = std::chrono::steady_clock::now();
+
+        const double cpuMs = std::chrono::duration<double, std::milli>(end - start).count();
+
+        emit lastFrameCpuMsReady(cpuMs);
 
         // Reset state that would otherwise bleed into the rest of the Qt
         // Quick scene graph's own (2D, depth-test-free, unscissored)
@@ -516,6 +527,7 @@ void EarthMapQuickItem::sync() {
                 &earth_map_qt_detail::EarthMapRenderer::init, Qt::DirectConnection);
         connect(window(), &QQuickWindow::beforeRenderPassRecording, renderer_,
                 &earth_map_qt_detail::EarthMapRenderer::paint, Qt::DirectConnection);
+        connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::lastFrameCpuMsReady, this, &EarthMapQuickItem::setLastFrameCpuMs);
     }
 
     renderer_->SetWindow(window());

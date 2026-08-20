@@ -45,9 +45,21 @@ class EarthMapQuickItem : public QQuickItem {
     Q_OBJECT
     QML_ELEMENT
 
+    Q_PROPERTY(double lastFrameCpuMs READ getLastFrameCpuMs WRITE setLastFrameCpuMs NOTIFY lastFrameCpuMsChanged FINAL)
+
 public:
     explicit EarthMapQuickItem(QQuickItem* parent = nullptr);
 
+    double getLastFrameCpuMs() {
+        return lastFrameCpuMs;
+    }
+
+    void setLastFrameCpuMs(double newValue) {
+        lastFrameCpuMs = newValue;
+        emit lastFrameCpuMsChanged();
+    }
+signals:
+    void lastFrameCpuMsChanged();
 public slots:
     void sync();
     void cleanup();
@@ -71,6 +83,7 @@ private slots:
     void handleWindowChanged(QQuickWindow* window);
 
 private:
+    int lastFrameCpuMs;
     friend class earth_map_qt_detail::EarthMapRenderer;
 
     void releaseResources() override;
