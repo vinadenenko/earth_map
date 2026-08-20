@@ -96,7 +96,7 @@ endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Source files
-file(GLOB_RECURSE EARTH_MAP_SOURCES 
+file(GLOB_RECURSE EARTH_MAP_SOURCES CONFIGURE_DEPENDS
     "src/*.cpp"
     "src/*.c"
 )

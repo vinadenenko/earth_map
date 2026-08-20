@@ -4,6 +4,7 @@
 #include <earth_map/core/scene_manager.h>
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/platform/library_info.h>
+#include "platform/platform_logging.h"
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 
@@ -11,6 +12,7 @@ namespace earth_map {
 
 EarthMapImpl::EarthMapImpl(const Configuration& config) 
     : config_(config) {
+    platform::ConfigurePlatformLogging();
     spdlog::info("Creating Earth Map instance v{}", LibraryInfo::GetVersion());
     
     if (!ValidateConfiguration(config)) {
