@@ -125,7 +125,14 @@ public:
      * 
      * Updates camera animations, processes input, and recalculates
      * internal matrices. Should be called once per frame.
-     * 
+     *
+     * delta_time must be the real elapsed wall-clock time since the
+     * previous call, not a fixed per-call step: movement speed and
+     * momentum decay (src/renderer/camera.cpp's UpdateMovement()) are
+     * integrated against it directly, so this is what makes camera speed
+     * and deceleration feel the same at 30fps, 60fps, or 144fps instead of
+     * scaling with frame rate.
+     *
      * @param delta_time Time since last update in seconds
      */
     virtual void Update(float delta_time) = 0;
