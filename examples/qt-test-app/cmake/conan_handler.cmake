@@ -18,11 +18,19 @@ function(handle_conan_deps)
             CMakeToolchain
     )
 
-    set(PROFILE_BUILD_ ${PROJECT_SOURCE_DIR}/conan_profiles/default-debug)
+    if (CMAKE_BUILD_TYPE STREQUAL "Release")
+        set(PROFILE_BUILD_ ${PROJECT_SOURCE_DIR}/conan_profiles/default-release)
+    else()
+        set(PROFILE_BUILD_ ${PROJECT_SOURCE_DIR}/conan_profiles/default-debug)
+    endif()
     set(PROFILE_HOST_ ${PROFILE_BUILD_})
 
     if (ANDROID)
-        set(PROFILE_HOST_ ${PROJECT_SOURCE_DIR}/conan_profiles/armv8-debug)
+        if (CMAKE_BUILD_TYPE STREQUAL "Release")
+            set(PROFILE_HOST_ ${PROJECT_SOURCE_DIR}/conan_profiles/armv8-release)
+        else()
+            set(PROFILE_HOST_ ${PROJECT_SOURCE_DIR}/conan_profiles/armv8-debug)
+        endif()
     endif()
 
     conan_cmake_install(PATH_OR_REFERENCE ${CMAKE_BINARY_DIR}
