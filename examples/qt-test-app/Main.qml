@@ -87,6 +87,20 @@ Window {
             font.pixelSize: 16
         }
 
+        // TEMPORARY, investigation only -- naive app-side measurement,
+        // independent of earth_map's own PerformanceStats above. Cross-check
+        // the two while mangohud is unavailable; remove once cross-checked.
+        Text {
+            text: "APP FPS: " + map.appFps
+            font.pixelSize: 16
+            color: "orange"
+        }
+        Text {
+            text: "APP CPU: " + map.appCpuMs.toFixed(2) + " ms"
+            font.pixelSize: 16
+            color: "orange"
+        }
+
         Repeater {
             model: map.zoneTimings
             delegate: Text {

@@ -64,6 +64,15 @@ class EarthMapQuickItem : public QQuickItem {
     Q_PROPERTY(bool hasFrameGpuMs READ hasFrameGpuMs NOTIFY performanceStatsChanged FINAL)
     Q_PROPERTY(QVariantList zoneTimings READ zoneTimings NOTIFY performanceStatsChanged FINAL)
 
+    // TEMPORARY, investigation only -- a second, independent measurement of
+    // Render()'s wall-clock CPU cost and paint() call frequency, computed
+    // entirely in this example app (EarthMapRenderer::paint()), with no
+    // relation to earth_map::PerformanceStats above. Point is to cross-check
+    // fps/frameCpuMs against a naive measurement while mangohud is
+    // unavailable. Remove appCpuMs/appFps once cross-checked.
+    Q_PROPERTY(double appCpuMs READ appCpuMs NOTIFY performanceStatsChanged FINAL)
+    Q_PROPERTY(int appFps READ appFps NOTIFY performanceStatsChanged FINAL)
+
 public:
     explicit EarthMapQuickItem(QQuickItem* parent = nullptr);
 
@@ -72,6 +81,9 @@ public:
     double frameGpuMs() const { return frame_gpu_ms_; }
     bool hasFrameGpuMs() const { return has_frame_gpu_ms_; }
     QVariantList zoneTimings() const { return zone_timings_; }
+
+    double appCpuMs() const { return app_cpu_ms_; }
+    int appFps() const { return app_fps_; }
 
 signals:
     void performanceStatsChanged();
@@ -87,6 +99,9 @@ public slots:
     // triangles (double).
     void setPerformanceStats(int fps, double frameCpuMs, double frameGpuMs, bool hasFrameGpuMs,
                              const QVariantList& zoneTimings);
+
+    // TEMPORARY, investigation only -- see appCpuMs/appFps above.
+    void setAppMeasuredStats(double cpuMs, int fps);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -112,6 +127,11 @@ private:
     double frame_gpu_ms_ = -1.0;
     bool has_frame_gpu_ms_ = false;
     QVariantList zone_timings_;
+
+    // TEMPORARY, investigation only -- see appCpuMs/appFps above.
+    double app_cpu_ms_ = 0.0;
+    int app_fps_ = 0;
+
     friend class earth_map_qt_detail::EarthMapRenderer;
 
     void releaseResources() override;

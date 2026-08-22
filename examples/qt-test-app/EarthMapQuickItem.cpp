@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <utility>
 
@@ -383,6 +384,13 @@ signals:
     void performanceStatsReady(int fps, double frameCpuMs, double frameGpuMs, bool hasFrameGpuMs,
                                QVariantList zoneTimings);
 
+    // TEMPORARY, investigation only -- naive app-side measurement wrapping
+    // Render(), independent of anything earth_map itself computes. Point is
+    // to cross-check performanceStatsReady's fps/frameCpuMs against a
+    // second, dumber measurement while mangohud is unavailable. Remove
+    // once cross-checked.
+    void appMeasuredStatsReady(double cpuMs, int fps);
+
 public slots:
     void init() {
         if (earth_map_) {
@@ -490,7 +498,22 @@ public slots:
         glViewport(viewport_rect_.x(), viewport_rect_.y(), viewport_rect_.width(),
                    viewport_rect_.height());
 
+        // TEMPORARY, investigation only -- see appMeasuredStatsReady's
+        // declaration above. Naive wall-clock wrap of Render(), completely
+        // independent of earth_map's own internal timing below.
+        const auto app_cpu_start = std::chrono::steady_clock::now();
         earth_map_->Render();
+        const auto app_cpu_end = std::chrono::steady_clock::now();
+        const double app_cpu_ms =
+            std::chrono::duration<double, std::milli>(app_cpu_end - app_cpu_start).count();
+
+        ++app_frames_this_window_;
+        if (app_cpu_end - app_fps_window_start_ >= std::chrono::seconds(1)) {
+            app_current_fps_ = static_cast<int>(app_frames_this_window_);
+            app_frames_this_window_ = 0;
+            app_fps_window_start_ = app_cpu_end;
+        }
+        emit appMeasuredStatsReady(app_cpu_ms, app_current_fps_);
 
         // earth_map::Renderer measures its own frame timing internally
         // (Renderer::EndFrame(), src/renderer/renderer.cpp) -- more
@@ -539,6 +562,12 @@ private:
     std::unique_ptr<earth_map::EarthMap> earth_map_;
     std::vector<earth_map::InputEvent> pending_events_;
     QElapsedTimer frame_timer_;
+
+    // TEMPORARY, investigation only -- see appMeasuredStatsReady's
+    // declaration above.
+    std::chrono::steady_clock::time_point app_fps_window_start_ = std::chrono::steady_clock::now();
+    std::uint32_t app_frames_this_window_ = 0;
+    int app_current_fps_ = 0;
 };
 
 // Deletes the renderer on the render thread with a current GL context --
@@ -564,6 +593,8 @@ void EarthMapQuickItem::sync() {
                 &earth_map_qt_detail::EarthMapRenderer::paint, Qt::DirectConnection);
         connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::performanceStatsReady, this,
                 &EarthMapQuickItem::setPerformanceStats);
+        connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::appMeasuredStatsReady, this,
+                &EarthMapQuickItem::setAppMeasuredStats);
     }
 
     renderer_->SetWindow(window());
@@ -579,6 +610,13 @@ void EarthMapQuickItem::setPerformanceStats(int fps, double frameCpuMs, double f
     frame_gpu_ms_ = frameGpuMs;
     has_frame_gpu_ms_ = hasFrameGpuMs;
     zone_timings_ = zoneTimings;
+    emit performanceStatsChanged();
+}
+
+// TEMPORARY, investigation only -- see EarthMapRenderer::appMeasuredStatsReady.
+void EarthMapQuickItem::setAppMeasuredStats(double cpuMs, int fps) {
+    app_cpu_ms_ = cpuMs;
+    app_fps_ = fps;
     emit performanceStatsChanged();
 }
 
