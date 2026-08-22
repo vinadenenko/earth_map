@@ -9,6 +9,11 @@
 
 #include <earth_map/renderer/camera.h>  // earth_map::InputEvent
 
+// Original qt example uses QOpenGLFunctions.
+// We don't, because EarthMap lib has ~380 kinds of gl calls
+// Main reason: there will be no benefit of using this since
+// Nothing about a GL context cares who resolved its function pointers
+
 // Forward-declared so EarthMapQuickItem can grant it friendship below.
 // Defined in EarthMapQuickItem.cpp.
 namespace earth_map_qt_detail {

@@ -19,10 +19,10 @@ int main(int argc, char *argv[])
     // qputenv("QT_XCB_GL_INTEGRATION", "xcb_glx");
 #endif
 
-    // EarthMapItem embeds earth_map via QQuickFramebufferObject, which only
-    // composites when the Qt Quick scene graph runs on the OpenGL backend
-    // (earth_map itself issues raw GL calls loaded by GLEW). Must be set
-    // before QGuiApplication is constructed.
+    // EarthMapQuickItem draws straight into the window via raw GL calls
+    // interleaved into Qt Quick's own command stream (the "OpenGL Under
+    // QML" pattern, not QQuickFramebufferObject), which only works when
+    // the scene graph runs on the OpenGL backend.
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
 
     QApplication app(argc, argv);

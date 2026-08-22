@@ -360,7 +360,15 @@ int main() {
         glfwSetCursorPosCallback(window, cursor_position_callback);
         glfwSetScrollCallback(window, scroll_callback);
         
-        // Initialize GLEW
+        // Initialize GLEW. glewExperimental is required here: this window
+        // was created with GLFW_OPENGL_CORE_PROFILE above, and GLEW's
+        // classic extension-string query (glGetString(GL_EXTENSIONS)) is
+        // invalid on core-profile contexts -- glewExperimental switches it
+        // to the glGetStringi-based query instead. See
+        // earth_map::Renderer::Initialize()'s documented precondition
+        // (renderer.h) for why this is this host's responsibility, not
+        // earth_map's.
+        glewExperimental = GL_TRUE;
         if (glewInit() != GLEW_OK) {
             std::cerr << "Failed to initialize GLEW\n";
             glfwDestroyWindow(window);

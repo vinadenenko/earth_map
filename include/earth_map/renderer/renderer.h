@@ -51,9 +51,28 @@ public:
     
     /**
      * @brief Initialize the renderer
-     * 
+     *
      * Sets up OpenGL state, loads shaders, and creates resources
-     * 
+     *
+     * Precondition: a valid OpenGL context must already be current on the
+     * calling thread, with its function pointers already resolved (e.g.
+     * via glewInit() on desktop; GLES entry points are directly linked on
+     * Android, nothing to resolve). This library does not load GL function
+     * pointers itself -- that is the host application's responsibility,
+     * since it's the host that created the context, and only the host
+     * knows how: this library cannot know, and must not guess, whether
+     * that context is core or compatibility profile, desktop GL or GLES,
+     * or which windowing system (GLX/EGL/WGL) underlies it.
+     *
+     * Concretely, on desktop with GLEW: if the host's context is a core
+     * profile (as both basic_example.cpp's GLFW window and qt-test-app's
+     * Qt Quick RHI window are), the host must set glewExperimental = GL_TRUE
+     * before calling glewInit() -- GLEW's classic extension-string query
+     * (glGetString(GL_EXTENSIONS)) is invalid on core-profile contexts and
+     * silently produces wrong/incomplete results without it. This has
+     * already been missed once by one of this repository's own two example
+     * hosts; if you are adding a third host, do not skip it.
+     *
      * @return true if initialization succeeded, false otherwise
      */
     virtual bool Initialize() = 0;

@@ -19,6 +19,7 @@
 #include <QMouseEvent>
 #include <QRunnable>
 #include <QSaveFile>
+#include <QSGRendererInterface>
 #include <QStandardPaths>
 #include <QTouchEvent>
 #include <QVariant>
@@ -387,6 +388,17 @@ public slots:
         if (earth_map_) {
             return;
         }
+
+        // This item does all its rendering via raw GL calls interleaved
+        // into Qt Quick's own command stream (beginExternalCommands()/
+        // endExternalCommands() in paint()) -- only valid when the scene
+        // graph is actually using the OpenGL RHI backend. main.cpp pins
+        // this via QQuickWindow::setGraphicsApi(QSGRendererInterface::
+        // OpenGL) before any window is created, so this should never fire;
+        // it exists so a future change to that call fails loudly here
+        // instead of corrupting GL state silently. Matches Qt's own
+        // "OpenGL Under QML" example (squircle.cpp's SquircleRenderer::init()).
+        Q_ASSERT(window_->rendererInterface()->graphicsApi() == QSGRendererInterface::OpenGL);
 
 #ifndef __ANDROID__
         // GLEW's default extension query (glGetString(GL_EXTENSIONS)) is

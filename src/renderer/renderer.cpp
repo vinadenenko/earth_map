@@ -142,14 +142,15 @@ public:
         spdlog::info("Initializing renderer");
         
         try {
-#ifndef __ANDROID__
-            // GLEW loads desktop-GL entry points at runtime; GLES entry
-            // points are directly linked on Android, no loader needed.
-            if (glewInit() != GLEW_OK) {
-                spdlog::error("Failed to initialize GLEW");
-                return false;
-            }
-#endif
+            // No glewInit() here: this is the caller's responsibility, not
+            // this library's -- see Initialize()'s precondition in
+            // renderer.h. Both current hosts (basic_example.cpp, and
+            // qt-test-app's EarthMapRenderer::init()) already call it
+            // themselves, against whatever context they created, before
+            // reaching this point. Calling it a second time here added
+            // nothing (GLEW just re-populates the same global function
+            // pointers) and obscured that GL-context/function-pointer
+            // readiness is the host's job, not this library's.
 
             // Check OpenGL version
             const GLubyte* version = glGetString(GL_VERSION);
