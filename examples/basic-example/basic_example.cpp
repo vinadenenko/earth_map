@@ -381,7 +381,6 @@ int main() {
         earth_map::Configuration config;
         config.screen_width = window_width;
         config.screen_height = window_height;
-        config.enable_performance_monitoring = true;
 
         // Example usage of custom XYZ tile provider
         auto googleProvider = std::make_shared<earth_map::BasicXYZTileProvider>(

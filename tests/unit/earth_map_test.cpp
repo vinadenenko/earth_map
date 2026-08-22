@@ -8,7 +8,6 @@ protected:
     void SetUp() override {
         config_.screen_width = 800;
         config_.screen_height = 600;
-        config_.enable_performance_monitoring = true;
     }
     
     void TearDown() override {

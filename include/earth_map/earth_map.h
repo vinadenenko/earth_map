@@ -55,9 +55,6 @@ struct Configuration {
 
     /** HTTP and TLS settings for imagery tile downloads. */
     TileLoaderConfig tile_loader_config;
-    
-    /** Enable performance monitoring */
-    bool enable_performance_monitoring = true;
 
     /** Tile provider for loading tiles */
     std::shared_ptr<TileProvider> tile_provider;
