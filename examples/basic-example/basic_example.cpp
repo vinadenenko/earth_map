@@ -414,16 +414,6 @@ int main() {
         
         std::cout << "Earth Map initialized successfully\n";
 
-        // Debug: Check renderer state
-        auto renderer = earth_map_instance->GetRenderer();
-        if (renderer) {
-            auto stats = renderer->GetStats();
-            std::cout << "Renderer Stats:\n";
-            std::cout << "  Draw calls: " << stats.draw_calls << "\n";
-            std::cout << "  Triangles: " << stats.triangles_rendered << "\n";
-            std::cout << "  Vertices: " << stats.vertices_processed << "\n";
-        }
-
         // Debug: Check OpenGL state
         GLint viewport[4];
         glGetIntegerv(GL_VIEWPORT, viewport);
@@ -548,6 +538,24 @@ int main() {
                     std::cout << "║ Heading: " << static_cast<int>(orient.x) << "°  |  Pitch: " << static_cast<int>(orient.y) << "°  |  Roll: " << static_cast<int>(orient.z) << "°                                   ║\n";
                     std::cout << "║ Mode: " << (mode == earth_map::CameraController::MovementMode::FREE ? "FREE (WASD enabled)" : "ORBIT (WASD disabled)") << "                                                    ║\n";
                     std::cout << "╚═══════════════════════════════════════════════════════════════════════════════════╝\n";
+
+                    // earth_map's own internal frame timing (fps/cpu are
+                    // always live; gpu/zones are only populated when the
+                    // library was built with
+                    // EARTH_MAP_ENABLE_PERFORMANCE_MONITORING -- see
+                    // include/earth_map/renderer/performance_stats.h).
+                    if (auto* renderer = earth_map_instance->GetRenderer()) {
+                        const earth_map::PerformanceStats stats = renderer->GetStats();
+                        std::cout << "  [perf] fps=" << stats.fps
+                                  << " cpu=" << std::fixed << std::setprecision(2) << stats.frame_cpu_ms << "ms"
+                                  << " gpu=" << (stats.frame_gpu_ms ? std::to_string(*stats.frame_gpu_ms) + "ms" : "n/a")
+                                  << "\n";
+                        for (const auto& zone : stats.zones) {
+                            std::cout << "    " << zone.name << ": " << zone.cpu_ms << "ms cpu / "
+                                      << (zone.gpu_ms ? std::to_string(*zone.gpu_ms) + "ms" : "n/a") << " gpu"
+                                      << " (" << zone.draw_calls << " draws)\n";
+                        }
+                    }
                     std::cout << std::flush;
                 }
                 frame_count = 0;

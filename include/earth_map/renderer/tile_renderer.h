@@ -9,6 +9,7 @@
  */
 
 #include <earth_map/math/tile_mathematics.h>
+#include <earth_map/renderer/performance_stats.h>
 #include <glm/glm.hpp>
 #include <memory>
 #include <vector>
@@ -40,9 +41,6 @@ struct TileRenderStats {
     
     /** Average LOD level of visible tiles */
     float average_lod = 0.0f;
-    
-    /** Tile rendering time in milliseconds */
-    float render_time_ms = 0.0f;
 };
 
 /**
@@ -144,7 +142,18 @@ public:
      * @return TileRenderStats Current tile rendering statistics
      */
     virtual TileRenderStats GetStats() const = 0;
-    
+
+    /**
+     * @brief Get this tile renderer's per-zone CPU/GPU timing breakdown
+     * for the last frame (e.g. "tile.cull", "tile.upload", "tile.draw").
+     * Renderer::GetStats() merges this into its own PerformanceStats.zones
+     * -- see earth_map/renderer/performance_stats.h. Empty when the
+     * library was built without EARTH_MAP_ENABLE_PERFORMANCE_MONITORING.
+     *
+     * @return std::vector<FrameZoneTiming> This subsystem's zones
+     */
+    virtual std::vector<FrameZoneTiming> GetZoneTimings() const = 0;
+
     /**
      * @brief Get current rendering configuration
      * 

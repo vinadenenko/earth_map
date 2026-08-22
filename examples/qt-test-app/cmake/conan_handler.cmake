@@ -10,9 +10,9 @@ function(handle_conan_deps)
 
     conan_cmake_configure(
         REQUIRES
-        earth_map/0.1.0@utils/stable
+        earth_map/0.1.0
         OPTIONS
-            # protobuf/*:fPIC=True
+            earth_map/*:enable_performance_monitoring=True
         GENERATORS
             CMakeDeps
             CMakeToolchain

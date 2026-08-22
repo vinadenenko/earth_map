@@ -20,14 +20,14 @@ class EarthMapConan(ConanFile):
         "fPIC": [True, False],
         "with_tests": [True, False],
         "with_examples": [True, False],
-        "enable_opengl_debug": [True, False]
+        "enable_performance_monitoring": [True, False]
     }
     default_options = {
         "shared": False,
         "fPIC": True,
         "with_tests": False,
         "with_examples": False,
-        "enable_opengl_debug": False
+        "enable_performance_monitoring": False
     }
 
     # Export sources for conan center
@@ -100,10 +100,6 @@ class EarthMapConan(ConanFile):
             self.requires("gtest/1.14.0")
             self.requires("benchmark/1.8.3")
 
-        # Profiling and debugging (when enabled)
-        if self.options.enable_opengl_debug:
-            self.requires("tracy/0.10.0")
-
     def build_requirements(self):
         """Build-time requirements"""
         self.tool_requires("cmake/[>=3.20]")
@@ -116,7 +112,7 @@ class EarthMapConan(ConanFile):
         tc = CMakeToolchain(self)
         tc.variables["EARTH_MAP_BUILD_TESTS"] = self.options.with_tests
         tc.variables["EARTH_MAP_BUILD_EXAMPLES"] = self.options.with_examples
-        tc.variables["EARTH_MAP_ENABLE_OPENGL_DEBUG"] = self.options.enable_opengl_debug
+        tc.variables["EARTH_MAP_ENABLE_PERFORMANCE_MONITORING"] = self.options.enable_performance_monitoring
         tc.generate()
 
     def build(self):
@@ -169,5 +165,3 @@ class EarthMapConan(ConanFile):
         if self.settings.build_type == "Debug":
             self.cpp_info.defines.append("EARTH_MAP_DEBUG")
 
-        if self.options.enable_opengl_debug:
-            self.cpp_info.defines.append("EARTH_MAP_OPENGL_DEBUG")

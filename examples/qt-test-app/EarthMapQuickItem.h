@@ -3,6 +3,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QQmlEngine>
+#include <QVariant>
 
 #include <vector>
 
@@ -45,24 +46,42 @@ class EarthMapQuickItem : public QQuickItem {
     Q_OBJECT
     QML_ELEMENT
 
-    Q_PROPERTY(double lastFrameCpuMs READ getLastFrameCpuMs WRITE setLastFrameCpuMs NOTIFY lastFrameCpuMsChanged FINAL)
+    // Mirrors earth_map::PerformanceStats (see
+    // include/earth_map/renderer/performance_stats.h), translated into
+    // QML-friendly types. frameGpuMs/zoneTimings' "gpuMs" entries are only
+    // meaningful when their "hasGpuMs"/hasFrameGpuMs companion is true --
+    // GPU timing is unavailable when the library was built without
+    // EARTH_MAP_ENABLE_PERFORMANCE_MONITORING, or before the first frame's
+    // GPU query result has landed.
+    Q_PROPERTY(int fps READ fps NOTIFY performanceStatsChanged FINAL)
+    Q_PROPERTY(double frameCpuMs READ frameCpuMs NOTIFY performanceStatsChanged FINAL)
+    Q_PROPERTY(double frameGpuMs READ frameGpuMs NOTIFY performanceStatsChanged FINAL)
+    Q_PROPERTY(bool hasFrameGpuMs READ hasFrameGpuMs NOTIFY performanceStatsChanged FINAL)
+    Q_PROPERTY(QVariantList zoneTimings READ zoneTimings NOTIFY performanceStatsChanged FINAL)
 
 public:
     explicit EarthMapQuickItem(QQuickItem* parent = nullptr);
 
-    double getLastFrameCpuMs() {
-        return lastFrameCpuMs;
-    }
+    int fps() const { return fps_; }
+    double frameCpuMs() const { return frame_cpu_ms_; }
+    double frameGpuMs() const { return frame_gpu_ms_; }
+    bool hasFrameGpuMs() const { return has_frame_gpu_ms_; }
+    QVariantList zoneTimings() const { return zone_timings_; }
 
-    void setLastFrameCpuMs(double newValue) {
-        lastFrameCpuMs = newValue;
-        emit lastFrameCpuMsChanged();
-    }
 signals:
-    void lastFrameCpuMsChanged();
+    void performanceStatsChanged();
 public slots:
     void sync();
     void cleanup();
+
+    // Invoked (queued, cross-thread) from
+    // earth_map_qt_detail::EarthMapRenderer::performanceStatsReady, emitted
+    // from paint() on the render thread. zoneTimings entries are
+    // QVariantMaps with keys: name (string), cpuMs (double), gpuMs
+    // (double, valid only if hasGpuMs), hasGpuMs (bool), drawCalls (int),
+    // triangles (double).
+    void setPerformanceStats(int fps, double frameCpuMs, double frameGpuMs, bool hasFrameGpuMs,
+                             const QVariantList& zoneTimings);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -83,7 +102,11 @@ private slots:
     void handleWindowChanged(QQuickWindow* window);
 
 private:
-    int lastFrameCpuMs;
+    int fps_ = 0;
+    double frame_cpu_ms_ = 0.0;
+    double frame_gpu_ms_ = -1.0;
+    bool has_frame_gpu_ms_ = false;
+    QVariantList zone_timings_;
     friend class earth_map_qt_detail::EarthMapRenderer;
 
     void releaseResources() override;

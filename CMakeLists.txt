@@ -13,7 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Build options
 option(EARTH_MAP_BUILD_TESTS "Build unit tests" ON)
 option(EARTH_MAP_BUILD_EXAMPLES "Build example applications" ON)
-option(EARTH_MAP_ENABLE_OPENGL_DEBUG "Enable OpenGL debug output" OFF)
+option(EARTH_MAP_ENABLE_PERFORMANCE_MONITORING "Enable CPU/GPU per-frame performance instrumentation (Renderer::GetStats()'s PerformanceStats.zones)" OFF)
 option(EARTH_MAP_BUILD_DOCS "Generate documentation" OFF)
 option(EARTH_MAP_INSTALL "Generate install target" ON)
 
@@ -54,9 +54,14 @@ endif()
 # Debug/Release configurations
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_definitions(EARTH_MAP_DEBUG)
-    if(EARTH_MAP_ENABLE_OPENGL_DEBUG)
-        add_compile_definitions(EARTH_MAP_OPENGL_DEBUG)
-    endif()
+endif()
+
+# Deliberately independent of CMAKE_BUILD_TYPE: profiling a Release build
+# gives realistic numbers, profiling only Debug builds would not, and the
+# point of this instrumentation is diagnosing real device performance (e.g.
+# Android frame-time spikes).
+if(EARTH_MAP_ENABLE_PERFORMANCE_MONITORING)
+    add_compile_definitions(EARTH_MAP_ENABLE_PERFORMANCE_MONITORING)
 endif()
 
 # Find required packages

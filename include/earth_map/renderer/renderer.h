@@ -10,6 +10,7 @@
 
 #include "earth_map/math/bounding_box.h"
 #include "earth_map/core/camera_controller.h"
+#include <earth_map/renderer/performance_stats.h>
 #include <glm/glm.hpp>
 #include <memory>
 #include <string>
@@ -26,35 +27,6 @@ class PlacemarkRenderer;
 class LODManager;
 class GPUResourceManager;
 class ElevationManager;
-
-/**
- * @brief Rendering statistics for performance monitoring
- */
-struct RenderStats {
-    /** Number of frames rendered in the last second */
-    std::uint32_t frames_per_second = 0;
-    
-    /** Time taken to render the last frame in milliseconds */
-    double frame_time_ms = 0.0;
-    
-    /** Number of draw calls in the last frame */
-    std::uint32_t draw_calls = 0;
-    
-    /** Number of triangles rendered in the last frame */
-    std::uint32_t triangles_rendered = 0;
-    
-    /** Number of vertices processed in the last frame */
-    std::uint32_t vertices_processed = 0;
-    
-    /** GPU memory usage in MB */
-    std::size_t gpu_memory_mb = 0;
-    
-    /** Number of tiles currently in memory */
-    std::size_t tiles_loaded = 0;
-    
-    /** Number of placemarks currently rendered */
-    std::size_t placemarks_rendered = 0;
-};
 
 /**
  * @brief Main renderer interface
@@ -128,11 +100,22 @@ public:
     virtual void Resize(std::uint32_t width, std::uint32_t height) = 0;
     
     /**
-     * @brief Get rendering statistics
-     * 
-     * @return RenderStats Current performance statistics
+     * @brief Get per-frame performance statistics: fps, CPU/GPU frame
+     * time, and a per-subsystem timing breakdown (see
+     * earth_map/renderer/performance_stats.h). Populated only when the
+     * library was built with EARTH_MAP_ENABLE_PERFORMANCE_MONITORING;
+     * otherwise always default-constructed (zeroed, no zones), at no
+     * runtime cost.
+     *
+     * Not synchronized: this reflects the most recent Render()/EndFrame()
+     * call with no locking, so call it from the same thread that calls
+     * Render() (e.g. immediately after it, as basic_example and the
+     * qt-test-app example both do). Reading it from a different thread
+     * while Render() may be running concurrently is a data race.
+     *
+     * @return PerformanceStats Current performance statistics
      */
-    virtual RenderStats GetStats() const = 0;
+    virtual PerformanceStats GetStats() const = 0;
     
     /**
      * @brief Get the shader manager

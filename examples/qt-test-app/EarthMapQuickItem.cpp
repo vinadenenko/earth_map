@@ -21,10 +21,12 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QTouchEvent>
+#include <QVariant>
 #include <QWheelEvent>
 
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/earth_map.h>
+#include <earth_map/renderer/renderer.h>
 
 #include <algorithm>
 #include <array>
@@ -374,7 +376,11 @@ public:
     }
 
 signals:
-    void lastFrameCpuMsReady(double ms);
+    // Mirrors earth_map::PerformanceStats (see EarthMapQuickItem.h's
+    // Q_PROPERTYs), pre-converted to QML-friendly types here on the render
+    // thread since PerformanceStats/FrameZoneTiming are not QVariant-aware.
+    void performanceStatsReady(int fps, double frameCpuMs, double frameGpuMs, bool hasFrameGpuMs,
+                               QVariantList zoneTimings);
 
 public slots:
     void init() {
@@ -472,15 +478,32 @@ public slots:
         glViewport(viewport_rect_.x(), viewport_rect_.y(), viewport_rect_.width(),
                    viewport_rect_.height());
 
-        const auto start = std::chrono::steady_clock::now();
-
         earth_map_->Render();
 
-        const auto end = std::chrono::steady_clock::now();
+        // earth_map::Renderer measures its own frame timing internally
+        // (Renderer::EndFrame(), src/renderer/renderer.cpp) -- more
+        // accurate than timing Render() from out here, and it's the only
+        // source for fps/GPU ms/per-zone breakdown. fps/frame_cpu_ms are
+        // always live; frame_gpu_ms and zones are only populated when
+        // earth_map was built with EARTH_MAP_ENABLE_PERFORMANCE_MONITORING.
+        const earth_map::PerformanceStats stats = earth_map_->GetRenderer()->GetStats();
 
-        const double cpuMs = std::chrono::duration<double, std::milli>(end - start).count();
+        QVariantList zone_timings;
+        zone_timings.reserve(static_cast<int>(stats.zones.size()));
+        for (const auto& zone : stats.zones) {
+            QVariantMap zone_entry;
+            zone_entry["name"] = QString::fromStdString(zone.name);
+            zone_entry["cpuMs"] = zone.cpu_ms;
+            zone_entry["gpuMs"] = zone.gpu_ms ? *zone.gpu_ms : -1.0;
+            zone_entry["hasGpuMs"] = zone.gpu_ms.has_value();
+            zone_entry["drawCalls"] = static_cast<int>(zone.draw_calls);
+            zone_entry["triangles"] = static_cast<double>(zone.triangles);
+            zone_timings.append(zone_entry);
+        }
 
-        emit lastFrameCpuMsReady(cpuMs);
+        emit performanceStatsReady(static_cast<int>(stats.fps), stats.frame_cpu_ms,
+                                    stats.frame_gpu_ms ? *stats.frame_gpu_ms : -1.0,
+                                    stats.frame_gpu_ms.has_value(), zone_timings);
 
         // Reset state that would otherwise bleed into the rest of the Qt
         // Quick scene graph's own (2D, depth-test-free, unscissored)
@@ -527,13 +550,24 @@ void EarthMapQuickItem::sync() {
                 &earth_map_qt_detail::EarthMapRenderer::init, Qt::DirectConnection);
         connect(window(), &QQuickWindow::beforeRenderPassRecording, renderer_,
                 &earth_map_qt_detail::EarthMapRenderer::paint, Qt::DirectConnection);
-        connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::lastFrameCpuMsReady, this, &EarthMapQuickItem::setLastFrameCpuMs);
+        connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::performanceStatsReady, this,
+                &EarthMapQuickItem::setPerformanceStats);
     }
 
     renderer_->SetWindow(window());
     renderer_->SetViewportRect(DeviceViewportRect());
     renderer_->SetVisible(isVisible());
     renderer_->AppendPendingEvents(TakePendingEvents());
+}
+
+void EarthMapQuickItem::setPerformanceStats(int fps, double frameCpuMs, double frameGpuMs,
+                                            bool hasFrameGpuMs, const QVariantList& zoneTimings) {
+    fps_ = fps;
+    frame_cpu_ms_ = frameCpuMs;
+    frame_gpu_ms_ = frameGpuMs;
+    has_frame_gpu_ms_ = hasFrameGpuMs;
+    zone_timings_ = zoneTimings;
+    emit performanceStatsChanged();
 }
 
 void EarthMapQuickItem::cleanup() {

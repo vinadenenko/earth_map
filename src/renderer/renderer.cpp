@@ -19,6 +19,9 @@
 #include <stdexcept>
 #include <vector>
 #include <array>
+#include <chrono>
+
+#include "frame_zone_timing_collector.h"
 
 namespace earth_map {
 
@@ -402,18 +405,52 @@ public:
     }
     
     void EndFrame() override {
-        // Update stats (simplified)
-        stats_.draw_calls = 1;
-        if (globe_mesh_) {
-            stats_.triangles_rendered = globe_mesh_->GetVertexIndices().size() / 3;
-            stats_.vertices_processed = globe_mesh_->GetVertices().size();
+#ifdef EARTH_MAP_ENABLE_PERFORMANCE_MONITORING
+        const auto now = std::chrono::steady_clock::now();
+        stats_.frame_cpu_ms = std::chrono::duration<double, std::milli>(now - frame_start_).count();
+#endif  // EARTH_MAP_ENABLE_PERFORMANCE_MONITORING
+
+        stats_.zones = zone_collector_.EndFrame();
+        if (tile_renderer_) {
+            auto tile_zones = tile_renderer_->GetZoneTimings();
+            stats_.zones.insert(stats_.zones.end(), std::make_move_iterator(tile_zones.begin()),
+                                 std::make_move_iterator(tile_zones.end()));
         }
+
+        // Frame GPU time is the sum of whichever zones actually reported a
+        // result this frame -- some may be std::nullopt (unsupported on
+        // this device, or the async query just isn't ready yet). Left as
+        // nullopt if none did, rather than silently reporting 0.
+        double gpu_total_ms = 0.0;
+        bool have_any_gpu_result = false;
+        for (const auto& zone : stats_.zones) {
+            if (zone.gpu_ms) {
+                gpu_total_ms += *zone.gpu_ms;
+                have_any_gpu_result = true;
+            }
+        }
+        stats_.frame_gpu_ms = have_any_gpu_result ? std::optional<double>(gpu_total_ms) : std::nullopt;
+
+#ifdef EARTH_MAP_ENABLE_PERFORMANCE_MONITORING
+        ++frames_this_window_;
+        if (now - fps_window_start_ >= std::chrono::seconds(1)) {
+            current_fps_ = frames_this_window_;
+            frames_this_window_ = 0;
+            fps_window_start_ = now;
+        }
+        stats_.fps = current_fps_;
+#endif  // EARTH_MAP_ENABLE_PERFORMANCE_MONITORING
     }
     
     void Render() override {
         if (!initialized_) {
             return;
         }
+
+#ifdef EARTH_MAP_ENABLE_PERFORMANCE_MONITORING
+        frame_start_ = std::chrono::steady_clock::now();
+#endif  // EARTH_MAP_ENABLE_PERFORMANCE_MONITORING
+        zone_collector_.BeginFrame();
 
         spdlog::debug("Renderer::Render() - BeginFrame");
         BeginFrame();
@@ -439,6 +476,7 @@ public:
 
         // Render mini-map overlay
         if (mini_map_enabled_ && mini_map_renderer_ && camera_controller_) {
+            EARTH_MAP_ZONE_SCOPE(zone_collector_, minimap_zone, "minimap.draw");
             mini_map_renderer_->Render(static_cast<float>(config_.screen_width) / config_.screen_height); // Render mini-map to texture
             mini_map_renderer_->Update(camera_controller_, config_.screen_width, config_.screen_height);
             RenderMiniMapOverlay();
@@ -456,7 +494,7 @@ public:
         spdlog::debug("Renderer resized to {}x{}", width, height);
     }
     
-    RenderStats GetStats() const override {
+    PerformanceStats GetStats() const override {
         return stats_;
     }
     
@@ -598,8 +636,19 @@ public:
 private:
     Configuration config_;
     bool initialized_ = false;
-    RenderStats stats_;
-    
+    PerformanceStats stats_;
+    FrameZoneTimingCollector zone_collector_;
+
+#ifdef EARTH_MAP_ENABLE_PERFORMANCE_MONITORING
+    std::chrono::steady_clock::time_point frame_start_;
+
+    // Rolling one-second FPS window rather than an instantaneous
+    // 1000/frame_ms, so the reported number isn't jittery frame to frame.
+    std::chrono::steady_clock::time_point fps_window_start_ = std::chrono::steady_clock::now();
+    std::uint32_t frames_this_window_ = 0;
+    std::uint32_t current_fps_ = 0;
+#endif  // EARTH_MAP_ENABLE_PERFORMANCE_MONITORING
+
     // OpenGL objects
     std::uint32_t shader_program_ = 0;
     std::uint32_t minimap_shader_program_ = 0;

@@ -30,6 +30,8 @@
 #include <cstddef>
 #include <optional>
 
+#include "frame_zone_timing_collector.h"
+
 namespace earth_map {
 
 namespace {
@@ -153,13 +155,15 @@ public:
             return;
         }
 
+        zone_collector_.BeginFrame();
+
         frame_counter_++;
-        stats_.render_time_ms = 0.0f;
         stats_.rendered_tiles = 0;
         stats_.texture_binds = 0;
 
         // Process GL uploads from worker threads (must be on GL thread)
         if (texture_coordinator_) {
+            EARTH_MAP_ZONE_SCOPE(zone_collector_, upload_zone, "tile.upload");
             texture_coordinator_->ProcessUploads();
         }
 
@@ -183,6 +187,8 @@ public:
         } else {
             stats_.average_lod = 0.0f;
         }
+
+        last_zone_timings_ = zone_collector_.EndFrame();
     }
 
     void SetTextureCoordinator(TileTextureCoordinator* coordinator) override {
@@ -210,6 +216,8 @@ public:
         if (!initialized_) {
             return;
         }
+
+        EARTH_MAP_ZONE_SCOPE(zone_collector_, cull_zone, "tile.cull");
 
         // Clear previous visible tiles
         visible_tiles_.clear();
@@ -368,6 +376,8 @@ public:
             return;
         }
 
+        EARTH_MAP_ZONE_SCOPE(zone_collector_, draw_zone, "tile.draw");
+
         // CRITICAL: Must have globe mesh to render on
         if (!globe_mesh_) {
             spdlog::warn("Tile renderer: no globe mesh set, cannot render tiles");
@@ -474,6 +484,7 @@ public:
         glBindVertexArray(globe_vao_);
         glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
+        draw_zone.AddDrawCall(globe_indices_.size() / 3);
 
         // Restore previous OpenGL state
         if (!depth_test_enabled) {
@@ -489,6 +500,10 @@ public:
 
     TileRenderStats GetStats() const override {
         return stats_;
+    }
+
+    std::vector<FrameZoneTiming> GetZoneTimings() const override {
+        return last_zone_timings_;
     }
 
     TileRenderConfig GetConfig() const override {
@@ -569,6 +584,8 @@ private:
     std::vector<TileRenderState> visible_tiles_;
     ImageryRenderSnapshot imagery_snapshot_;
     TileRenderStats stats_;
+    FrameZoneTimingCollector zone_collector_;
+    std::vector<FrameZoneTiming> last_zone_timings_;
 
     std::vector<TileCoordinates> last_visible_tiles_;
 
