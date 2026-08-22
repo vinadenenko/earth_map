@@ -81,6 +81,14 @@ int ToEarthMapButton(Qt::MouseButton button) {
 // HandleMouseScroll) expects ~1.0 per notch, matching GLFW's yoffset.
 constexpr float kQtWheelUnitsPerNotch = 120.0f;
 
+// Touch has no OS-level double-tap detection the way
+// QQuickItem::mouseDoubleClickEvent() gets for real mouse clicks (Qt
+// doesn't synthesize one for a QQuickItem that handles raw touch itself);
+// it must be detected manually here, same idea as basic_example.cpp's own
+// click-timer (its DOUBLE_CLICK_THRESHOLD is the same 300 ms).
+constexpr std::uint64_t kDoubleTapThresholdMs = 300;
+constexpr float kDoubleTapMaxDistancePx = 40.0f;
+
 uint64_t NowMillis() {
     return static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch());
 }
@@ -340,6 +348,27 @@ void EarthMapQuickItem::touchEvent(QTouchEvent* event) {
             queue_drag_event(point, earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS);
             touch_drag_active_ = true;
         } else if (point.state() == QEventPoint::Pressed) {
+            const std::uint64_t now = NowMillis();
+            const QPointF position = point.scenePosition();
+            const float distance_from_last_tap = std::hypot(
+                static_cast<float>(position.x() - last_tap_position_.x()),
+                static_cast<float>(position.y() - last_tap_position_.y()));
+            if (has_last_tap_ && (now - last_tap_time_ms_) <= kDoubleTapThresholdMs &&
+                distance_from_last_tap <= kDoubleTapMaxDistancePx) {
+                earth_map::InputEvent double_tap_event;
+                double_tap_event.type = earth_map::InputEvent::Type::DOUBLE_CLICK;
+                double_tap_event.button = 0;
+                double_tap_event.x = static_cast<float>(position.x());
+                double_tap_event.y = static_cast<float>(position.y());
+                double_tap_event.timestamp = now;
+                QueueEvent(double_tap_event);
+                has_last_tap_ = false;  // consumed; a third rapid tap starts fresh
+            } else {
+                has_last_tap_ = true;
+                last_tap_time_ms_ = now;
+                last_tap_position_ = position;
+            }
+
             queue_drag_event(point, earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS);
             touch_drag_active_ = true;
         } else if (point.state() == QEventPoint::Updated && touch_drag_active_) {

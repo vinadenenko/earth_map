@@ -5,6 +5,7 @@
 #include <QQmlEngine>
 #include <QVariant>
 
+#include <cstdint>
 #include <vector>
 
 #include <earth_map/renderer/camera.h>  // earth_map::InputEvent
@@ -151,5 +152,11 @@ private:
     bool touch_drag_active_ = false;
     bool pinch_active_ = false;
     float pinch_distance_ = 0.0f;
+
+    // Manual double-tap detection -- see kDoubleTapThresholdMs/
+    // kDoubleTapMaxDistancePx in EarthMapQuickItem.cpp.
+    bool has_last_tap_ = false;
+    std::uint64_t last_tap_time_ms_ = 0;
+    QPointF last_tap_position_;
     earth_map_qt_detail::EarthMapRenderer* renderer_ = nullptr;
 };
