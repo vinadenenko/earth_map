@@ -10,6 +10,7 @@
 
 #include "projection.h"
 #include "bounding_box.h"
+#include <earth_map/constants.h>
 #include <glm/glm.hpp>
 #include <cstdint>
 #include <vector>
@@ -107,8 +108,8 @@ struct TileCoordinates {
         // Simple implementation - convert tile coordinates to geographic center
         double n = std::pow(2.0, zoom);
         double lon = (x + 0.5) / n * 360.0 - 180.0;
-        double lat_rad = std::atan(std::sinh(M_PI * (1 - 2 * (y + 0.5) / n)));
-        double lat = lat_rad * 180.0 / M_PI;
+        double lat_rad = std::atan(std::sinh(constants::math::PI * (1 - 2 * (y + 0.5) / n)));
+        double lat = constants::conversion::RadiansToDegrees(lat_rad);
         return glm::dvec2(lon, lat);
     }
     

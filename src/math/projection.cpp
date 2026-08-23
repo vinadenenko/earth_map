@@ -4,6 +4,7 @@
  */
 
 #include "../../include/earth_map/math/projection.h"
+#include <earth_map/constants.h>
 #include <cmath>
 #include <stdexcept>
 #include <unordered_map>
@@ -13,7 +14,6 @@ namespace earth_map {
 
 // Helper functions
 namespace {
-    constexpr double PI = 3.14159265358979323846;
     constexpr double WGS84_SEMI_MAJOR_AXIS = 6378137.0;
 
     inline double DegreesToRadians(double degrees) {
@@ -35,8 +35,8 @@ Projected WebMercatorProjection::Project(const Geographic& geo) const {
     const double lat_rad = DegreesToRadians(geo.latitude);
     const double lon_rad = DegreesToRadians(geo.longitude);
 
-    const double x = WEB_MERCATOR_HALF_WORLD * lon_rad / PI;
-    const double y = WEB_MERCATOR_HALF_WORLD * std::log(std::tan(PI / 4.0 + lat_rad / 2.0)) / PI;
+    const double x = WEB_MERCATOR_HALF_WORLD * lon_rad / constants::math::PI;
+    const double y = WEB_MERCATOR_HALF_WORLD * std::log(std::tan(constants::math::PI / 4.0 + lat_rad / 2.0)) / constants::math::PI;
 
     return Projected(x, y);
 }
@@ -45,8 +45,8 @@ Geographic WebMercatorProjection::Unproject(const Projected& proj) const {
     const double x = proj.x;
     const double y = proj.y;
 
-    const double lon_rad = x * PI / WEB_MERCATOR_HALF_WORLD;
-    const double lat_rad = 2.0 * std::atan(std::exp(y * PI / WEB_MERCATOR_HALF_WORLD)) - PI / 2.0;
+    const double lon_rad = x * constants::math::PI / WEB_MERCATOR_HALF_WORLD;
+    const double lat_rad = 2.0 * std::atan(std::exp(y * constants::math::PI / WEB_MERCATOR_HALF_WORLD)) - constants::math::HALF_PI;
 
     // Clamp latitude to valid range
     const double clamped_lat = std::max(-MAX_LATITUDE, std::min(MAX_LATITUDE,
@@ -152,7 +152,7 @@ bool EquirectangularProjection::IsValidLocation(const Geographic& geo) const {
 }
 
 ProjectedBounds EquirectangularProjection::GetProjectedBounds() const {
-    const double half_world = PI * WGS84_SEMI_MAJOR_AXIS;
+    const double half_world = constants::math::PI * WGS84_SEMI_MAJOR_AXIS;
     return ProjectedBounds(
         Projected(-half_world, -half_world),
         Projected(half_world, half_world)

@@ -367,8 +367,7 @@ double TileMathematics::CalculateGroundResolution(int32_t zoom, double latitude)
     const double cos_lat = std::cos(lat_rad);
 
     // Web Mercator ground resolution: 2π * R * cos(lat) / (256 * 2^zoom)
-    constexpr double PI = 3.14159265358979323846;
-    return (2.0 * PI * WGS84_SEMI_MAJOR_AXIS * cos_lat) /
+    return (2.0 * constants::math::PI * WGS84_SEMI_MAJOR_AXIS * cos_lat) /
            (256.0 * (1 << zoom));
 }
 
@@ -426,8 +425,7 @@ double TileMathematics::GetGroundResolution(int32_t zoom) {
     
     // Return ground resolution at equator for simplicity
     // This is the resolution when latitude = 0 (cos(lat) = 1)
-    constexpr double PI = 3.14159265358979323846;
-    return (2.0 * PI * WGS84_SEMI_MAJOR_AXIS) / 
+    return (2.0 * constants::math::PI * WGS84_SEMI_MAJOR_AXIS) /
            (256.0 * (1 << zoom));
 }
 

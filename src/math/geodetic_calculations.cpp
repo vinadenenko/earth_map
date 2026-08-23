@@ -4,6 +4,7 @@
  */
 
 #include "../../include/earth_map/math/geodetic_calculations.h"
+#include <earth_map/constants.h>
 #include <array>
 #include <cmath>
 #include <algorithm>
@@ -29,7 +30,7 @@ namespace {
 
     // Normalize angle to [0, 2π)
     inline double NormalizeAngleRadians(double angle_rad) {
-        constexpr double TWO_PI = 2.0 * M_PI;
+        constexpr double TWO_PI = 2.0 * constants::math::PI;
         double normalized = std::fmod(angle_rad, TWO_PI);
         if (normalized < 0.0) {
             normalized += TWO_PI;
@@ -77,7 +78,7 @@ DistanceResult GeodeticCalculator::GeodeticCalculator::HaversineDistanceAndBeari
     const double x_final = std::cos(lat2_rad) * std::sin(lat1_rad) -
                           std::sin(lat2_rad) * std::cos(lat1_rad) * std::cos(delta_lon);
     
-    double final_bearing = std::atan2(y_final, x_final) + M_PI;
+    double final_bearing = std::atan2(y_final, x_final) + constants::math::PI;
     final_bearing = NormalizeAngleRadians(final_bearing);
     const double final_bearing_deg = RadiansToDegrees(final_bearing);
     
@@ -491,7 +492,7 @@ double TerrainCalculator::CalculateSlope(const Geographic& point1,
     
     if (horizontal_distance == 0.0) return 0.0;
     
-    return std::abs(std::atan(vertical_distance / horizontal_distance) * 180.0 / M_PI);
+    return std::abs(constants::conversion::RadiansToDegrees(std::atan(vertical_distance / horizontal_distance)));
 }
 
 double TerrainCalculator::CalculateAspect(const Geographic& /*center*/,
@@ -501,7 +502,7 @@ double TerrainCalculator::CalculateAspect(const Geographic& /*center*/,
     const double dx = GeodeticCalculator::HaversineDistance(neighbors[1], neighbors[3]);
     const double dy = GeodeticCalculator::HaversineDistance(neighbors[0], neighbors[2]);
     
-    double aspect = std::atan2(dy, dx) * 180.0 / M_PI;
+    double aspect = constants::conversion::RadiansToDegrees(std::atan2(dy, dx));
     aspect = 90.0 - aspect;  // Convert to compass bearing
     if (aspect < 0.0) aspect += 360.0;
     
