@@ -582,6 +582,13 @@ int main() {
             );
         config.tile_provider = googleProvider;
 
+#ifdef EARTH_MAP_EXAMPLE_CACERT_PATH
+        // libcurl has no default CA bundle location on Windows, so HTTPS
+        // tile requests fail peer verification there unless CURLOPT_CAINFO
+        // is set explicitly (Linux finds the system store on its own).
+        config.tile_loader_config.ca_cert_path = EARTH_MAP_EXAMPLE_CACERT_PATH;
+#endif
+
         // Using SRTM data
         config.elevation_config.enabled = true;
         config.elevation_config.exaggeration_factor = 100.5f;  // Exaggerate for visibility
