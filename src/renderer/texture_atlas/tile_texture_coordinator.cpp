@@ -238,6 +238,7 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
     // confirms that read is actually finished. The queue is untouched, so
     // nothing is lost, just delayed a frame or two.
     if (!tile_pool_->IsSafeToUpload()) {
+        spdlog::info("[issue-01] tile.upload deferred: array still in use by prior sampling draw");
         return;
     }
 

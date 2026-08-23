@@ -143,24 +143,50 @@ No improvement -- if anything slightly worse, though within noise on a software-
 When an upload actually runs, its GPU cost is unaffected by whether the fence confirmed the
 prior sampling read had finished first.
 
-## Open question: is this actually a timing hazard at all?
+## Timing-hazard theory: now directly disproven (on the VM), not just unconfirmed
 
-The fencing fix assumes the cost is the GPU driver stalling or duplicating the array because a
-read might still be in flight, and that confirming the read is done makes the write cheap. The
-measurement above doesn't support that -- waiting for the fence doesn't reduce the cost.
+Added a log line at the exact point `ProcessUploads()` defers because `IsSafeToUpload()` says
+the array might still be in use:
 
-A more likely explanation, particularly for this environment's software rasterizer (llvmpipe):
+```cpp
+if (!tile_pool_->IsSafeToUpload()) {
+    spdlog::info("[issue-01] tile.upload deferred: array still in use by prior sampling draw");
+    return;
+}
+```
+
+Filter with `grep "\[issue-01\]"`. Result: **this line never fires.** `IsSafeToUpload()` returns
+`true` every single time it's checked -- the fence from the previous frame's draw is always
+already signaled by the time the next frame's `ProcessUploads()` checks it. There is never a
+moment, in this app on this VM, where the GPU might still be reading the array from a prior
+draw by the time an upload is attempted. (Ruled out the alternative explanation -- that
+`MarkArraySampled()` simply isn't being called, so there's nothing to wait for rather than
+"already done" -- by inspection: `RenderTiles()` cannot draw tiles at all without a valid
+`texture_coordinator_`, so the call site is reached whenever there's anything to sample.)
+
+Combined with the before/after measurement above (upload cost unchanged whether or not the
+fence gates it), this closes the loop: **the cost has nothing to do with a prior read still
+being in flight.** There is no race being won or lost here, so fencing was never going to help,
+on this environment.
+
+## Leading theory now: cost tied to array *size*, not timing
+
 `glTexSubImage3D` on a large (512-layer, 128MB) array that has already been used for sampling
 may need to re-tile/re-validate the driver's internal representation on *every* update, as an
-inherent per-call cost tied to the array's *size*, independent of read/write timing. If so, no
-amount of fencing helps, because nothing is actually being raced against.
+inherent per-call cost tied to the array's size -- particularly plausible for this
+environment's software rasterizer (llvmpipe). If so, `WhileSampled/512` should cost
+substantially more than `WhileSampled/32` in the benchmark below, independent of contention.
 
-Next step to disambiguate: measure whether the cost scales with array size specifically
-(`tests/performance/tile_upload_stall_benchmark.cpp`, varying `kLayers` from small up to the
-real 512-layer default) independent of the sampling-contention variable the benchmark already
-isolates. Not yet done -- an earlier attempt crashed, but the crash was traced to an
-environment-specific Mesa driver issue in one particular shell, not a bug in the benchmark
-itself, so this is still open to actually run.
+Next step: run `tests/performance/tile_upload_stall_benchmark.cpp`'s array-size sweep (`/8`,
+`/32`, `/128`, `/512`, both `WhileSampled` and `WithoutContention`) and read the actual numbers
+across sizes. Not yet done as of this writing.
+
+**Caveat repeated from above, doubly important now:** all of this -- the disproven timing
+theory included -- was established on the software-rendered VM. Real GPU hardware may behave
+completely differently: a real discrete/integrated GPU's driver has genuine deep pipelining
+that llvmpipe may not meaningfully replicate, so a real timing hazard (and a real fix from
+fencing) is still entirely possible there. Don't treat the VM's disproof as portable to
+hardware without re-running the same `[issue-01]` log check there.
 
 ## How to verify a fix (tooling, still valid regardless of the above)
 
