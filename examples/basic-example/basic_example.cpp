@@ -19,9 +19,14 @@
 #include <earth_map/coordinates/coordinate_mapper.h>
 #include <earth_map/coordinates/coordinate_spaces.h>
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/fmt/fmt.h>
 #include <glm/glm.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <memory>
+#include <string>
 #include <vector>
 #include <iomanip>
 
@@ -36,6 +41,57 @@ static bool show_overlay = true;
 // Double-click detection
 static double last_click_time = 0.0;
 static constexpr double DOUBLE_CLICK_THRESHOLD = 0.3; // seconds
+
+//==============================================================================
+// Perf-test flight scenario (hotkey 'P')
+//
+// A fixed, reproducible camera flight used to compare PerformanceStats
+// before/after a rendering fix -- run it, apply the fix, run it again, diff
+// perf_flight.log. Input is locked out while it runs so two runs are
+// actually comparable (no risk of a different mouse nudge explaining part
+// of an observed difference).
+//==============================================================================
+
+// Mirrors tile_renderer.cpp's CalculateOptimalZoom() inverse
+// (zoom = log2(K / altitude_normalized), K = (MIN_ALTITUDE_METERS /
+// EARTH_MEAN_RADIUS) * 2^kMaxZoom). Solving for altitude in meters, the
+// EARTH_MEAN_RADIUS terms cancel: altitude_meters = MIN_ALTITUDE_METERS *
+// 2^(kMaxZoom - zoom). This is only used here to pick FlyTo() altitudes
+// that reliably land on a specific tile zoom level for reproducible
+// testing -- the renderer itself always derives zoom from live camera
+// distance, never from this.
+double AltitudeMetersForZoom(int zoom) {
+    constexpr int kMaxZoom = 21;  // must match tile_renderer.cpp's kMaxZoom
+    return earth_map::constants::camera_constraints::MIN_ALTITUDE_METERS *
+           static_cast<double>(1ull << (kMaxZoom - zoom));
+}
+
+struct FlightWaypoint {
+    double longitude;
+    double latitude;
+    int target_zoom;         // for logging only; altitude_meters is what's actually flown to
+    double altitude_meters;
+    float duration_seconds;  // flight time to reach this waypoint
+};
+
+// Alternates zoom dives with lateral movement across Armenia, to stress
+// continuous new-tile streaming the same way real camera move/zoom does.
+const std::vector<FlightWaypoint> kPerfFlightWaypoints = {
+    {44.5152, 40.1872, 15, AltitudeMetersForZoom(15), 5.0f},  // Yerevan, close dive
+    {44.5152, 40.1872, 8,  AltitudeMetersForZoom(8),  5.0f},  // pull out over the same spot
+    {45.0116, 40.4000, 14, AltitudeMetersForZoom(14), 5.0f},  // Lake Sevan
+    {43.8478, 40.7894, 15, AltitudeMetersForZoom(15), 5.0f},  // Gyumri, close dive
+    {43.8478, 40.7894, 8,  AltitudeMetersForZoom(8),  5.0f},  // pull out over Gyumri
+    {44.4939, 40.8123, 14, AltitudeMetersForZoom(14), 5.0f},  // Vanadzor
+    {44.5453, 39.8814, 15, AltitudeMetersForZoom(15), 5.0f},  // Khor Virap, close dive
+    {44.5152, 40.1872, 8,  AltitudeMetersForZoom(8),  5.0f},  // back out over Yerevan, end
+};
+
+static bool perf_scenario_active = false;
+static std::size_t perf_scenario_waypoint_index = 0;
+static float perf_scenario_waypoint_elapsed = 0.0f;
+static float perf_scenario_total_elapsed = 0.0f;
+static std::shared_ptr<spdlog::logger> perf_flight_logger;
 
 // Movement state is now handled entirely by the library's Camera class.
 // WASD key events are forwarded via ProcessInput() which sets internal
@@ -63,6 +119,9 @@ void print_help() {
     std::cout << "║   1                 : Jump to Himalayas (SRTM data region) ║\n";
     std::cout << "║   Ctrl + 2          : Jump to Yerevan zoom-13 test view    ║\n";
     std::cout << "║   O                 : Toggle debug overlay                 ║\n";
+    std::cout << "║   P                 : Run/stop scripted perf-test flight    ║\n";
+    std::cout << "║                       (logs PerformanceStats to             ║\n";
+    std::cout << "║                       perf_flight.log; locks out input)     ║\n";
     std::cout << "║   H                 : Toggle this help text                ║\n";
     std::cout << "║   ESC               : Exit application                     ║\n";
     std::cout << "║                                                            ║\n";
@@ -70,6 +129,112 @@ void print_help() {
     std::cout << "║   FREE   : Free-flying camera with WASD movement           ║\n";
     std::cout << "║   ORBIT  : Orbit around Earth center (no WASD)             ║\n";
     std::cout << "╚════════════════════════════════════════════════════════════╝\n\n";
+}
+
+void StopPerfFlightScenario(const char* reason) {
+    if (perf_flight_logger) {
+        perf_flight_logger->info("=== perf flight scenario stopped: {} ===", reason);
+        perf_flight_logger->flush();
+    }
+    perf_scenario_active = false;
+    std::cout << "→ Perf flight scenario STOPPED (" << reason << ")\n";
+}
+
+void StartPerfFlightScenario(earth_map::CameraController* camera) {
+    if (!camera || kPerfFlightWaypoints.empty()) {
+        return;
+    }
+
+    perf_scenario_active = true;
+    perf_scenario_waypoint_index = 0;
+    perf_scenario_waypoint_elapsed = 0.0f;
+    perf_scenario_total_elapsed = 0.0f;
+
+    // Fresh logger each run so perf_flight.log is truncated, not appended --
+    // each hotkey press is meant to be one clean, comparable run.
+    spdlog::drop("perf_flight");
+    perf_flight_logger = spdlog::basic_logger_mt("perf_flight", "perf_flight.log", /*truncate=*/true);
+    perf_flight_logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] %v");
+    // Flush every line: this scenario exists to stress the exact code path
+    // suspected of stalling/crashing, so an unflushed buffer could lose the
+    // most important lines if the app doesn't exit cleanly.
+    perf_flight_logger->flush_on(spdlog::level::info);
+
+    const FlightWaypoint& first = kPerfFlightWaypoints[0];
+    camera->FlyTo(first.longitude, first.latitude, first.altitude_meters, first.duration_seconds);
+
+    perf_flight_logger->info("=== perf flight scenario started: {} waypoints ===",
+                              kPerfFlightWaypoints.size());
+    perf_flight_logger->info(
+        "=== waypoint 1/{}: lon={:.4f} lat={:.4f} target_zoom={} altitude={:.0f}m duration={:.1f}s ===",
+        kPerfFlightWaypoints.size(), first.longitude, first.latitude, first.target_zoom,
+        first.altitude_meters, first.duration_seconds);
+
+    std::cout << "→ Perf flight scenario STARTED -- logging to perf_flight.log, "
+                 "input locked out until it finishes or P is pressed again\n";
+}
+
+// Called once per frame from the main loop. Advances the waypoint timeline
+// and issues the next FlyTo() when the current leg's duration elapses.
+void AdvancePerfFlightScenario(earth_map::CameraController* camera, float delta_time) {
+    if (!perf_scenario_active || !camera) {
+        return;
+    }
+
+    perf_scenario_waypoint_elapsed += delta_time;
+    perf_scenario_total_elapsed += delta_time;
+
+    const FlightWaypoint& current = kPerfFlightWaypoints[perf_scenario_waypoint_index];
+    if (perf_scenario_waypoint_elapsed < current.duration_seconds) {
+        return;
+    }
+
+    ++perf_scenario_waypoint_index;
+    if (perf_scenario_waypoint_index >= kPerfFlightWaypoints.size()) {
+        StopPerfFlightScenario("completed all waypoints");
+        return;
+    }
+
+    perf_scenario_waypoint_elapsed = 0.0f;
+    const FlightWaypoint& next = kPerfFlightWaypoints[perf_scenario_waypoint_index];
+    camera->FlyTo(next.longitude, next.latitude, next.altitude_meters, next.duration_seconds);
+
+    if (perf_flight_logger) {
+        perf_flight_logger->info(
+            "=== waypoint {}/{}: lon={:.4f} lat={:.4f} target_zoom={} altitude={:.0f}m duration={:.1f}s ===",
+            perf_scenario_waypoint_index + 1, kPerfFlightWaypoints.size(), next.longitude,
+            next.latitude, next.target_zoom, next.altitude_meters, next.duration_seconds);
+    }
+}
+
+// Called once per frame from the main loop while the scenario is active.
+// Logs the same PerformanceStats the console overlay shows, but every
+// frame (not once/sec) so transient spikes are actually visible in the log.
+void LogPerfFlightFrame(earth_map::EarthMap* earth_map_instance) {
+    if (!perf_scenario_active || !perf_flight_logger || !earth_map_instance) {
+        return;
+    }
+    auto* renderer = earth_map_instance->GetRenderer();
+    if (!renderer) {
+        return;
+    }
+
+    const earth_map::PerformanceStats stats = renderer->GetStats();
+
+    std::string zones_str;
+    for (const auto& zone : stats.zones) {
+        zones_str += fmt::format(" | {}: cpu={:.3f}ms gpu={} draws={}", zone.name, zone.cpu_ms,
+                                  zone.gpu_ms ? fmt::format("{:.3f}ms", *zone.gpu_ms)
+                                              : std::string("n/a"),
+                                  zone.draw_calls);
+    }
+
+    perf_flight_logger->info(
+        "t={:.2f}s wp={}/{} fps={} cpu={:.2f}ms gpu={}{}", perf_scenario_total_elapsed,
+        perf_scenario_waypoint_index + 1, kPerfFlightWaypoints.size(), stats.fps,
+        stats.frame_cpu_ms,
+        stats.frame_gpu_ms ? fmt::format("{:.3f}ms", *stats.frame_gpu_ms) : std::string("n/a"),
+        zones_str);
 }
 
 // Callback function for window resize
@@ -84,9 +249,24 @@ void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int
     auto camera = g_earth_map_instance->GetCameraController();
     if (!camera) return;
 
+    // While the scripted perf flight is running, ignore everything except
+    // P (stop it early) and ESC (still allow quitting) -- keeps the two
+    // runs being compared free of any incidental interactive input.
+    if (perf_scenario_active && key != GLFW_KEY_P && key != GLFW_KEY_ESCAPE) {
+        return;
+    }
+
     // Handle key press events
     if (action == GLFW_PRESS) {
         switch (key) {
+            case GLFW_KEY_P: {
+                if (perf_scenario_active) {
+                    StopPerfFlightScenario("stopped early by user");
+                } else {
+                    StartPerfFlightScenario(camera);
+                }
+                break;
+            }
             case GLFW_KEY_F: {
                 // Toggle camera mode
                 auto current_mode = camera->GetMovementMode();
@@ -184,6 +364,9 @@ void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int
 
 // Mouse button callback
 void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mods*/) {
+    if (perf_scenario_active) {
+        return;
+    }
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
@@ -281,6 +464,9 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mod
 
 // Mouse motion callback
 void cursor_position_callback(GLFWwindow* /*window*/, double xpos, double ypos) {
+    if (perf_scenario_active) {
+        return;
+    }
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
@@ -301,6 +487,9 @@ void cursor_position_callback(GLFWwindow* /*window*/, double xpos, double ypos) 
 
 // Scroll callback for zoom
 void scroll_callback(GLFWwindow* /*window*/, double xoffset, double yoffset) {
+    if (perf_scenario_active) {
+        return;
+    }
     if (g_earth_map_instance) {
         auto camera = g_earth_map_instance->GetCameraController();
         if (camera) {
@@ -497,12 +686,14 @@ int main() {
             // via ProcessInput() key events and UpdateMovement() with constraint
             // enforcement. No manual position manipulation needed.
             auto camera = earth_map_instance->GetCameraController();
+            AdvancePerfFlightScenario(camera, delta_time);
             if (camera) {
                 camera->Update(delta_time);
             }
 
             // Render
             earth_map_instance->Render();
+            LogPerfFlightFrame(earth_map_instance.get());
 
             // Swap buffers and poll events
             glfwSwapBuffers(window);
