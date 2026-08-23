@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 
 namespace earth_map {
 namespace coordinates {
