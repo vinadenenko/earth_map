@@ -15,7 +15,6 @@
 #include <queue>
 #include <set>
 #include <sstream>
-#include <system_error>
 #include <thread>
 
 namespace earth_map {
@@ -96,20 +95,6 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb,
     userp->insert(userp->end(), static_cast<uint8_t*>(contents),
                   static_cast<uint8_t*>(contents) + total_size);
     return total_size;
-}
-
-/// Check whether a local SRTM directory contains at least one entry.
-/// Queried once per configuration (not per tile) so an empty/nonexistent
-/// directory doesn't cost a filesystem stat for every tile lookup --
-/// mesh generation can query tens of thousands of coordinates (e.g.
-/// ElevationManager::GenerateNormals samples 5 points per vertex).
-bool DirectoryHasAnyEntries(const std::string& directory) {
-    std::error_code ec;
-    if (!std::filesystem::is_directory(directory, ec) || ec) {
-        return false;
-    }
-    return std::filesystem::directory_iterator(directory, ec) !=
-           std::filesystem::directory_iterator{};
 }
 
 } // anonymous namespace

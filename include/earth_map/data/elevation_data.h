@@ -4,10 +4,12 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <iomanip>
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <system_error>
 #include <vector>
 
 namespace earth_map {
@@ -176,6 +178,23 @@ private:
         << std::setw(3) << std::setfill('0') << std::abs(coords.longitude)
         << ".hgt";
     return oss.str();
+}
+
+/// Check whether a directory contains at least one entry, without throwing
+/// on a missing directory. Meant to be queried once per configuration
+/// (e.g. at loader/cache Initialize()), not per tile: a source or cache
+/// directory that's empty or doesn't exist yet means every per-tile lookup
+/// against it is going to fail anyway, so callers can skip the filesystem
+/// stat for each one -- mesh generation can query tens of thousands of
+/// tile coordinates for a single globe (e.g.
+/// ElevationManager::GenerateNormals samples 5 points per vertex).
+[[nodiscard]] inline bool DirectoryHasAnyEntries(const std::string& directory) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec) || ec) {
+        return false;
+    }
+    return std::filesystem::directory_iterator(directory, ec) !=
+           std::filesystem::directory_iterator{};
 }
 
 } // namespace earth_map

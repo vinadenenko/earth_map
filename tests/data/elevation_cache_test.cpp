@@ -545,5 +545,58 @@ TEST_F(ElevationCacheTest, ClearMemoryCacheRemovesMissingMarkers) {
     EXPECT_FALSE(cache->IsKnownMissing(coords));
 }
 
+TEST_F(ElevationCacheTest, GetOnEmptyDiskCacheDirectoryMisses) {
+    ElevationCacheConfig config;
+    config.disk_cache_directory = cache_directory_;
+    config.enable_disk_cache = true;
+
+    auto cache = ElevationCache::Create(config);
+    ASSERT_NE(cache, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    EXPECT_FALSE(cache->Contains(coords));
+
+    auto retrieved = cache->Get(coords);
+    EXPECT_FALSE(retrieved.has_value());
+}
+
+TEST_F(ElevationCacheTest, SetConfigurationToPopulatedDirectoryMakesTilesVisible) {
+    ElevationCacheConfig config;
+    config.disk_cache_directory = cache_directory_;
+    config.enable_disk_cache = true;
+
+    auto cache = ElevationCache::Create(config);
+    ASSERT_NE(cache, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    ASSERT_FALSE(cache->Get(coords).has_value());
+
+    // A different, already-populated cache directory is swapped in later
+    // (e.g. pointed at a shared/prebuilt disk cache) -- SetConfiguration()
+    // must re-check it, not keep treating disk lookups as pointless
+    // because the original directory started out empty.
+    const std::string other_directory = cache_directory_ + "_populated";
+    std::filesystem::create_directories(other_directory);
+    {
+        ElevationCacheConfig seed_config;
+        seed_config.disk_cache_directory = other_directory;
+        seed_config.enable_disk_cache = true;
+        auto seed_cache = ElevationCache::Create(seed_config);
+        ASSERT_NE(seed_cache, nullptr);
+        auto tile = CreateTestTile(coords);
+        ASSERT_TRUE(seed_cache->Put(*tile));
+    }
+
+    ElevationCacheConfig new_config = cache->GetConfiguration();
+    new_config.disk_cache_directory = other_directory;
+    ASSERT_TRUE(cache->SetConfiguration(new_config));
+
+    auto retrieved = cache->Get(coords);
+    ASSERT_TRUE(retrieved.has_value());
+    ASSERT_NE(retrieved.value(), nullptr);
+
+    std::filesystem::remove_all(other_directory);
+}
+
 } // anonymous namespace
 } // namespace earth_map
