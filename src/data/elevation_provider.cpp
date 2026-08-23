@@ -183,6 +183,14 @@ private:
     /// @param coords Tile coordinates
     /// @return Shared pointer to tile data, or nullptr on failure
     std::shared_ptr<SRTMTileData> LoadTile(const SRTMCoordinates& coords) const {
+        // Skip tiles a prior lookup already found unavailable (e.g. ocean
+        // tiles, or coordinates outside the local SRTM dataset) instead of
+        // repeating the same failing disk/network I/O on every query --
+        // GenerateNormals alone samples 5 points per mesh vertex.
+        if (cache_->IsKnownMissing(coords)) {
+            return nullptr;
+        }
+
         // Check cache first
         auto cached = cache_->Get(coords);
         if (cached.has_value()) {
@@ -192,6 +200,7 @@ private:
         // Load from disk/network
         const auto result = loader_->LoadTile(coords);
         if (!result.success || !result.tile_data) {
+            cache_->MarkMissing(coords);
             return nullptr;
         }
 

@@ -12,6 +12,7 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace earth_map {
 
@@ -53,6 +54,8 @@ public:
             }
         }
 
+        RefreshDiskCacheHasEntries();
+
         return true;
     }
 
@@ -61,6 +64,10 @@ public:
 
         const auto& coords = tile_data.GetMetadata().coordinates;
         const size_t tile_size = tile_data.GetMetadata().file_size;
+
+        // A tile can't be both known-missing and have real cached data --
+        // clear any stale marker so IsKnownMissing() doesn't shadow this.
+        missing_tiles_.erase(coords);
 
         // Remove existing entry if present
         RemoveFromMemoryCache(coords);
@@ -86,8 +93,8 @@ public:
         stats_.tile_count_memory = memory_cache_.size();
 
         // Write to disk cache if enabled
-        if (config_.enable_disk_cache) {
-            WriteToDiskCache(tile_data);
+        if (config_.enable_disk_cache && WriteToDiskCache(tile_data)) {
+            disk_cache_has_entries_ = true;
         }
 
         return true;
@@ -107,8 +114,10 @@ public:
             return (*it->second)->tile_data;
         }
 
-        // Check disk cache if enabled
-        if (config_.enable_disk_cache) {
+        // Check disk cache if enabled and it actually has something in it --
+        // otherwise skip straight to the miss below rather than paying for
+        // a filesystem stat per coordinate (see DirectoryHasAnyEntries()).
+        if (config_.enable_disk_cache && disk_cache_has_entries_) {
             auto tile_data = ReadFromDiskCache(coordinates);
             if (tile_data) {
                 ++stats_.disk_cache_hits;
@@ -149,7 +158,7 @@ public:
         }
 
         // Check disk cache
-        if (config_.enable_disk_cache) {
+        if (config_.enable_disk_cache && disk_cache_has_entries_) {
             const std::string filename = FormatSRTMFilename(coordinates);
             const std::string filepath = config_.disk_cache_directory + "/" + filename;
             return std::filesystem::exists(filepath);
@@ -158,10 +167,21 @@ public:
         return false;
     }
 
+    bool IsKnownMissing(const SRTMCoordinates& coordinates) const override {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        return missing_tiles_.find(coordinates) != missing_tiles_.end();
+    }
+
+    void MarkMissing(const SRTMCoordinates& coordinates) override {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        missing_tiles_.insert(coordinates);
+    }
+
     bool Remove(const SRTMCoordinates& coordinates) override {
         std::lock_guard<std::mutex> lock(cache_mutex_);
 
         bool removed = RemoveFromMemoryCache(coordinates);
+        removed = (missing_tiles_.erase(coordinates) > 0) || removed;
 
         // Remove from disk cache
         if (config_.enable_disk_cache) {
@@ -185,6 +205,7 @@ public:
 
         lru_list_.clear();
         memory_cache_.clear();
+        missing_tiles_.clear();
         stats_.memory_cache_size_bytes = 0;
         stats_.tile_count_memory = 0;
 
@@ -194,6 +215,7 @@ public:
                 std::filesystem::create_directories(config_.disk_cache_directory);
                 stats_.disk_cache_size_bytes = 0;
                 stats_.tile_count_disk = 0;
+                disk_cache_has_entries_ = false;
             } catch (...) {
                 // Ignore errors
             }
@@ -205,6 +227,7 @@ public:
 
         lru_list_.clear();
         memory_cache_.clear();
+        missing_tiles_.clear();
         stats_.memory_cache_size_bytes = 0;
         stats_.tile_count_memory = 0;
     }
@@ -221,6 +244,7 @@ public:
             std::filesystem::create_directories(config_.disk_cache_directory);
             stats_.disk_cache_size_bytes = 0;
             stats_.tile_count_disk = 0;
+            disk_cache_has_entries_ = false;
         } catch (...) {
             // Ignore errors
         }
@@ -259,6 +283,10 @@ public:
             }
         }
 
+        if (disk_cache_changed) {
+            RefreshDiskCacheHasEntries();
+        }
+
         return true;
     }
 
@@ -275,6 +303,7 @@ public:
             const auto& entry = *pair.second;
             if (WriteToDiskCache(*entry->tile_data)) {
                 ++flushed;
+                disk_cache_has_entries_ = true;
             }
         }
 
@@ -315,6 +344,16 @@ public:
     }
 
 private:
+    /// Re-derive disk_cache_has_entries_ from the current config. Called
+    /// once per Initialize()/SetConfiguration() (not per lookup); Put()
+    /// and Flush() additionally flip it true directly on a successful
+    /// write, without re-scanning the directory.
+    void RefreshDiskCacheHasEntries() {
+        disk_cache_has_entries_ =
+            config_.enable_disk_cache &&
+            DirectoryHasAnyEntries(config_.disk_cache_directory);
+    }
+
     bool RemoveFromMemoryCache(const SRTMCoordinates& coordinates) {
         auto it = memory_cache_.find(coordinates);
         if (it != memory_cache_.end()) {
@@ -394,12 +433,22 @@ private:
     ElevationCacheConfig config_;
     ElevationCacheStats stats_;
 
+    // Derived from config_.disk_cache_directory by
+    // RefreshDiskCacheHasEntries(); see Get()/Contains() for why this exists.
+    bool disk_cache_has_entries_ = false;
+
     mutable std::mutex cache_mutex_;
 
     // LRU cache data structures
     using LRUList = std::list<std::shared_ptr<CacheEntry>>;
     LRUList lru_list_;
     std::unordered_map<SRTMCoordinates, LRUList::iterator> memory_cache_;
+
+    // Coordinates for which a prior load attempt failed (e.g. no SRTM
+    // coverage for that tile). Memory-only, no TTL/eviction: cleared by
+    // Clear()/ClearMemoryCache()/Remove(), same as the rest of the
+    // in-memory state.
+    std::unordered_set<SRTMCoordinates> missing_tiles_;
 };
 
 std::unique_ptr<ElevationCache> ElevationCache::Create(
