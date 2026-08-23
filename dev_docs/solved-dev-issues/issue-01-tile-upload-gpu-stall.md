@@ -1,6 +1,7 @@
 # Issue #1: `tile.upload` GPU stall dominating frame time (fps ~30-40 instead of expected)
 
-**Status:** Diagnosed. Root cause confirmed via GPU profiling data and code trace. Fix not yet implemented.
+**Status:** Fix implemented (fencing approach, option 3 below). Not yet rebuilt/verified with real
+numbers -- see "How to verify a fix" below before trusting this closed.
 
 ## Symptom
 
@@ -65,21 +66,40 @@ their streaming logic with double-buffered page pools, staging buffers with expl
 or async transfer/copy queues for exactly this reason). That safeguard is the piece missing
 here -- not a flaw in the overall design.
 
-## Proposed fix (not yet implemented)
+## Fix implemented: option 3, explicit fencing
 
-Stop writing into the same texture object a draw call might still be reading from in the same
-or adjacent frame. Options, roughly in order of how real engines typically implement this:
+Considered, in order of how real engines typically implement this:
 
-1. Double/triple-buffer the texture array itself -- rotate which physical array receives
-   uploads vs. which is bound for sampling this frame, gated by a GPU fence (`glFenceSync`)
-   so a write never lands on an array still possibly in flight.
-2. Route uploads through a PBO (ideally persistently mapped, `GL_MAP_PERSISTENT_BIT`),
-   decoupling the CPU-side write from the texture's read/write timing.
-3. Explicit fencing before reusing a layer, deferring the upload a frame if the prior read
-   hasn't retired yet.
+1. Double/triple-buffer the texture array itself -- rejected. Every resident layer would need
+   to exist in every buffered copy for sampling to stay correct (the indirection texture maps
+   a tile to one specific layer index, not "whichever generation is current"), which means
+   duplicating the *entire resident set* on every swap -- exactly the expensive copy this fix
+   is trying to avoid, and a poor fit for a long-lived LRU cache where most layers are stable
+   across many frames and only a handful change per frame.
+2. PBO-based upload -- would help decouple the CPU-side write from GL's copy timing, but does
+   not by itself resolve the GPU-side hazard: OpenGL still only tracks the read/write conflict
+   at the whole-texture-object level, not per layer, so the underlying stall/copy is unchanged
+   regardless of how the CPU stages the source data.
+3. **Explicit fencing (implemented).** OpenGL's hazard tracking is already whole-object, so a
+   whole-object synchronization point is the natural match, and it needs no new resources
+   (no second array, no PBOs) and no indirection/shader changes.
 
-Needs a short design pass against the existing `TileTexturePool`/`GLUploadQueue` structure
-before implementation.
+### How it works
+
+- `TileTexturePool::MarkSampled()` (`tile_texture_pool.h/.cpp`) creates a `glFenceSync` right
+  after a draw call that sampled the array. `IsSafeToUpload()` does a single non-blocking
+  `glGetSynciv(..., GL_SYNC_STATUS, ...)` poll of that fence.
+- `TileRenderer::RenderTiles()` calls `texture_coordinator_->MarkArraySampled()` immediately
+  after its `glDrawElements` call (the one draw call that samples the pool's array).
+- `TileTextureCoordinator::ProcessUploads()` checks `tile_pool_->IsSafeToUpload()` first and
+  returns immediately (queue untouched) if the GPU hasn't yet confirmed the last sampling
+  draw is finished -- deferring the *entire* batch by a frame or two, not just one layer,
+  since the hazard is object-wide.
+
+Net effect: `UploadTile()`'s `glTexSubImage3D` only ever runs once the GPU has already
+confirmed it's done reading the array, so the driver has no reason to stall or duplicate
+anything. Cost: uploads can be delayed by roughly a frame under contention -- imperceptible,
+since tiles already stream in asynchronously with LRU/fade-in behavior.
 
 ## How this was found
 
@@ -87,10 +107,11 @@ Enabled `EARTH_MAP_ENABLE_PERFORMANCE_MONITORING` (see `earth_map::PerformanceSt
 per-zone `FrameZoneTiming` breakdown), read the resulting per-zone cpu/gpu numbers logged from
 `basic_example`, and traced the code path behind the one zone with an anomalous cpu/gpu ratio.
 
-## How to verify a fix
+## How to verify the fix
 
-Two independent tools exist for a before/after comparison -- run both before applying a fix,
-apply it, run both again, and compare:
+Two independent tools exist for a before/after comparison. Baseline numbers (before this fix)
+are in the Symptom section above and in `perf_flight.log` from an earlier run; rerun both now
+that the fix is applied and compare:
 
 1. **Isolated benchmark**: `tests/performance/tile_upload_stall_benchmark.cpp`, built via the
    `with_benchmarks` conan option (`conan install . -o with_benchmarks=True --build=missing`,

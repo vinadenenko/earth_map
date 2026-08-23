@@ -127,6 +127,34 @@ public:
         const imagery::ImageTileKey& imagery_key) const;
 
     /**
+     * @brief Record that a draw call sampling this pool's texture array
+     * has just been submitted.
+     *
+     * Writing a new tile into this array (UploadTile()) while the GPU may
+     * still be reading it from a prior draw forces the driver into an
+     * expensive implicit stall or whole-array copy -- OpenGL only tracks
+     * hazards per *object*, not per layer, so any write anywhere in the
+     * array conflicts with any in-flight read anywhere in it (see
+     * dev_docs/solved-dev-issues/issue-01-tile-upload-gpu-stall.md).
+     * IsSafeToUpload() reports once the GPU has confirmed this read is
+     * actually finished.
+     *
+     * Call this once per frame, immediately after the draw call that binds
+     * and samples GetTextureArrayID().
+     */
+    void MarkSampled();
+
+    /**
+     * @brief Whether UploadTile() can currently be called without risking
+     * the read/write hazard MarkSampled() guards against.
+     *
+     * Non-blocking (a single, cheap fence-status poll) -- always true if
+     * MarkSampled() has never been called (nothing to wait for yet, e.g.
+     * before the first frame) or GL is disabled (skip_gl_init).
+     */
+    bool IsSafeToUpload() const;
+
+    /**
      * @brief Get the LRU eviction candidate
      *
      * Returns the canonical identity of the least-recently-used imagery page.
@@ -158,6 +186,12 @@ private:
     std::uint32_t tile_size_;
     std::uint32_t max_layers_;
     bool skip_gl_init_;
+
+    /// Opaque GLsync fence set by MarkSampled() (see its doc comment).
+    /// Stored as void* rather than GLsync so this public header doesn't
+    /// need to include a GL header, the same reason texture_array_id_
+    /// above is std::uint32_t rather than GLuint.
+    void* sampled_fence_ = nullptr;
 
     std::vector<LayerSlot> layers_;
     std::queue<int> free_layers_;

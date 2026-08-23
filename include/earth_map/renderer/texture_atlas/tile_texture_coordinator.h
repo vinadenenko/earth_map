@@ -241,8 +241,23 @@ public:
      *
      * Thread Safety: MUST be called from GL thread only
      * Performance: O(max_uploads_per_frame)
+     *
+     * Deferred entirely (no uploads processed, queue left untouched) if the
+     * GPU may still be reading the tile pool's texture array from the last
+     * draw call that sampled it -- see TileTexturePool::MarkSampled(). This
+     * is what fixes dev_docs/solved-dev-issues/issue-01-tile-upload-gpu-stall.md.
      */
     void ProcessUploads(int max_uploads_per_frame = 5);
+
+    /**
+     * @brief Record that a draw call sampling the tile pool's texture
+     * array has just been submitted.
+     *
+     * Forwards to TileTexturePool::MarkSampled() -- see its doc comment.
+     * Call this once per frame, immediately after the draw call that binds
+     * and samples GetTilePoolTextureID().
+     */
+    void MarkArraySampled();
 
     /**
      * Marks currently selected resident pages as recently used.

@@ -143,6 +143,10 @@ std::uint32_t TileTextureCoordinator::GetTilePoolTextureID() const {
     return tile_pool_->GetTextureArrayID();
 }
 
+void TileTextureCoordinator::MarkArraySampled() {
+    tile_pool_->MarkSampled();
+}
+
 std::uint32_t TileTextureCoordinator::GetIndirectionTextureID(
     const imagery::ImageTileKey& imagery_key) const {
     return indirection_manager_->GetTextureID(imagery_key);
@@ -221,6 +225,19 @@ std::uint32_t TileTextureCoordinator::GetAtlasTextureID() const {
 
 void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
     if (max_uploads_per_frame <= 0) {
+        return;
+    }
+
+    // See MarkArraySampled()/TileTexturePool::MarkSampled(): writing a new
+    // tile into the shared texture array while the GPU may still be
+    // reading it from last frame's draw call forces the driver into an
+    // expensive implicit stall or whole-array copy (dev_docs/
+    // solved-dev-issues/issue-01-tile-upload-gpu-stall.md). Defer the
+    // entire batch -- not just the specific layer in question, since GL
+    // only tracks this hazard per object, not per layer -- until the GPU
+    // confirms that read is actually finished. The queue is untouched, so
+    // nothing is lost, just delayed a frame or two.
+    if (!tile_pool_->IsSafeToUpload()) {
         return;
     }
 

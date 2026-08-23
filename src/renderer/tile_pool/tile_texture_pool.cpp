@@ -37,10 +37,35 @@ TileTexturePool::TileTexturePool(
 }
 
 TileTexturePool::~TileTexturePool() {
+    if (sampled_fence_ != nullptr && !skip_gl_init_) {
+        glDeleteSync(reinterpret_cast<GLsync>(sampled_fence_));
+        sampled_fence_ = nullptr;
+    }
     if (texture_array_id_ != 0 && !skip_gl_init_) {
         glDeleteTextures(1, &texture_array_id_);
         texture_array_id_ = 0;
     }
+}
+
+void TileTexturePool::MarkSampled() {
+    if (skip_gl_init_) {
+        return;
+    }
+    if (sampled_fence_ != nullptr) {
+        glDeleteSync(reinterpret_cast<GLsync>(sampled_fence_));
+    }
+    sampled_fence_ = reinterpret_cast<void*>(glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
+}
+
+bool TileTexturePool::IsSafeToUpload() const {
+    if (skip_gl_init_ || sampled_fence_ == nullptr) {
+        return true;
+    }
+    GLint status = GL_UNSIGNALED;
+    GLsizei length = 0;
+    glGetSynciv(reinterpret_cast<GLsync>(sampled_fence_), GL_SYNC_STATUS, sizeof(status),
+                &length, &status);
+    return status == GL_SIGNALED;
 }
 
 void TileTexturePool::CreateTextureArray() {

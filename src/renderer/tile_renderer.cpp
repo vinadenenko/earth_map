@@ -486,6 +486,14 @@ public:
         glBindVertexArray(0);
         draw_zone.AddDrawCall(globe_indices_.size() / 3);
 
+        // This draw just sampled the tile pool's texture array -- record it
+        // so a future ProcessUploads() defers writing into that array until
+        // the GPU confirms this read is done (see MarkArraySampled()'s doc
+        // comment; fixes dev_docs/solved-dev-issues/issue-01-tile-upload-gpu-stall.md).
+        if (texture_coordinator_) {
+            texture_coordinator_->MarkArraySampled();
+        }
+
         // Restore previous OpenGL state
         if (!depth_test_enabled) {
             glDisable(GL_DEPTH_TEST);
