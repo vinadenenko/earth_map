@@ -444,5 +444,106 @@ TEST_F(ElevationCacheTest, MultipleGetsUpdateLRU) {
     EXPECT_TRUE(cache->Contains(coords1));
 }
 
+TEST_F(ElevationCacheTest, KnownMissingDefaultsFalse) {
+    ElevationCacheConfig config;
+    config.disk_cache_directory = cache_directory_;
+    config.enable_disk_cache = false;
+
+    auto cache = ElevationCache::Create(config);
+    ASSERT_NE(cache, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    EXPECT_FALSE(cache->IsKnownMissing(coords));
+}
+
+TEST_F(ElevationCacheTest, MarkMissingIsReportedByIsKnownMissing) {
+    ElevationCacheConfig config;
+    config.disk_cache_directory = cache_directory_;
+    config.enable_disk_cache = false;
+
+    auto cache = ElevationCache::Create(config);
+    ASSERT_NE(cache, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    cache->MarkMissing(coords);
+    EXPECT_TRUE(cache->IsKnownMissing(coords));
+
+    // A different tile is unaffected
+    const SRTMCoordinates other_coords{38, -122};
+    EXPECT_FALSE(cache->IsKnownMissing(other_coords));
+}
+
+TEST_F(ElevationCacheTest, PutClearsPriorMissingMarker) {
+    ElevationCacheConfig config;
+    config.disk_cache_directory = cache_directory_;
+    config.enable_disk_cache = false;
+
+    auto cache = ElevationCache::Create(config);
+    ASSERT_NE(cache, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    cache->MarkMissing(coords);
+    ASSERT_TRUE(cache->IsKnownMissing(coords));
+
+    // A tile can't be both known-missing and have real cached data, e.g. if
+    // real SRTM data becomes available mid-session after an earlier failed
+    // lookup -- Put() must clear the stale marker.
+    auto tile = CreateTestTile(coords);
+    EXPECT_TRUE(cache->Put(*tile));
+
+    EXPECT_FALSE(cache->IsKnownMissing(coords));
+    auto retrieved = cache->Get(coords);
+    ASSERT_TRUE(retrieved.has_value());
+    ASSERT_NE(retrieved.value(), nullptr);
+}
+
+TEST_F(ElevationCacheTest, RemoveClearsMissingMarker) {
+    ElevationCacheConfig config;
+    config.disk_cache_directory = cache_directory_;
+    config.enable_disk_cache = false;
+
+    auto cache = ElevationCache::Create(config);
+    ASSERT_NE(cache, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    cache->MarkMissing(coords);
+    ASSERT_TRUE(cache->IsKnownMissing(coords));
+
+    EXPECT_TRUE(cache->Remove(coords));
+    EXPECT_FALSE(cache->IsKnownMissing(coords));
+}
+
+TEST_F(ElevationCacheTest, ClearRemovesMissingMarkers) {
+    ElevationCacheConfig config;
+    config.disk_cache_directory = cache_directory_;
+    config.enable_disk_cache = false;
+
+    auto cache = ElevationCache::Create(config);
+    ASSERT_NE(cache, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    cache->MarkMissing(coords);
+    ASSERT_TRUE(cache->IsKnownMissing(coords));
+
+    cache->Clear();
+    EXPECT_FALSE(cache->IsKnownMissing(coords));
+}
+
+TEST_F(ElevationCacheTest, ClearMemoryCacheRemovesMissingMarkers) {
+    ElevationCacheConfig config;
+    config.disk_cache_directory = cache_directory_;
+    config.enable_disk_cache = false;
+
+    auto cache = ElevationCache::Create(config);
+    ASSERT_NE(cache, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    cache->MarkMissing(coords);
+    ASSERT_TRUE(cache->IsKnownMissing(coords));
+
+    cache->ClearMemoryCache();
+    EXPECT_FALSE(cache->IsKnownMissing(coords));
+}
+
 } // anonymous namespace
 } // namespace earth_map

@@ -82,6 +82,19 @@ public:
     /// @return True if tile is cached
     virtual bool Contains(const SRTMCoordinates& coordinates) const = 0;
 
+    /// Check if a tile is known to be unavailable, i.e. a prior load
+    /// attempt for these coordinates already failed. Lets callers skip
+    /// repeat disk/network I/O for coordinates with no data (e.g. ocean
+    /// tiles, or a region outside the local SRTM dataset) instead of
+    /// re-attempting the same failing lookup on every query.
+    /// @param coordinates Tile coordinates to check
+    /// @return True if a prior load attempt for these coordinates failed
+    virtual bool IsKnownMissing(const SRTMCoordinates& coordinates) const = 0;
+
+    /// Record that a tile failed to load, so IsKnownMissing() reports it
+    /// @param coordinates Tile coordinates that failed to load
+    virtual void MarkMissing(const SRTMCoordinates& coordinates) = 0;
+
     /// Remove tile from cache
     /// @param coordinates Tile coordinates to remove
     /// @return True if tile was removed
