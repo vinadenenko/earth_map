@@ -20,6 +20,7 @@ class EarthMapConan(ConanFile):
         "fPIC": [True, False],
         "with_tests": [True, False],
         "with_examples": [True, False],
+        "with_benchmarks": [True, False],
         "enable_performance_monitoring": [True, False]
     }
     default_options = {
@@ -27,6 +28,7 @@ class EarthMapConan(ConanFile):
         "fPIC": True,
         "with_tests": False,
         "with_examples": False,
+        "with_benchmarks": False,
         "enable_performance_monitoring": False
     }
 
@@ -60,11 +62,13 @@ class EarthMapConan(ConanFile):
             self.requires("glew/2.2.0")
 
         # GLFW is only used for window/context creation in
-        # examples/basic-example; the library itself never calls into it.
-        # Keeping it out of earth_map's own dependency graph when examples
-        # aren't being built means platforms without a usable glfw backend
-        # (e.g. Android) can still build and consume earth_map itself.
-        if self.options.with_examples:
+        # examples/basic-example and in the performance benchmarks (which
+        # need a real, current GL context to measure actual GPU behavior --
+        # see tests/performance/); the library itself never calls into it.
+        # Keeping it out of earth_map's own dependency graph otherwise means
+        # platforms without a usable glfw backend (e.g. Android) can still
+        # build and consume earth_map itself.
+        if self.options.with_examples or self.options.with_benchmarks:
             self.requires("glfw/3.3.8")
 
         # Mathematics library. transitive_headers=True: glm/glm.hpp (and
@@ -98,6 +102,12 @@ class EarthMapConan(ConanFile):
         # Testing framework (when tests are enabled)
         if self.options.with_tests:
             self.requires("gtest/1.14.0")
+
+        # Google Benchmark: only needed by the separate earth_map_benchmarks
+        # executable (tests/performance/), not by the gtest-based unit
+        # tests -- kept under its own option since it also pulls in glfw
+        # (above) for a real GL context, unlike ordinary unit tests.
+        if self.options.with_benchmarks:
             self.requires("benchmark/1.8.3")
 
     def build_requirements(self):
@@ -112,6 +122,7 @@ class EarthMapConan(ConanFile):
         tc = CMakeToolchain(self)
         tc.variables["EARTH_MAP_BUILD_TESTS"] = self.options.with_tests
         tc.variables["EARTH_MAP_BUILD_EXAMPLES"] = self.options.with_examples
+        tc.variables["EARTH_MAP_BUILD_BENCHMARKS"] = self.options.with_benchmarks
         tc.variables["EARTH_MAP_ENABLE_PERFORMANCE_MONITORING"] = self.options.enable_performance_monitoring
         tc.generate()
 

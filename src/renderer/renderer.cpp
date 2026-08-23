@@ -152,9 +152,20 @@ public:
             // pointers) and obscured that GL-context/function-pointer
             // readiness is the host's job, not this library's.
 
-            // Check OpenGL version
-            const GLubyte* version = glGetString(GL_VERSION);
-            spdlog::info("OpenGL Version: {}", reinterpret_cast<const char*>(version));
+            // Check OpenGL version, and specifically GL_RENDERER: this is
+            // how you tell hardware vs. software rendering apart -- a real
+            // GPU reports its own model name here (e.g. an NVIDIA/AMD/Intel
+            // string), while a software rasterizer reports something like
+            // "llvmpipe" or "softpipe". glGetString() can return nullptr
+            // (e.g. no context current yet); formatting that directly used
+            // to crash spdlog's underlying fmt, so guard it here instead.
+            const auto gl_string = [](GLenum name) -> const char* {
+                const GLubyte* value = glGetString(name);
+                return value ? reinterpret_cast<const char*>(value) : "(unknown)";
+            };
+            spdlog::info("OpenGL Version: {}", gl_string(GL_VERSION));
+            spdlog::info("OpenGL Vendor: {}", gl_string(GL_VENDOR));
+            spdlog::info("OpenGL Renderer: {}", gl_string(GL_RENDERER));
             
             if (!LoadShaders()) {
                 spdlog::error("Failed to load shaders");

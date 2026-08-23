@@ -13,6 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Build options
 option(EARTH_MAP_BUILD_TESTS "Build unit tests" ON)
 option(EARTH_MAP_BUILD_EXAMPLES "Build example applications" ON)
+option(EARTH_MAP_BUILD_BENCHMARKS "Build performance benchmarks (tests/performance/) -- separate from EARTH_MAP_BUILD_TESTS since these need a real, current GL context (a live GPU/driver), not just gtest" OFF)
 option(EARTH_MAP_ENABLE_PERFORMANCE_MONITORING "Enable CPU/GPU per-frame performance instrumentation (Renderer::GetStats()'s PerformanceStats.zones)" OFF)
 option(EARTH_MAP_BUILD_DOCS "Generate documentation" OFF)
 option(EARTH_MAP_INSTALL "Generate install target" ON)
@@ -84,16 +85,24 @@ find_package(CURL REQUIRED)
 # Optional packages for testing and examples
 if(EARTH_MAP_BUILD_TESTS)
     find_package(GTest REQUIRED)
+endif()
+
+# Google Benchmark is only needed by the separate earth_map_benchmarks
+# executable (tests/performance/), not by the gtest-based unit tests --
+# kept under its own option since those benchmarks also need a real GL
+# context (glfw, below), unlike ordinary unit tests.
+if(EARTH_MAP_BUILD_BENCHMARKS)
     find_package(benchmark REQUIRED)
 endif()
 
-# glfw is only used for window/context creation in examples/basic-example
-# (the library itself never calls into it -- it only issues GL calls
-# against whatever context the consumer already made current). Keeping it
-# out of the library's own dependency graph means platforms without a
-# usable glfw backend (e.g. Android) can still build and consume earth_map
-# itself; only the desktop example needs it.
-if(EARTH_MAP_BUILD_EXAMPLES)
+# glfw is used for window/context creation in examples/basic-example and in
+# the performance benchmarks (which need a real, current GL context to
+# measure actual GPU behavior); the library itself never calls into it --
+# it only issues GL calls against whatever context the consumer already
+# made current. Keeping it out of the library's own dependency graph
+# otherwise means platforms without a usable glfw backend (e.g. Android)
+# can still build and consume earth_map itself.
+if(EARTH_MAP_BUILD_EXAMPLES OR EARTH_MAP_BUILD_BENCHMARKS)
     find_package(glfw3 REQUIRED)
 endif()
 
@@ -203,26 +212,33 @@ if(EARTH_MAP_BUILD_TESTS)
             earth_map
             GTest::gtest
             GTest::gtest_main
-            benchmark::benchmark
     )
-    
+
     target_include_directories(earth_map_tests PRIVATE tests)
-    
+
     # Add test to CTest
     add_test(NAME UnitTests COMMAND earth_map_tests)
-    
-    # Benchmark test
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/performance")
-        file(GLOB_RECURSE PERF_SOURCES "tests/performance/*.cpp")
-        if(PERF_SOURCES)
-            add_executable(earth_map_benchmarks ${PERF_SOURCES})
-            target_link_libraries(earth_map_benchmarks
-                PRIVATE
-                    earth_map
-                    benchmark::benchmark
-            )
-            target_include_directories(earth_map_benchmarks PRIVATE tests)
-        endif()
+endif()
+
+# Performance benchmarks (Google Benchmark). Deliberately separate from
+# EARTH_MAP_BUILD_TESTS: unlike the gtest-based unit tests (all of which use
+# skip_gl_init and never touch a real context), these need a real, current
+# GL context to measure actual GPU behavior, so they need glfw too (see the
+# find_package(glfw3) guard above). Not registered as a CTest test -- these
+# are comparison tools you run manually before/after a change and diff the
+# numbers, not a pass/fail gate (real GPU timing is inherently
+# hardware/driver-dependent and too noisy for a CI assertion).
+if(EARTH_MAP_BUILD_BENCHMARKS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/performance")
+    file(GLOB_RECURSE PERF_SOURCES "tests/performance/*.cpp")
+    if(PERF_SOURCES)
+        add_executable(earth_map_benchmarks ${PERF_SOURCES})
+        target_link_libraries(earth_map_benchmarks
+            PRIVATE
+                earth_map
+                benchmark::benchmark
+                glfw
+        )
+        target_include_directories(earth_map_benchmarks PRIVATE tests)
     endif()
 endif()
 

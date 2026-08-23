@@ -86,3 +86,21 @@ before implementation.
 Enabled `EARTH_MAP_ENABLE_PERFORMANCE_MONITORING` (see `earth_map::PerformanceStats` and its
 per-zone `FrameZoneTiming` breakdown), read the resulting per-zone cpu/gpu numbers logged from
 `basic_example`, and traced the code path behind the one zone with an anomalous cpu/gpu ratio.
+
+## How to verify a fix
+
+Two independent tools exist for a before/after comparison -- run both before applying a fix,
+apply it, run both again, and compare:
+
+1. **Isolated benchmark**: `tests/performance/tile_upload_stall_benchmark.cpp`, built via the
+   `with_benchmarks` conan option (`conan install . -o with_benchmarks=True --build=missing`,
+   requires its own `EARTH_MAP_BUILD_BENCHMARKS` CMake option, separate from
+   `EARTH_MAP_BUILD_TESTS` since it needs a real GL context). Reproduces the exact hazard in
+   isolation (`BM_TileUpload_WhileSampled`) against a control with no contention
+   (`BM_TileUpload_WithoutContention`) -- the gap between the two *is* this bug. Run the
+   `earth_map_benchmarks` executable directly; it is not wired into CTest (real GPU timing is
+   too hardware/driver-dependent for a pass/fail gate).
+2. **Real-app scenario**: press `P` in `basic_example` to run the scripted camera-flight
+   scenario (dives across several Armenia locations at alternating zoom levels, matching the
+   real move/zoom trigger for this bug). Logs every frame's `PerformanceStats` to
+   `perf_flight.log`. Input is locked out while it runs so two runs are actually comparable.
