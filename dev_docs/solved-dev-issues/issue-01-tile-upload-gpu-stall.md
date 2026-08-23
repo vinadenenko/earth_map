@@ -1,7 +1,24 @@
 # Issue #1: `tile.upload` GPU stall dominating frame time (fps ~30-40 instead of expected)
 
-**Status:** Fix implemented (fencing approach, option 3 below). Not yet rebuilt/verified with real
-numbers -- see "How to verify a fix" below before trusting this closed.
+**Status:** Fencing fix implemented (option 3 below) and measured against a real before/after
+`perf_flight.log` comparison -- **no measured improvement**. When an upload actually happens,
+GPU cost is unchanged (median 16.7ms before vs 18.2ms after, filtering to only frames where a
+real upload occurred). The fencing approach assumes the cost is a timing hazard the GPU
+resolves once a prior read is confirmed done; the data doesn't support that -- waiting for the
+fence doesn't make the write cheap. Root cause needs re-examination; see "Open question" below.
+
+**IMPORTANT CAVEAT ON ALL NUMBERS IN THIS DOCUMENT SO FAR:** every measurement here -- the
+original 28ms discovery, the benchmark numbers, and this fencing before/after comparison -- was
+taken on a Linux VM guest with **no GPU passthrough**, confirmed via `GL_RENDERER: llvmpipe
+(LLVM 15.0.7, 256 bits)` (a pure software rasterizer, no real GPU involved at all). The host has
+a real GPU (RTX 3070 Ti), but the VM currently can't reach it (see the general GL/mesa
+`RUNPATH` issue noted elsewhere in this session -- possibly related, not confirmed). This means:
+the specific "fencing doesn't help" conclusion above is only established on software rendering.
+It is entirely possible the underlying mechanism is different on real hardware (a genuine
+async GPU-pipeline hazard fencing *would* fix) versus whatever llvmpipe is actually doing here
+(more likely a size/re-tiling cost fencing *can't* fix, per "Open question" below). **Real
+hardware numbers are the actual decisive test for whether this fix does anything** -- treat
+everything above as VM-only evidence until re-measured on a real GPU.
 
 ## Symptom
 
@@ -107,11 +124,48 @@ Enabled `EARTH_MAP_ENABLE_PERFORMANCE_MONITORING` (see `earth_map::PerformanceSt
 per-zone `FrameZoneTiming` breakdown), read the resulting per-zone cpu/gpu numbers logged from
 `basic_example`, and traced the code path behind the one zone with an anomalous cpu/gpu ratio.
 
-## How to verify the fix
+## Measured result: fencing did not help
 
-Two independent tools exist for a before/after comparison. Baseline numbers (before this fix)
-are in the Symptom section above and in `perf_flight.log` from an earlier run; rerun both now
-that the fix is applied and compare:
+Compared real `perf_flight.log` runs from `basic_example`'s scripted flight, before and after
+the fencing fix, filtering to only frames where a real upload actually occurred
+(`tile.upload`'s `cpu` field > 0.1ms -- excludes frames where the queue was empty or the
+upload was deferred, which were already cheap in both logs and aren't the thing being fixed):
+
+```
+BEFORE FIX: real uploads = 966/1886 frames (51.2%)
+  real_upload_gpu_ms   mean=17.324ms   median=16.738ms   max=166.875ms
+
+AFTER FIX:  real uploads = 992/1673 frames (59.3%)
+  real_upload_gpu_ms   mean=20.276ms   median=18.166ms   max=149.889ms
+```
+
+No improvement -- if anything slightly worse, though within noise on a software-rendered VM.
+When an upload actually runs, its GPU cost is unaffected by whether the fence confirmed the
+prior sampling read had finished first.
+
+## Open question: is this actually a timing hazard at all?
+
+The fencing fix assumes the cost is the GPU driver stalling or duplicating the array because a
+read might still be in flight, and that confirming the read is done makes the write cheap. The
+measurement above doesn't support that -- waiting for the fence doesn't reduce the cost.
+
+A more likely explanation, particularly for this environment's software rasterizer (llvmpipe):
+`glTexSubImage3D` on a large (512-layer, 128MB) array that has already been used for sampling
+may need to re-tile/re-validate the driver's internal representation on *every* update, as an
+inherent per-call cost tied to the array's *size*, independent of read/write timing. If so, no
+amount of fencing helps, because nothing is actually being raced against.
+
+Next step to disambiguate: measure whether the cost scales with array size specifically
+(`tests/performance/tile_upload_stall_benchmark.cpp`, varying `kLayers` from small up to the
+real 512-layer default) independent of the sampling-contention variable the benchmark already
+isolates. Not yet done -- an earlier attempt crashed, but the crash was traced to an
+environment-specific Mesa driver issue in one particular shell, not a bug in the benchmark
+itself, so this is still open to actually run.
+
+## How to verify a fix (tooling, still valid regardless of the above)
+
+Two independent tools exist for a before/after comparison. Baseline numbers (before the
+fencing fix) are in the Symptom section above and in `perf_flight.log` from that run:
 
 1. **Isolated benchmark**: `tests/performance/tile_upload_stall_benchmark.cpp`, built via the
    `with_benchmarks` conan option (`conan install . -o with_benchmarks=True --build=missing`,
