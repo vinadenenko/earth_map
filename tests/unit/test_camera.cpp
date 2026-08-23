@@ -12,8 +12,7 @@ protected:
     void SetUp() override {
         config_.screen_width = 1920;
         config_.screen_height = 1080;
-        config_.enable_opengl_debug = false;
-        
+
         camera_ = CreatePerspectiveCamera(config_);
         ASSERT_NE(camera_, nullptr);
         ASSERT_TRUE(camera_->Initialize());
@@ -348,8 +347,7 @@ protected:
     void SetUp() override {
         config_.screen_width = 1920;
         config_.screen_height = 1080;
-        config_.enable_opengl_debug = false;
-        
+
         camera_ = CreateOrthographicCamera(config_);
         ASSERT_NE(camera_, nullptr);
         ASSERT_TRUE(camera_->Initialize());

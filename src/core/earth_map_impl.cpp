@@ -219,16 +219,6 @@ bool EarthMapImpl::ValidateConfiguration(const Configuration& config) const {
         return false;
     }
     
-    if (config.max_cache_memory_mb == 0) {
-        spdlog::error("Invalid cache memory size: {} MB", config.max_cache_memory_mb);
-        return false;
-    }
-    
-    if (config.max_tile_count == 0) {
-        spdlog::error("Invalid max tile count: {}", config.max_tile_count);
-        return false;
-    }
-    
     spdlog::debug("Configuration validated successfully");
     return true;
 }

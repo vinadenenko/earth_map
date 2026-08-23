@@ -20,7 +20,6 @@ protected:
     void SetUp() override {
         config_.screen_width = 1920;
         config_.screen_height = 1080;
-        config_.enable_opengl_debug = false;
 
         camera_controller_ = CreateCameraController(config_);
         ASSERT_NE(camera_controller_, nullptr);

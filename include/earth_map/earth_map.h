@@ -38,18 +38,6 @@ struct Configuration {
     /** Screen/window height in pixels */
     std::uint32_t screen_height = 1080;
     
-    /** Whether to enable OpenGL debug output */
-    bool enable_opengl_debug = false;
-    
-    /** Maximum memory usage for cache in MB */
-    std::size_t max_cache_memory_mb = 512;
-    
-    /** Maximum number of tiles to keep in memory */
-    std::size_t max_tile_count = 1000;
-    
-    /** Path to cache directory for tiles */
-    std::string cache_directory = "./cache";
-    
     /** User agent string for tile requests */
     std::string user_agent = "EarthMap/0.1.0";
 
