@@ -408,6 +408,15 @@ std::vector<int> IndirectionTextureManager::GetActiveZoomLevels() const {
     return levels;
 }
 
+std::uint64_t IndirectionTextureManager::GetBytesUsed() const {
+    std::uint64_t total = 0;
+    for (const auto& [identity, page_table] : page_tables_) {
+        total += static_cast<std::uint64_t>(page_table.width) * page_table.height *
+                 sizeof(std::uint16_t);
+    }
+    return total;
+}
+
 void IndirectionTextureManager::ReleasePageTable(
     const imagery::ImageTileKey& imagery_key) {
     if (!imagery_key.IsValid()) {

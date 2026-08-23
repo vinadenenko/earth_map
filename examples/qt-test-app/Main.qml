@@ -113,4 +113,64 @@ Window {
             }
         }
     }
+
+    // Mirrors earth_map::TileRenderStats (see EarthMapQuickItem.h) --
+    // composition/residency data, kept as its own panel since the library
+    // itself keeps this separate from PerformanceStats above.
+    function bytesToMiB(bytes) {
+        return bytes / (1024 * 1024)
+    }
+
+    Column {
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.margins: 8
+        spacing: 4
+        width: 260
+
+        Text {
+            text: "Visible tiles: " + map.visibleTiles
+            font.pixelSize: 16
+        }
+        Text {
+            text: "Rendered tiles: " + map.renderedTiles
+            font.pixelSize: 13
+        }
+        Text {
+            text: "Loaded this frame: " + map.tilesLoadedThisFrame
+            font.pixelSize: 13
+        }
+        Text {
+            text: "Average zoom: " + map.averageLod.toFixed(2)
+            font.pixelSize: 13
+        }
+
+        Text {
+            text: "Tile pool layers: " + map.occupiedPoolLayers + " / " + map.maxPoolLayers
+            font.pixelSize: 13
+        }
+        ProgressBar {
+            width: parent.width
+            from: 0
+            to: Math.max(1, map.maxPoolLayers)
+            value: map.occupiedPoolLayers
+        }
+
+        Text {
+            text: "Tile pool VRAM: " + bytesToMiB(map.tilePoolBytesUsed).toFixed(1) + " / "
+                  + bytesToMiB(map.tilePoolBytesMax).toFixed(1) + " MiB"
+            font.pixelSize: 13
+        }
+        ProgressBar {
+            width: parent.width
+            from: 0
+            to: Math.max(1, map.tilePoolBytesMax)
+            value: map.tilePoolBytesUsed
+        }
+
+        Text {
+            text: "Indirection VRAM: " + bytesToMiB(map.indirectionBytesUsed).toFixed(2) + " MiB"
+            font.pixelSize: 13
+        }
+    }
 }

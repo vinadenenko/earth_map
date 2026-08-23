@@ -166,6 +166,21 @@ public:
      */
     std::uint32_t GetTilePoolTextureID() const;
 
+    /** @brief Get number of tile pool layers currently occupied */
+    std::uint32_t GetPoolOccupiedLayers() const;
+
+    /** @brief Get maximum tile pool layer capacity */
+    std::uint32_t GetPoolMaxLayers() const;
+
+    /** @brief Get tile pool GPU memory currently used, in bytes */
+    std::uint64_t GetPoolBytesUsed() const;
+
+    /** @brief Get tile pool GPU memory budget if fully occupied, in bytes */
+    std::uint64_t GetPoolBytesMax() const;
+
+    /** @brief Get indirection page-table GPU memory currently used, in bytes */
+    std::uint64_t GetIndirectionBytesUsed() const;
+
     /**
      * @brief Get indirection texture ID for a zoom level
      *

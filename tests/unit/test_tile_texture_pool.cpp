@@ -55,6 +55,28 @@ TEST_F(TileTexturePoolTest, UploadsAndFindsCanonicalImageryPage) {
     EXPECT_EQ(pool_->GetOccupiedLayers(), 1U);
 }
 
+TEST_F(TileTexturePoolTest, BytesMaxReflectsFullCapacityRegardlessOfOccupancy) {
+    constexpr std::uint64_t kExpectedMaxBytes = 4ULL * 256U * 256U * 4U;
+
+    EXPECT_EQ(pool_->GetBytesMax(), kExpectedMaxBytes);
+
+    pool_->UploadTile(MakeImageKey(3, 7, 9), pixels_.data(), 256, 256, 4);
+
+    EXPECT_EQ(pool_->GetBytesMax(), kExpectedMaxBytes);
+}
+
+TEST_F(TileTexturePoolTest, BytesUsedScalesWithOccupiedLayers) {
+    constexpr std::uint64_t kBytesPerLayer = 256ULL * 256U * 4U;
+
+    EXPECT_EQ(pool_->GetBytesUsed(), 0U);
+
+    pool_->UploadTile(MakeImageKey(3, 7, 9), pixels_.data(), 256, 256, 4);
+    EXPECT_EQ(pool_->GetBytesUsed(), kBytesPerLayer);
+
+    pool_->UploadTile(MakeImageKey(1, 2, 4), pixels_.data(), 256, 256, 4);
+    EXPECT_EQ(pool_->GetBytesUsed(), 2 * kBytesPerLayer);
+}
+
 TEST_F(TileTexturePoolTest, SameAddressFromDifferentSourcesUsesSeparateLayers) {
     const auto first_source = MakeImageKey(3, 7, 9, "imagery-a");
     const auto second_source = MakeImageKey(3, 7, 9, "imagery-b");

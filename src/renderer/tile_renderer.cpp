@@ -159,7 +159,6 @@ public:
 
         frame_counter_++;
         stats_.rendered_tiles = 0;
-        stats_.texture_binds = 0;
 
         // Process GL uploads from worker threads (must be on GL thread)
         if (texture_coordinator_) {
@@ -494,12 +493,21 @@ public:
             glDisable(GL_CULL_FACE);
         }
 
-        stats_.rendered_tiles = visible_tiles_.size();
-        stats_.texture_binds = 1 + kMaxFallbackLevels;  // tile pool + indirection textures
+        stats_.rendered_tiles = static_cast<std::size_t>(std::count_if(
+            visible_tiles_.begin(), visible_tiles_.end(),
+            [](const TileRenderState& tile) { return tile.is_ready; }));
     }
 
     TileRenderStats GetStats() const override {
-        return stats_;
+        TileRenderStats result = stats_;
+        if (texture_coordinator_) {
+            result.occupied_pool_layers = texture_coordinator_->GetPoolOccupiedLayers();
+            result.max_pool_layers = texture_coordinator_->GetPoolMaxLayers();
+            result.tile_pool_bytes_used = texture_coordinator_->GetPoolBytesUsed();
+            result.tile_pool_bytes_max = texture_coordinator_->GetPoolBytesMax();
+            result.indirection_bytes_used = texture_coordinator_->GetIndirectionBytesUsed();
+        }
+        return result;
     }
 
     std::vector<FrameZoneTiming> GetZoneTimings() const override {

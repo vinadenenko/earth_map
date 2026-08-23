@@ -119,6 +119,26 @@ public:
     std::size_t GetFreeLayers() const { return free_layers_.size(); }
 
     /**
+     * @brief GPU memory currently used by resident tiles, in bytes.
+     *
+     * occupied layers * tile_size^2 * 4 bytes/pixel (RGBA). Encapsulated
+     * here rather than computed by callers since this class is the one
+     * that actually knows its own pixel format.
+     */
+    std::uint64_t GetBytesUsed() const {
+        return static_cast<std::uint64_t>(GetOccupiedLayers()) * tile_size_ * tile_size_ * 4;
+    }
+
+    /**
+     * @brief GPU memory budget if every layer were occupied, in bytes.
+     *
+     * max_layers * tile_size^2 * 4 bytes/pixel (RGBA).
+     */
+    std::uint64_t GetBytesMax() const {
+        return static_cast<std::uint64_t>(max_layers_) * tile_size_ * tile_size_ * 4;
+    }
+
+    /**
      * @brief Get the last-used timestamp for an imagery page
      *
      * @return Time point of last access, or time_point::min() if not loaded

@@ -151,6 +151,33 @@ TEST_F(TileTextureCoordinatorTest, Initialization) {
     EXPECT_EQ(coordinator_->GetAtlasTextureID(), 0u);  // 0 because GL is skipped
 }
 
+TEST_F(TileTextureCoordinatorTest, MemoryStatsStartEmptyAtFullCapacity) {
+    constexpr std::uint64_t kExpectedMaxBytes =
+        static_cast<std::uint64_t>(TileTextureCoordinator::kDefaultMaxPoolLayers) *
+        TileTextureCoordinator::kDefaultTileSize * TileTextureCoordinator::kDefaultTileSize * 4U;
+
+    EXPECT_EQ(coordinator_->GetPoolOccupiedLayers(), 0U);
+    EXPECT_EQ(coordinator_->GetPoolMaxLayers(), TileTextureCoordinator::kDefaultMaxPoolLayers);
+    EXPECT_EQ(coordinator_->GetPoolBytesUsed(), 0U);
+    EXPECT_EQ(coordinator_->GetPoolBytesMax(), kExpectedMaxBytes);
+    EXPECT_EQ(coordinator_->GetIndirectionBytesUsed(), 0U);
+}
+
+TEST_F(TileTextureCoordinatorTest, PoolBytesUsedGrowsAfterUpload) {
+    TileCoordinates tile(0, 0, 5);
+
+    coordinator_->RequestTiles({tile}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator_->ProcessUploads(10);
+
+    ASSERT_TRUE(coordinator_->IsTileReady(tile));
+    EXPECT_EQ(coordinator_->GetPoolOccupiedLayers(), 1U);
+    EXPECT_EQ(
+        coordinator_->GetPoolBytesUsed(),
+        static_cast<std::uint64_t>(TileTextureCoordinator::kDefaultTileSize) *
+            TileTextureCoordinator::kDefaultTileSize * 4U);
+}
+
 // ============================================================================
 // Request Tiles Tests
 // ============================================================================

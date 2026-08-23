@@ -143,6 +143,26 @@ std::uint32_t TileTextureCoordinator::GetTilePoolTextureID() const {
     return tile_pool_->GetTextureArrayID();
 }
 
+std::uint32_t TileTextureCoordinator::GetPoolOccupiedLayers() const {
+    return static_cast<std::uint32_t>(tile_pool_->GetOccupiedLayers());
+}
+
+std::uint32_t TileTextureCoordinator::GetPoolMaxLayers() const {
+    return tile_pool_->GetMaxLayers();
+}
+
+std::uint64_t TileTextureCoordinator::GetPoolBytesUsed() const {
+    return tile_pool_->GetBytesUsed();
+}
+
+std::uint64_t TileTextureCoordinator::GetPoolBytesMax() const {
+    return tile_pool_->GetBytesMax();
+}
+
+std::uint64_t TileTextureCoordinator::GetIndirectionBytesUsed() const {
+    return indirection_manager_->GetBytesUsed();
+}
+
 std::uint32_t TileTextureCoordinator::GetIndirectionTextureID(
     const imagery::ImageTileKey& imagery_key) const {
     return indirection_manager_->GetTextureID(imagery_key);

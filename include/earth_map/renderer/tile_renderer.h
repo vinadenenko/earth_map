@@ -30,17 +30,29 @@ struct TileRenderStats {
     /** Number of tiles currently visible */
     std::size_t visible_tiles = 0;
     
-    /** Number of tiles successfully rendered */
+    /** Number of visible tiles whose texture is ready (loaded, not a fallback) */
     std::size_t rendered_tiles = 0;
     
     /** Number of tiles loaded this frame */
     std::size_t tiles_loaded_this_frame = 0;
-    
-    /** Number of texture binds this frame */
-    std::size_t texture_binds = 0;
-    
+
     /** Average LOD level of visible tiles */
     float average_lod = 0.0f;
+
+    /** Number of tile pool layers currently occupied by resident tiles */
+    std::uint32_t occupied_pool_layers = 0;
+
+    /** Fixed tile pool layer capacity */
+    std::uint32_t max_pool_layers = 0;
+
+    /** Tile pool GPU memory currently used, in bytes */
+    std::uint64_t tile_pool_bytes_used = 0;
+
+    /** Tile pool GPU memory budget if fully occupied, in bytes */
+    std::uint64_t tile_pool_bytes_max = 0;
+
+    /** Indirection page-table GPU memory currently used, in bytes */
+    std::uint64_t indirection_bytes_used = 0;
 };
 
 /**

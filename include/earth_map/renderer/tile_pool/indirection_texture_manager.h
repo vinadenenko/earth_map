@@ -138,6 +138,14 @@ public:
     std::vector<int> GetActiveZoomLevels() const;
 
     /**
+     * @brief GPU memory currently used by all active page tables, in bytes.
+     *
+     * Sum of width * height * sizeof(uint16_t) (one layer-index texel each)
+     * over every currently-allocated page table.
+     */
+    std::uint64_t GetBytesUsed() const;
+
+    /**
      * @brief Release/destroy the page table for an imagery source/matrix/level
      */
     void ReleasePageTable(const imagery::ImageTileKey& imagery_key);

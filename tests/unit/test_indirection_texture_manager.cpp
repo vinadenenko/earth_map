@@ -34,6 +34,24 @@ protected:
 TEST_F(IndirectionTextureManagerTest, InitiallyHasNoAllocatedPageTables) {
     EXPECT_TRUE(manager_->GetActiveZoomLevels().empty());
     EXPECT_EQ(manager_->GetTextureID(imagery::ImageTileKey{}), 0U);
+    EXPECT_EQ(manager_->GetBytesUsed(), 0U);
+}
+
+TEST_F(IndirectionTextureManagerTest, BytesUsedSumsFullAndWindowedPageTables) {
+    const auto full_mode_key = MakeImageKey(3, 2, 4);
+    ASSERT_TRUE(manager_->SetTileLayer(full_mode_key, 42));
+
+    constexpr std::uint64_t kFullTableBytes = 16ULL * 16U * sizeof(std::uint16_t);
+    EXPECT_EQ(manager_->GetBytesUsed(), kFullTableBytes);
+
+    const auto windowed_key = MakeImageKey(16000, 12000, 15);
+    manager_->UpdateWindowCenter(windowed_key);
+    ASSERT_TRUE(manager_->SetTileLayer(windowed_key, 77));
+
+    constexpr std::uint64_t kWindowedTableBytes =
+        static_cast<std::uint64_t>(IndirectionTextureManager::kWindowSize) *
+        IndirectionTextureManager::kWindowSize * sizeof(std::uint16_t);
+    EXPECT_EQ(manager_->GetBytesUsed(), kFullTableBytes + kWindowedTableBytes);
 }
 
 TEST_F(IndirectionTextureManagerTest, MapsCanonicalPageInFullTable) {

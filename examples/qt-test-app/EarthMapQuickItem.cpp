@@ -28,6 +28,7 @@
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/earth_map.h>
 #include <earth_map/renderer/renderer.h>
+#include <earth_map/renderer/tile_renderer.h>
 
 #include <algorithm>
 #include <array>
@@ -413,6 +414,14 @@ signals:
     void performanceStatsReady(int fps, double frameCpuMs, double frameGpuMs, bool hasFrameGpuMs,
                                QVariantList zoneTimings);
 
+    // Mirrors earth_map::TileRenderStats (see EarthMapQuickItem.h's
+    // Q_PROPERTYs), pre-converted to QML-friendly types here on the render
+    // thread for the same reason as performanceStatsReady above.
+    void tileRenderStatsReady(int visibleTiles, int renderedTiles, int tilesLoadedThisFrame,
+                              double averageLod, int occupiedPoolLayers, int maxPoolLayers,
+                              double tilePoolBytesUsed, double tilePoolBytesMax,
+                              double indirectionBytesUsed);
+
     // TEMPORARY, investigation only -- naive app-side measurement wrapping
     // Render(), independent of anything earth_map itself computes. Point is
     // to cross-check performanceStatsReady's fps/frameCpuMs against a
@@ -569,6 +578,21 @@ public slots:
                                     stats.frame_gpu_ms ? *stats.frame_gpu_ms : -1.0,
                                     stats.frame_gpu_ms.has_value(), zone_timings);
 
+        earth_map::TileRenderer* tile_renderer = earth_map_->GetRenderer()->GetTileRenderer();
+        if (tile_renderer) {
+            const earth_map::TileRenderStats tile_stats = tile_renderer->GetStats();
+            emit tileRenderStatsReady(
+                static_cast<int>(tile_stats.visible_tiles),
+                static_cast<int>(tile_stats.rendered_tiles),
+                static_cast<int>(tile_stats.tiles_loaded_this_frame),
+                static_cast<double>(tile_stats.average_lod),
+                static_cast<int>(tile_stats.occupied_pool_layers),
+                static_cast<int>(tile_stats.max_pool_layers),
+                static_cast<double>(tile_stats.tile_pool_bytes_used),
+                static_cast<double>(tile_stats.tile_pool_bytes_max),
+                static_cast<double>(tile_stats.indirection_bytes_used));
+        }
+
         // Reset state that would otherwise bleed into the rest of the Qt
         // Quick scene graph's own (2D, depth-test-free, unscissored)
         // rendering.
@@ -624,6 +648,8 @@ void EarthMapQuickItem::sync() {
                 &EarthMapQuickItem::setPerformanceStats);
         connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::appMeasuredStatsReady, this,
                 &EarthMapQuickItem::setAppMeasuredStats);
+        connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::tileRenderStatsReady, this,
+                &EarthMapQuickItem::setTileRenderStats);
     }
 
     renderer_->SetWindow(window());
@@ -647,6 +673,23 @@ void EarthMapQuickItem::setAppMeasuredStats(double cpuMs, int fps) {
     app_cpu_ms_ = cpuMs;
     app_fps_ = fps;
     emit performanceStatsChanged();
+}
+
+void EarthMapQuickItem::setTileRenderStats(int visibleTiles, int renderedTiles,
+                                           int tilesLoadedThisFrame, double averageLod,
+                                           int occupiedPoolLayers, int maxPoolLayers,
+                                           double tilePoolBytesUsed, double tilePoolBytesMax,
+                                           double indirectionBytesUsed) {
+    visible_tiles_ = visibleTiles;
+    rendered_tiles_ = renderedTiles;
+    tiles_loaded_this_frame_ = tilesLoadedThisFrame;
+    average_lod_ = averageLod;
+    occupied_pool_layers_ = occupiedPoolLayers;
+    max_pool_layers_ = maxPoolLayers;
+    tile_pool_bytes_used_ = tilePoolBytesUsed;
+    tile_pool_bytes_max_ = tilePoolBytesMax;
+    indirection_bytes_used_ = indirectionBytesUsed;
+    emit tileRenderStatsChanged();
 }
 
 void EarthMapQuickItem::cleanup() {

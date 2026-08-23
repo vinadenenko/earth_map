@@ -74,6 +74,23 @@ class EarthMapQuickItem : public QQuickItem {
     Q_PROPERTY(double appCpuMs READ appCpuMs NOTIFY performanceStatsChanged FINAL)
     Q_PROPERTY(int appFps READ appFps NOTIFY performanceStatsChanged FINAL)
 
+    // Mirrors earth_map::TileRenderStats (see
+    // include/earth_map/renderer/tile_renderer.h) -- composition/residency
+    // data ("what is resident right now"), kept separate from
+    // PerformanceStats above ("where did frame time go") because the
+    // library itself keeps that same split. Bytes are exposed as double
+    // (raw bytes) since QML/JS numbers are double-precision and these
+    // values stay well under 2^53.
+    Q_PROPERTY(int visibleTiles READ visibleTiles NOTIFY tileRenderStatsChanged FINAL)
+    Q_PROPERTY(int renderedTiles READ renderedTiles NOTIFY tileRenderStatsChanged FINAL)
+    Q_PROPERTY(int tilesLoadedThisFrame READ tilesLoadedThisFrame NOTIFY tileRenderStatsChanged FINAL)
+    Q_PROPERTY(double averageLod READ averageLod NOTIFY tileRenderStatsChanged FINAL)
+    Q_PROPERTY(int occupiedPoolLayers READ occupiedPoolLayers NOTIFY tileRenderStatsChanged FINAL)
+    Q_PROPERTY(int maxPoolLayers READ maxPoolLayers NOTIFY tileRenderStatsChanged FINAL)
+    Q_PROPERTY(double tilePoolBytesUsed READ tilePoolBytesUsed NOTIFY tileRenderStatsChanged FINAL)
+    Q_PROPERTY(double tilePoolBytesMax READ tilePoolBytesMax NOTIFY tileRenderStatsChanged FINAL)
+    Q_PROPERTY(double indirectionBytesUsed READ indirectionBytesUsed NOTIFY tileRenderStatsChanged FINAL)
+
 public:
     explicit EarthMapQuickItem(QQuickItem* parent = nullptr);
 
@@ -86,8 +103,19 @@ public:
     double appCpuMs() const { return app_cpu_ms_; }
     int appFps() const { return app_fps_; }
 
+    int visibleTiles() const { return visible_tiles_; }
+    int renderedTiles() const { return rendered_tiles_; }
+    int tilesLoadedThisFrame() const { return tiles_loaded_this_frame_; }
+    double averageLod() const { return average_lod_; }
+    int occupiedPoolLayers() const { return occupied_pool_layers_; }
+    int maxPoolLayers() const { return max_pool_layers_; }
+    double tilePoolBytesUsed() const { return tile_pool_bytes_used_; }
+    double tilePoolBytesMax() const { return tile_pool_bytes_max_; }
+    double indirectionBytesUsed() const { return indirection_bytes_used_; }
+
 signals:
     void performanceStatsChanged();
+    void tileRenderStatsChanged();
 public slots:
     void sync();
     void cleanup();
@@ -103,6 +131,14 @@ public slots:
 
     // TEMPORARY, investigation only -- see appCpuMs/appFps above.
     void setAppMeasuredStats(double cpuMs, int fps);
+
+    // Invoked (queued, cross-thread) from
+    // earth_map_qt_detail::EarthMapRenderer::tileRenderStatsReady, emitted
+    // from paint() on the render thread.
+    void setTileRenderStats(int visibleTiles, int renderedTiles, int tilesLoadedThisFrame,
+                            double averageLod, int occupiedPoolLayers, int maxPoolLayers,
+                            double tilePoolBytesUsed, double tilePoolBytesMax,
+                            double indirectionBytesUsed);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -132,6 +168,16 @@ private:
     // TEMPORARY, investigation only -- see appCpuMs/appFps above.
     double app_cpu_ms_ = 0.0;
     int app_fps_ = 0;
+
+    int visible_tiles_ = 0;
+    int rendered_tiles_ = 0;
+    int tiles_loaded_this_frame_ = 0;
+    double average_lod_ = 0.0;
+    int occupied_pool_layers_ = 0;
+    int max_pool_layers_ = 0;
+    double tile_pool_bytes_used_ = 0.0;
+    double tile_pool_bytes_max_ = 0.0;
+    double indirection_bytes_used_ = 0.0;
 
     friend class earth_map_qt_detail::EarthMapRenderer;
 
