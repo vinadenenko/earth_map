@@ -15,6 +15,7 @@
 #include <queue>
 #include <set>
 #include <sstream>
+#include <system_error>
 #include <thread>
 
 namespace earth_map {
@@ -97,6 +98,20 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb,
     return total_size;
 }
 
+/// Check whether a local SRTM directory contains at least one entry.
+/// Queried once per configuration (not per tile) so an empty/nonexistent
+/// directory doesn't cost a filesystem stat for every tile lookup --
+/// mesh generation can query tens of thousands of coordinates (e.g.
+/// ElevationManager::GenerateNormals samples 5 points per vertex).
+bool DirectoryHasAnyEntries(const std::string& directory) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec) || ec) {
+        return false;
+    }
+    return std::filesystem::directory_iterator(directory, ec) !=
+           std::filesystem::directory_iterator{};
+}
+
 } // anonymous namespace
 
 /// Basic SRTM loader implementation
@@ -123,6 +138,8 @@ public:
                 return false;
             }
         }
+
+        RefreshLocalDirectoryHasTiles();
 
         return true;
     }
@@ -238,6 +255,7 @@ public:
 
     bool SetConfiguration(const SRTMLoaderConfig& config) override {
         config_ = config;
+        RefreshLocalDirectoryHasTiles();
         return true;
     }
 
@@ -252,9 +270,26 @@ public:
     }
 
 private:
+    /// Re-derive local_directory_has_tiles_ from the current config. Called
+    /// once per Initialize()/SetConfiguration(), not per tile lookup.
+    void RefreshLocalDirectoryHasTiles() {
+        local_directory_has_tiles_ =
+            config_.source == SRTMSource::LOCAL_DISK &&
+            DirectoryHasAnyEntries(config_.local_directory);
+    }
+
     SRTMLoadResult LoadFromDisk(const SRTMCoordinates& coordinates) {
         SRTMLoadResult result;
         result.coordinates = coordinates;
+
+        // Skip the per-tile filesystem stat entirely once we already know
+        // the local directory has no tiles at all -- otherwise every
+        // lookup against an empty/misconfigured directory pays for a
+        // stat(), and mesh generation can issue tens of thousands of them.
+        if (!local_directory_has_tiles_) {
+            result.error_message = "Local SRTM directory has no tiles: " + config_.local_directory;
+            return result;
+        }
 
         // Try preferred resolution first
         std::string filename = FormatSRTMFilename(coordinates);
@@ -388,6 +423,10 @@ private:
     SRTMLoaderConfig config_;
     ThreadPool thread_pool_;
     SRTMLoaderStats stats_;
+
+    // Derived from config_.local_directory by RefreshLocalDirectoryHasTiles();
+    // see LoadFromDisk() for why this exists.
+    bool local_directory_has_tiles_ = false;
 
     mutable std::mutex pending_mutex_;
     std::set<SRTMCoordinates> pending_loads_;

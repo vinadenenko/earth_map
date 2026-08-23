@@ -99,6 +99,59 @@ TEST_F(SRTMLoaderTest, LoadFromDiskNotFound) {
     EXPECT_FALSE(result.error_message.empty());
 }
 
+TEST_F(SRTMLoaderTest, LoadFromDiskEmptyDirectoryFailsFast) {
+    // test_directory_ exists (created by SetUp()) but has no tiles.
+
+    SRTMLoaderConfig config;
+    config.source = SRTMSource::LOCAL_DISK;
+    config.local_directory = test_directory_;
+
+    auto loader = SRTMLoader::Create(config);
+    ASSERT_NE(loader, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    const auto result = loader->LoadTile(coords);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.tile_data, nullptr);
+    EXPECT_NE(result.error_message.find("no tiles"), std::string::npos);
+}
+
+TEST_F(SRTMLoaderTest, LoadFromDiskNonexistentDirectoryFailsFast) {
+    SRTMLoaderConfig config;
+    config.source = SRTMSource::LOCAL_DISK;
+    config.local_directory = test_directory_ + "/does_not_exist";
+
+    auto loader = SRTMLoader::Create(config);
+    ASSERT_NE(loader, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    const auto result = loader->LoadTile(coords);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.tile_data, nullptr);
+}
+
+TEST_F(SRTMLoaderTest, SetConfigurationRefreshesEmptyDirectoryState) {
+    SRTMLoaderConfig config;
+    config.source = SRTMSource::LOCAL_DISK;
+    config.local_directory = test_directory_;
+
+    auto loader = SRTMLoader::Create(config);
+    ASSERT_NE(loader, nullptr);
+
+    const SRTMCoordinates coords{37, -122};
+    ASSERT_FALSE(loader->LoadTile(coords).success);
+
+    // A tile appears after construction (e.g. dataset installed mid-run) --
+    // SetConfiguration() must re-check the directory, not keep treating it
+    // as permanently empty.
+    CreateTestHGTFile(coords, 1500);
+    ASSERT_TRUE(loader->SetConfiguration(config));
+
+    const auto result = loader->LoadTile(coords);
+    EXPECT_TRUE(result.success);
+    ASSERT_NE(result.tile_data, nullptr);
+}
+
 TEST_F(SRTMLoaderTest, LoadInvalidCoordinates) {
     SRTMLoaderConfig config;
     config.source = SRTMSource::LOCAL_DISK;
