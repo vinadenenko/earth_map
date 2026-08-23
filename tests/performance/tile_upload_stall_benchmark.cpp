@@ -200,22 +200,25 @@ earth_map::imagery::ImageTileKey MakeKey(int index) {
 }
 
 constexpr std::uint32_t kTileSize = 256;
-// Matches TileTextureCoordinator's real kDefaultMaxPoolLayers (128MB
-// array) deliberately, not a small synthetic pool: if the hazard is a
-// whole-array driver-side copy-to-avoid-stalling, its cost should scale
-// with array size, and a tiny pool would understate the real effect.
-constexpr std::uint32_t kLayers = 8;
 
 }  // namespace
 
 // Reproduces issue-01: upload a new tile into the shared texture array
-// immediately after a draw call samples that same array. Before the fix,
-// this should show gpu time far above BM_TileUpload_WithoutContention's
-// baseline; after, the two should converge.
+// immediately after a draw call samples that same array. Parameterized by
+// array layer count (state.range(0)) -- see dev_docs/solved-dev-issues/
+// issue-01-tile-upload-gpu-stall.md's "Open question": the fencing fix
+// measured no improvement in the live app, raising the possibility that
+// the cost is tied to the array's *size* (re-tiling/revalidating a large
+// already-sampled array on every update) rather than to read/write timing.
+// If that's right, this benchmark's WhileSampled/32 should cost much less
+// than WhileSampled/512, independent of contention. If the cost is flat
+// across sizes instead, size isn't the explanation and the timing-hazard
+// theory is back on the table.
 static void BM_TileUpload_WhileSampled(benchmark::State& state) {
+    const std::uint32_t layers = static_cast<std::uint32_t>(state.range(0));
     GLFWwindow* window = CreateHeadlessGlContext();
     {
-        earth_map::TileTexturePool pool(kTileSize, kLayers, /*skip_gl_init=*/false);
+        earth_map::TileTexturePool pool(kTileSize, layers, /*skip_gl_init=*/false);
         const SamplingDraw sampler;
         const std::vector<std::uint8_t> pixels(
             static_cast<std::size_t>(kTileSize) * kTileSize * 4, 0x7F);
@@ -225,7 +228,7 @@ static void BM_TileUpload_WhileSampled(benchmark::State& state) {
             sampler.Draw(pool.GetTextureArrayID());
 
             const auto key = MakeKey(next_key);
-            next_key = (next_key + 1) % static_cast<int>(kLayers);
+            next_key = (next_key + 1) % static_cast<int>(layers);
 
             const double gpu_seconds = TimeGpuWork([&] {
                 pool.UploadTile(key, pixels.data(), kTileSize, kTileSize, 4);
@@ -236,23 +239,31 @@ static void BM_TileUpload_WhileSampled(benchmark::State& state) {
     glfwDestroyWindow(window);
     glfwTerminate();
 }
-BENCHMARK(BM_TileUpload_WhileSampled)->UseManualTime()->Iterations(50)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_TileUpload_WhileSampled)
+    ->UseManualTime()
+    ->Iterations(50)
+    ->Unit(benchmark::kMillisecond)
+    ->Arg(8)
+    ->Arg(32)
+    ->Arg(128)
+    ->Arg(512);  // 512 = TileTextureCoordinator's real kDefaultMaxPoolLayers (128MB array)
 
-// Control: the same upload, with no preceding draw call sampling the
-// array. If this reports dramatically lower GPU time than the benchmark
-// above, that gap IS the read/write hazard from issue-01 -- not some
-// inherent cost of glTexSubImage3D itself.
+// Control: the same upload, same array-size sweep, with no preceding draw
+// call sampling the array. The gap between this and WhileSampled at the
+// *same* array size is the read/write hazard from issue-01; how that gap
+// changes across sizes is what actually answers the "Open question" above.
 static void BM_TileUpload_WithoutContention(benchmark::State& state) {
+    const std::uint32_t layers = static_cast<std::uint32_t>(state.range(0));
     GLFWwindow* window = CreateHeadlessGlContext();
     {
-        earth_map::TileTexturePool pool(kTileSize, kLayers, /*skip_gl_init=*/false);
+        earth_map::TileTexturePool pool(kTileSize, layers, /*skip_gl_init=*/false);
         const std::vector<std::uint8_t> pixels(
             static_cast<std::size_t>(kTileSize) * kTileSize * 4, 0x7F);
 
         int next_key = 0;
         for (auto _ : state) {
             const auto key = MakeKey(next_key);
-            next_key = (next_key + 1) % static_cast<int>(kLayers);
+            next_key = (next_key + 1) % static_cast<int>(layers);
 
             const double gpu_seconds = TimeGpuWork([&] {
                 pool.UploadTile(key, pixels.data(), kTileSize, kTileSize, 4);
@@ -263,6 +274,13 @@ static void BM_TileUpload_WithoutContention(benchmark::State& state) {
     glfwDestroyWindow(window);
     glfwTerminate();
 }
-BENCHMARK(BM_TileUpload_WithoutContention)->UseManualTime()->Iterations(50)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_TileUpload_WithoutContention)
+    ->UseManualTime()
+    ->Iterations(50)
+    ->Unit(benchmark::kMillisecond)
+    ->Arg(8)
+    ->Arg(32)
+    ->Arg(128)
+    ->Arg(512);
 
 BENCHMARK_MAIN();
