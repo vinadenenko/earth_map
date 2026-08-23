@@ -134,6 +134,22 @@ TEST_F(ElevationProviderTest, GetElevationTileNotFound) {
     EXPECT_FALSE(result.valid);
 }
 
+TEST_F(ElevationProviderTest, RepeatedMissingTileSkipsLoaderAfterFirstAttempt) {
+    auto provider = CreateProvider();
+    ASSERT_NE(provider, nullptr);
+
+    // Query the same non-existent tile several times. Only the first
+    // lookup should reach the loader (and disk); subsequent ones should be
+    // short-circuited by the elevation cache's negative-lookup tracking.
+    for (int i = 0; i < 5; ++i) {
+        const auto result = provider->GetElevation(37.5, -121.5);
+        EXPECT_FALSE(result.valid);
+    }
+
+    const auto loader_stats = provider->GetLoaderStatistics();
+    EXPECT_EQ(loader_stats.tiles_failed, 1u);
+}
+
 TEST_F(ElevationProviderTest, GetElevationMultipleTiles) {
     // Create multiple test tiles
     CreateTestHGTFile({37, -122}, 1500);
