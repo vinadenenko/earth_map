@@ -137,10 +137,6 @@ Window {
             font.pixelSize: 13
         }
         Text {
-            text: "Loaded this frame: " + map.tilesLoadedThisFrame
-            font.pixelSize: 13
-        }
-        Text {
             text: "Average zoom: " + map.averageLod.toFixed(2)
             font.pixelSize: 13
         }

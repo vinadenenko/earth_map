@@ -83,7 +83,6 @@ class EarthMapQuickItem : public QQuickItem {
     // values stay well under 2^53.
     Q_PROPERTY(int visibleTiles READ visibleTiles NOTIFY tileRenderStatsChanged FINAL)
     Q_PROPERTY(int renderedTiles READ renderedTiles NOTIFY tileRenderStatsChanged FINAL)
-    Q_PROPERTY(int tilesLoadedThisFrame READ tilesLoadedThisFrame NOTIFY tileRenderStatsChanged FINAL)
     Q_PROPERTY(double averageLod READ averageLod NOTIFY tileRenderStatsChanged FINAL)
     Q_PROPERTY(int occupiedPoolLayers READ occupiedPoolLayers NOTIFY tileRenderStatsChanged FINAL)
     Q_PROPERTY(int maxPoolLayers READ maxPoolLayers NOTIFY tileRenderStatsChanged FINAL)
@@ -105,7 +104,6 @@ public:
 
     int visibleTiles() const { return visible_tiles_; }
     int renderedTiles() const { return rendered_tiles_; }
-    int tilesLoadedThisFrame() const { return tiles_loaded_this_frame_; }
     double averageLod() const { return average_lod_; }
     int occupiedPoolLayers() const { return occupied_pool_layers_; }
     int maxPoolLayers() const { return max_pool_layers_; }
@@ -135,10 +133,9 @@ public slots:
     // Invoked (queued, cross-thread) from
     // earth_map_qt_detail::EarthMapRenderer::tileRenderStatsReady, emitted
     // from paint() on the render thread.
-    void setTileRenderStats(int visibleTiles, int renderedTiles, int tilesLoadedThisFrame,
-                            double averageLod, int occupiedPoolLayers, int maxPoolLayers,
-                            double tilePoolBytesUsed, double tilePoolBytesMax,
-                            double indirectionBytesUsed);
+    void setTileRenderStats(int visibleTiles, int renderedTiles, double averageLod,
+                            int occupiedPoolLayers, int maxPoolLayers, double tilePoolBytesUsed,
+                            double tilePoolBytesMax, double indirectionBytesUsed);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -171,7 +168,6 @@ private:
 
     int visible_tiles_ = 0;
     int rendered_tiles_ = 0;
-    int tiles_loaded_this_frame_ = 0;
     double average_lod_ = 0.0;
     int occupied_pool_layers_ = 0;
     int max_pool_layers_ = 0;

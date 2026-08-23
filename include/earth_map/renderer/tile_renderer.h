@@ -32,9 +32,6 @@ struct TileRenderStats {
     
     /** Number of visible tiles whose texture is ready (loaded, not a fallback) */
     std::size_t rendered_tiles = 0;
-    
-    /** Number of tiles loaded this frame */
-    std::size_t tiles_loaded_this_frame = 0;
 
     /** Average LOD level of visible tiles */
     float average_lod = 0.0f;

@@ -417,10 +417,9 @@ signals:
     // Mirrors earth_map::TileRenderStats (see EarthMapQuickItem.h's
     // Q_PROPERTYs), pre-converted to QML-friendly types here on the render
     // thread for the same reason as performanceStatsReady above.
-    void tileRenderStatsReady(int visibleTiles, int renderedTiles, int tilesLoadedThisFrame,
-                              double averageLod, int occupiedPoolLayers, int maxPoolLayers,
-                              double tilePoolBytesUsed, double tilePoolBytesMax,
-                              double indirectionBytesUsed);
+    void tileRenderStatsReady(int visibleTiles, int renderedTiles, double averageLod,
+                              int occupiedPoolLayers, int maxPoolLayers, double tilePoolBytesUsed,
+                              double tilePoolBytesMax, double indirectionBytesUsed);
 
     // TEMPORARY, investigation only -- naive app-side measurement wrapping
     // Render(), independent of anything earth_map itself computes. Point is
@@ -584,7 +583,6 @@ public slots:
             emit tileRenderStatsReady(
                 static_cast<int>(tile_stats.visible_tiles),
                 static_cast<int>(tile_stats.rendered_tiles),
-                static_cast<int>(tile_stats.tiles_loaded_this_frame),
                 static_cast<double>(tile_stats.average_lod),
                 static_cast<int>(tile_stats.occupied_pool_layers),
                 static_cast<int>(tile_stats.max_pool_layers),
@@ -675,14 +673,12 @@ void EarthMapQuickItem::setAppMeasuredStats(double cpuMs, int fps) {
     emit performanceStatsChanged();
 }
 
-void EarthMapQuickItem::setTileRenderStats(int visibleTiles, int renderedTiles,
-                                           int tilesLoadedThisFrame, double averageLod,
+void EarthMapQuickItem::setTileRenderStats(int visibleTiles, int renderedTiles, double averageLod,
                                            int occupiedPoolLayers, int maxPoolLayers,
                                            double tilePoolBytesUsed, double tilePoolBytesMax,
                                            double indirectionBytesUsed) {
     visible_tiles_ = visibleTiles;
     rendered_tiles_ = renderedTiles;
-    tiles_loaded_this_frame_ = tilesLoadedThisFrame;
     average_lod_ = averageLod;
     occupied_pool_layers_ = occupiedPoolLayers;
     max_pool_layers_ = maxPoolLayers;
