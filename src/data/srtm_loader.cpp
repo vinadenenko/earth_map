@@ -393,14 +393,6 @@ private:
     std::set<SRTMCoordinates> pending_loads_;
 };
 
-// Custom comparator for SRTMCoordinates in std::set
-bool operator<(const SRTMCoordinates& lhs, const SRTMCoordinates& rhs) {
-    if (lhs.latitude != rhs.latitude) {
-        return lhs.latitude < rhs.latitude;
-    }
-    return lhs.longitude < rhs.longitude;
-}
-
 std::unique_ptr<SRTMLoader> SRTMLoader::Create(const SRTMLoaderConfig& config) {
     auto loader = std::make_unique<BasicSRTMLoader>(config);
     if (!loader->Initialize(config)) {

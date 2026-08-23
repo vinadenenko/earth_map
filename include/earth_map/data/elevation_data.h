@@ -32,6 +32,18 @@ struct SRTMCoordinates {
     }
 };
 
+/// Orders by latitude, then longitude. Needed wherever SRTMCoordinates is
+/// stored in an ordered container (e.g. BasicSRTMLoader::pending_loads_ in
+/// srtm_loader.cpp) -- must be visible at the point of first use: MSVC
+/// instantiates std::less<SRTMCoordinates> eagerly for inline member
+/// functions, unlike GCC, which defers to the end of the translation unit.
+inline bool operator<(const SRTMCoordinates& lhs, const SRTMCoordinates& rhs) noexcept {
+    if (lhs.latitude != rhs.latitude) {
+        return lhs.latitude < rhs.latitude;
+    }
+    return lhs.longitude < rhs.longitude;
+}
+
 /// SRTM resolution types
 enum class SRTMResolution {
     SRTM1,  ///< 1 arc-second (~30m) - 3601×3601 samples
