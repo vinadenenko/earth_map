@@ -211,7 +211,7 @@ Window {
     }
 
         Rectangle {
-        width: 290
+        width: 180
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: 12
@@ -228,25 +228,41 @@ Window {
             spacing: 6
 
             Text {
-                text: "Camera and performance scenarios"
+                text: "Scenarios"
                 color: "white"
                 font.bold: true
                 font.pixelSize: 14
             }
+            Button {
+                text: "Run steady z13"
+                enabled: !map.performanceScenarioActive
+                onClicked: map.startPerformanceScenario("steady-z13")
+            }
+            Button {
+                text: "Run flight"
+                enabled: !map.performanceScenarioActive
+                onClicked: map.startPerformanceScenario("flight")
+            }
 
-            Row {
-                spacing: 6
-
-                Button {
-                    text: "Run steady z13"
-                    enabled: !map.performanceScenarioActive
-                    onClicked: map.startPerformanceScenario("steady-z13")
-                }
-                Button {
-                    text: "Run flight"
-                    enabled: !map.performanceScenarioActive
-                    onClicked: map.startPerformanceScenario("flight")
-                }
+            Text {
+                text: "GPU fragment probes (steady z13)"
+                color: "#cfd8dc"
+                font.pixelSize: 12
+            }
+            Button {
+                text: "Flat fill"
+                enabled: !map.performanceScenarioActive
+                onClicked: map.startPerformanceScenario("steady-z13-flat-fill")
+            }
+            Button {
+                text: "Canonical coordinates"
+                enabled: !map.performanceScenarioActive
+                onClicked: map.startPerformanceScenario("steady-z13-canonical-coordinates")
+            }
+            Button {
+                text: "Unlit imagery"
+                enabled: !map.performanceScenarioActive
+                onClicked: map.startPerformanceScenario("steady-z13-unlit-imagery")
             }
 
             Button {

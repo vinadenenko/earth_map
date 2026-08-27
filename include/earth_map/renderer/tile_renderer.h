@@ -53,6 +53,22 @@ struct TileRenderStats {
 };
 
 /**
+ * @brief Fragment paths used to attribute virtual-imagery GPU cost.
+ *
+ * FullImagery is the normal renderer.  The other values are development
+ * probes: each is compiled as a separate shader program, so selecting one
+ * does not put a runtime branch into the normal fragment path.  They are
+ * useful only with performance monitoring enabled and must never be used to
+ * judge imagery correctness.
+ */
+enum class TileFragmentShadingProbe : std::uint8_t {
+    FullImagery,
+    FlatFill,
+    CanonicalCoordinates,
+    UnlitImagery,
+};
+
+/**
  * @brief Tile rendering configuration
  */
 struct TileRenderConfig {
@@ -61,6 +77,8 @@ struct TileRenderConfig {
     bool enable_lod_transitions = true;           ///< Enable smooth LOD transitions
     float min_lod_distance = 100.0f;          ///< Minimum distance for LOD switching
     float max_lod_distance = 10000.0f;         ///< Maximum distance for LOD switching
+    TileFragmentShadingProbe fragment_shading_probe =
+        TileFragmentShadingProbe::FullImagery; ///< Development-only GPU attribution probe
 };
 
 /**

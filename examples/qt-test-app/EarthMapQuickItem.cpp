@@ -171,6 +171,9 @@ const std::array<ScenarioWaypoint, 8> kFlightScenarioWaypoints = {{
 enum class PerformanceScenarioKind {
     None,
     SteadyZ13,
+    SteadyZ13FlatFill,
+    SteadyZ13CanonicalCoordinates,
+    SteadyZ13UnlitImagery,
     Flight,
     FlightPreview,
 };
@@ -178,6 +181,15 @@ enum class PerformanceScenarioKind {
 PerformanceScenarioKind ParsePerformanceScenarioKind(const QString& name) {
     if (name == QStringLiteral("steady-z13")) {
         return PerformanceScenarioKind::SteadyZ13;
+    }
+    if (name == QStringLiteral("steady-z13-flat-fill")) {
+        return PerformanceScenarioKind::SteadyZ13FlatFill;
+    }
+    if (name == QStringLiteral("steady-z13-canonical-coordinates")) {
+        return PerformanceScenarioKind::SteadyZ13CanonicalCoordinates;
+    }
+    if (name == QStringLiteral("steady-z13-unlit-imagery")) {
+        return PerformanceScenarioKind::SteadyZ13UnlitImagery;
     }
     if (name == QStringLiteral("flight")) {
         return PerformanceScenarioKind::Flight;
@@ -192,6 +204,12 @@ QString PerformanceScenarioName(PerformanceScenarioKind kind) {
     switch (kind) {
     case PerformanceScenarioKind::SteadyZ13:
         return QStringLiteral("steady-z13");
+    case PerformanceScenarioKind::SteadyZ13FlatFill:
+        return QStringLiteral("steady-z13-flat-fill");
+    case PerformanceScenarioKind::SteadyZ13CanonicalCoordinates:
+        return QStringLiteral("steady-z13-canonical-coordinates");
+    case PerformanceScenarioKind::SteadyZ13UnlitImagery:
+        return QStringLiteral("steady-z13-unlit-imagery");
     case PerformanceScenarioKind::Flight:
         return QStringLiteral("flight");
     case PerformanceScenarioKind::FlightPreview:
@@ -202,9 +220,48 @@ QString PerformanceScenarioName(PerformanceScenarioKind kind) {
     return QStringLiteral("unknown");
 }
 
-bool IsRecordingPerformanceScenario(PerformanceScenarioKind kind) {
+bool IsSteadyZ13Scenario(PerformanceScenarioKind kind) {
     return kind == PerformanceScenarioKind::SteadyZ13 ||
-           kind == PerformanceScenarioKind::Flight;
+           kind == PerformanceScenarioKind::SteadyZ13FlatFill ||
+           kind == PerformanceScenarioKind::SteadyZ13CanonicalCoordinates ||
+           kind == PerformanceScenarioKind::SteadyZ13UnlitImagery;
+}
+
+earth_map::TileFragmentShadingProbe FragmentProbeForScenario(
+    PerformanceScenarioKind kind) {
+    switch (kind) {
+    case PerformanceScenarioKind::SteadyZ13FlatFill:
+        return earth_map::TileFragmentShadingProbe::FlatFill;
+    case PerformanceScenarioKind::SteadyZ13CanonicalCoordinates:
+        return earth_map::TileFragmentShadingProbe::CanonicalCoordinates;
+    case PerformanceScenarioKind::SteadyZ13UnlitImagery:
+        return earth_map::TileFragmentShadingProbe::UnlitImagery;
+    case PerformanceScenarioKind::None:
+    case PerformanceScenarioKind::SteadyZ13:
+    case PerformanceScenarioKind::Flight:
+    case PerformanceScenarioKind::FlightPreview:
+        return earth_map::TileFragmentShadingProbe::FullImagery;
+    }
+    return earth_map::TileFragmentShadingProbe::FullImagery;
+}
+
+QString FragmentProbeName(earth_map::TileFragmentShadingProbe probe) {
+    switch (probe) {
+    case earth_map::TileFragmentShadingProbe::FullImagery:
+        return QStringLiteral("full-imagery");
+    case earth_map::TileFragmentShadingProbe::FlatFill:
+        return QStringLiteral("flat-fill");
+    case earth_map::TileFragmentShadingProbe::CanonicalCoordinates:
+        return QStringLiteral("canonical-coordinates");
+    case earth_map::TileFragmentShadingProbe::UnlitImagery:
+        return QStringLiteral("unlit-imagery");
+    }
+    return QStringLiteral("full-imagery");
+}
+
+bool IsRecordingPerformanceScenario(PerformanceScenarioKind kind) {
+    return kind != PerformanceScenarioKind::None &&
+           kind != PerformanceScenarioKind::FlightPreview;
 }
 
 struct ScenarioSample final {
@@ -234,6 +291,8 @@ struct PerformanceScenarioState final {
     std::size_t waypoint_index = 0;
     QString started_at_utc;
     QString finish_reason;
+    earth_map::TileFragmentShadingProbe fragment_probe =
+        earth_map::TileFragmentShadingProbe::FullImagery;
     std::vector<ScenarioSample> samples;
 };
 
@@ -888,16 +947,22 @@ private:
                                   earth_map::CameraController& camera) {
         performance_scenario_ = {};
         performance_scenario_.kind = kind;
+        performance_scenario_.fragment_probe = FragmentProbeForScenario(kind);
         performance_scenario_.active = true;
         performance_scenario_.started_this_frame = true;
         performance_scenario_.started_at_utc =
             QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
 
+        // The renderer and camera are render-thread-owned.  Select the
+        // compile-time-specialized fragment program before the warm-up, so
+        // shader selection and any cache effects are excluded from samples.
+        SetFragmentShadingProbe(performance_scenario_.fragment_probe);
+
         // All scripted routes begin from a known orbital camera state. The
         // steady benchmark starts at z13; both flight modes start at z8,
         // matching the basic example's streaming stress path.
         camera.SetMovementMode(earth_map::CameraController::MovementMode::ORBIT);
-        const int start_zoom = kind == PerformanceScenarioKind::SteadyZ13 ? 13 : 8;
+        const int start_zoom = IsSteadyZ13Scenario(kind) ? 13 : 8;
         camera.SetGeographicPosition(44.5152, 40.1872,
                                      AltitudeMetersForScenarioZoom(start_zoom));
 
@@ -917,6 +982,22 @@ private:
                 .arg(PerformanceScenarioName(kind))
                 .arg(kScenarioWarmupSeconds, 0, 'f', 0),
             {});
+    }
+
+    void SetFragmentShadingProbe(earth_map::TileFragmentShadingProbe probe) {
+        if (!earth_map_) {
+            return;
+        }
+        earth_map::Renderer* renderer = earth_map_->GetRenderer();
+        earth_map::TileRenderer* tile_renderer =
+            renderer ? renderer->GetTileRenderer() : nullptr;
+        if (!tile_renderer) {
+            qWarning() << "EarthMap performance probe: tile renderer unavailable";
+            return;
+        }
+        earth_map::TileRenderConfig config = tile_renderer->GetConfig();
+        config.fragment_shading_probe = probe;
+        tile_renderer->SetConfig(config);
     }
 
     void StartFlightWaypoint(earth_map::CameraController& camera) {
@@ -958,7 +1039,7 @@ private:
         if (performance_scenario_.phase != PerformanceScenarioState::Phase::PreviewingFlight) {
             performance_scenario_.measurement_elapsed_seconds += delta_seconds;
         }
-        if (performance_scenario_.kind == PerformanceScenarioKind::SteadyZ13) {
+        if (IsSteadyZ13Scenario(performance_scenario_.kind)) {
             if (performance_scenario_.measurement_elapsed_seconds >= kSteadyScenarioSeconds) {
                 performance_scenario_.completed = true;
                 performance_scenario_.finish_reason = QStringLiteral("completed");
@@ -1001,9 +1082,11 @@ private:
 
     QJsonObject BuildPerformanceScenarioReport() const {
         QJsonObject report;
-        report[QStringLiteral("schema_version")] = 1;
+        report[QStringLiteral("schema_version")] = 2;
         report[QStringLiteral("report_type")] = QStringLiteral("earth_map.qt.performance");
         report[QStringLiteral("scenario")] = PerformanceScenarioName(performance_scenario_.kind);
+        report[QStringLiteral("fragment_shading_probe")] =
+            FragmentProbeName(performance_scenario_.fragment_probe);
         report[QStringLiteral("outcome")] = performance_scenario_.completed
                                                   ? QStringLiteral("completed")
                                                   : QStringLiteral("stopped");
@@ -1173,6 +1256,9 @@ private:
         const bool completed = performance_scenario_.completed;
         const QString outcome = completed ? QStringLiteral("completed")
                                           : QStringLiteral("stopped");
+
+        // Benchmark probes are never left active for interactive rendering.
+        SetFragmentShadingProbe(earth_map::TileFragmentShadingProbe::FullImagery);
 
         if (!IsRecordingPerformanceScenario(performance_scenario_.kind)) {
             performance_scenario_.active = false;
