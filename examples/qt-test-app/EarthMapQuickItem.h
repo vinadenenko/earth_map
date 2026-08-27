@@ -3,6 +3,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QQmlEngine>
+#include <QString>
 #include <QVariant>
 
 #include <cstdint>
@@ -90,6 +91,17 @@ class EarthMapQuickItem : public QQuickItem {
     Q_PROPERTY(double tilePoolBytesMax READ tilePoolBytesMax NOTIFY tileRenderStatsChanged FINAL)
     Q_PROPERTY(double indirectionBytesUsed READ indirectionBytesUsed NOTIFY tileRenderStatsChanged FINAL)
 
+    // The benchmark runner is deliberately owned by the render thread: it
+    // controls CameraController there, records renderer statistics without
+    // updating the QML profiling widgets every frame, and writes one report
+    // after completion. These properties only expose its state to QML.
+    Q_PROPERTY(bool performanceScenarioActive READ performanceScenarioActive
+               NOTIFY performanceScenarioChanged FINAL)
+    Q_PROPERTY(QString performanceScenarioStatus READ performanceScenarioStatus
+               NOTIFY performanceScenarioChanged FINAL)
+    Q_PROPERTY(QString performanceScenarioReportPath READ performanceScenarioReportPath
+               NOTIFY performanceScenarioChanged FINAL)
+
 public:
     explicit EarthMapQuickItem(QQuickItem* parent = nullptr);
 
@@ -111,9 +123,22 @@ public:
     double tilePoolBytesMax() const { return tile_pool_bytes_max_; }
     double indirectionBytesUsed() const { return indirection_bytes_used_; }
 
+    bool performanceScenarioActive() const { return performance_scenario_active_; }
+    QString performanceScenarioStatus() const { return performance_scenario_status_; }
+    QString performanceScenarioReportPath() const { return performance_scenario_report_path_; }
+
+    // Valid names are "steady-z13", "flight", and "flight-preview". The
+    // preview follows the flight route without recording a report and keeps
+    // the live QML HUD active. The call is received on the GUI thread and
+    // forwarded at the next Qt Quick synchronization point so
+    // CameraController remains render-thread-owned.
+    Q_INVOKABLE void startPerformanceScenario(const QString& name);
+    Q_INVOKABLE void stopPerformanceScenario();
+
 signals:
     void performanceStatsChanged();
     void tileRenderStatsChanged();
+    void performanceScenarioChanged();
 public slots:
     void sync();
     void cleanup();
@@ -136,6 +161,9 @@ public slots:
     void setTileRenderStats(int visibleTiles, int renderedTiles, double averageLod,
                             int occupiedPoolLayers, int maxPoolLayers, double tilePoolBytesUsed,
                             double tilePoolBytesMax, double indirectionBytesUsed);
+
+    void setPerformanceScenarioState(bool active, const QString& status,
+                                     const QString& reportPath);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -174,6 +202,12 @@ private:
     double tile_pool_bytes_used_ = 0.0;
     double tile_pool_bytes_max_ = 0.0;
     double indirection_bytes_used_ = 0.0;
+
+    bool performance_scenario_active_ = false;
+    QString performance_scenario_status_;
+    QString performance_scenario_report_path_;
+    QString pending_performance_scenario_name_;
+    bool performance_scenario_stop_requested_ = false;
 
     friend class earth_map_qt_detail::EarthMapRenderer;
 

@@ -11,10 +11,14 @@
 #include "EarthMapQuickItem.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QHoverEvent>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QRunnable>
@@ -26,6 +30,7 @@
 #include <QWheelEvent>
 
 #include <earth_map/core/camera_controller.h>
+#include <earth_map/constants.h>
 #include <earth_map/earth_map.h>
 #include <earth_map/renderer/renderer.h>
 #include <earth_map/renderer/tile_renderer.h>
@@ -34,7 +39,11 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <map>
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -122,6 +131,145 @@ std::string InstallCaBundle() {
     return installed_bundle_path.toStdString();
 }
 
+// ---------------------------------------------------------------------------
+// Deterministic performance scenarios
+//
+// These live in the Qt test app rather than the library. They exercise the
+// public camera/renderer APIs exactly as an embedding application would,
+// while keeping benchmark policy (route, duration, report format) out of
+// earth_map itself.
+// ---------------------------------------------------------------------------
+
+constexpr int kScenarioMaxZoom = 21;  // Must match TileRenderer's calibration.
+constexpr double kScenarioWarmupSeconds = 2.0;
+constexpr double kSteadyScenarioSeconds = 10.0;
+
+double AltitudeMetersForScenarioZoom(int zoom) {
+    return earth_map::constants::camera_constraints::MIN_ALTITUDE_METERS *
+           static_cast<double>(1ULL << (kScenarioMaxZoom - zoom));
+}
+
+struct ScenarioWaypoint final {
+    double longitude;
+    double latitude;
+    int target_zoom;
+    double altitude_meters;
+    double duration_seconds;
+};
+
+const std::array<ScenarioWaypoint, 8> kFlightScenarioWaypoints = {{
+    {44.5152, 40.1872, 15, AltitudeMetersForScenarioZoom(15), 5.0},
+    {44.5152, 40.1872, 8,  AltitudeMetersForScenarioZoom(8),  5.0},
+    {45.0116, 40.4000, 14, AltitudeMetersForScenarioZoom(14), 5.0},
+    {43.8478, 40.7894, 15, AltitudeMetersForScenarioZoom(15), 5.0},
+    {43.8478, 40.7894, 8,  AltitudeMetersForScenarioZoom(8),  5.0},
+    {44.4939, 40.8123, 14, AltitudeMetersForScenarioZoom(14), 5.0},
+    {44.5453, 39.8814, 15, AltitudeMetersForScenarioZoom(15), 5.0},
+    {44.5152, 40.1872, 8,  AltitudeMetersForScenarioZoom(8),  5.0},
+}};
+
+enum class PerformanceScenarioKind {
+    None,
+    SteadyZ13,
+    Flight,
+    FlightPreview,
+};
+
+PerformanceScenarioKind ParsePerformanceScenarioKind(const QString& name) {
+    if (name == QStringLiteral("steady-z13")) {
+        return PerformanceScenarioKind::SteadyZ13;
+    }
+    if (name == QStringLiteral("flight")) {
+        return PerformanceScenarioKind::Flight;
+    }
+    if (name == QStringLiteral("flight-preview")) {
+        return PerformanceScenarioKind::FlightPreview;
+    }
+    return PerformanceScenarioKind::None;
+}
+
+QString PerformanceScenarioName(PerformanceScenarioKind kind) {
+    switch (kind) {
+    case PerformanceScenarioKind::SteadyZ13:
+        return QStringLiteral("steady-z13");
+    case PerformanceScenarioKind::Flight:
+        return QStringLiteral("flight");
+    case PerformanceScenarioKind::FlightPreview:
+        return QStringLiteral("flight-preview");
+    case PerformanceScenarioKind::None:
+        break;
+    }
+    return QStringLiteral("unknown");
+}
+
+bool IsRecordingPerformanceScenario(PerformanceScenarioKind kind) {
+    return kind == PerformanceScenarioKind::SteadyZ13 ||
+           kind == PerformanceScenarioKind::Flight;
+}
+
+struct ScenarioSample final {
+    double elapsed_seconds = 0.0;
+    double app_cpu_ms = 0.0;
+    earth_map::PerformanceStats performance;
+    earth_map::TileRenderStats tile;
+};
+
+struct PerformanceScenarioState final {
+    enum class Phase {
+        Inactive,
+        Warmup,
+        Measuring,
+        PreviewingFlight,
+    };
+
+    PerformanceScenarioKind kind = PerformanceScenarioKind::None;
+    Phase phase = Phase::Inactive;
+    bool active = false;
+    bool started_this_frame = false;
+    bool finish_after_frame = false;
+    bool completed = false;
+    double warmup_elapsed_seconds = 0.0;
+    double measurement_elapsed_seconds = 0.0;
+    double waypoint_elapsed_seconds = 0.0;
+    std::size_t waypoint_index = 0;
+    QString started_at_utc;
+    QString finish_reason;
+    std::vector<ScenarioSample> samples;
+};
+
+double Quantile(std::vector<double> values, double percentile) {
+    if (values.empty()) {
+        return 0.0;
+    }
+
+    std::sort(values.begin(), values.end());
+    const double position = percentile * static_cast<double>(values.size() - 1);
+    const std::size_t lower = static_cast<std::size_t>(std::floor(position));
+    const std::size_t upper = static_cast<std::size_t>(std::ceil(position));
+    const double fraction = position - static_cast<double>(lower);
+    return values[lower] + (values[upper] - values[lower]) * fraction;
+}
+
+QJsonObject SummarizeSamples(const std::vector<double>& values) {
+    QJsonObject summary;
+    summary[QStringLiteral("count")] = static_cast<int>(values.size());
+    if (values.empty()) {
+        return summary;
+    }
+
+    const auto [minimum, maximum] = std::minmax_element(values.begin(), values.end());
+    summary[QStringLiteral("min_ms")] = *minimum;
+    summary[QStringLiteral("p50_ms")] = Quantile(values, 0.50);
+    summary[QStringLiteral("p95_ms")] = Quantile(values, 0.95);
+    summary[QStringLiteral("max_ms")] = *maximum;
+    return summary;
+}
+
+QString GlString(GLenum name) {
+    const auto* text = reinterpret_cast<const char*>(glGetString(name));
+    return text ? QString::fromUtf8(text) : QStringLiteral("unavailable");
+}
+
 }  // namespace
 
 EarthMapQuickItem::EarthMapQuickItem(QQuickItem* parent) : QQuickItem(parent) {
@@ -156,6 +304,13 @@ QRect EarthMapQuickItem::DeviceViewportRect() const {
 }
 
 void EarthMapQuickItem::QueueEvent(const earth_map::InputEvent& event) {
+    // The render-thread scenario also discards queued input as a final
+    // safeguard. Reject it here as well so a long touch gesture cannot grow
+    // the GUI-to-render queue while the benchmark owns the camera.
+    if (performance_scenario_active_) {
+        return;
+    }
+
     pending_events_.push_back(event);
     // Matches Squircle::setT() in Qt's own "Scene Graph - OpenGL Under QML"
     // example: request a sync+render cycle the moment new GUI-thread state
@@ -169,6 +324,43 @@ void EarthMapQuickItem::QueueEvent(const earth_map::InputEvent& event) {
 
 std::vector<earth_map::InputEvent> EarthMapQuickItem::TakePendingEvents() {
     return std::exchange(pending_events_, {});
+}
+
+void EarthMapQuickItem::startPerformanceScenario(const QString& name) {
+    if (performance_scenario_active_) {
+        return;
+    }
+    if (ParsePerformanceScenarioKind(name) == PerformanceScenarioKind::None) {
+        performance_scenario_status_ =
+            QStringLiteral("Unknown performance scenario: %1").arg(name);
+        emit performanceScenarioChanged();
+        return;
+    }
+
+    performance_scenario_active_ = true;
+    performance_scenario_status_ = QStringLiteral("%1: queued").arg(name);
+    performance_scenario_report_path_.clear();
+    pending_performance_scenario_name_ = name;
+    performance_scenario_stop_requested_ = false;
+    pending_events_.clear();
+    emit performanceScenarioChanged();
+    if (window()) {
+        window()->update();
+    }
+}
+
+void EarthMapQuickItem::stopPerformanceScenario() {
+    if (!performance_scenario_active_) {
+        return;
+    }
+
+    pending_performance_scenario_name_.clear();
+    performance_scenario_stop_requested_ = true;
+    performance_scenario_status_ = QStringLiteral("Stopping performance scenario…");
+    emit performanceScenarioChanged();
+    if (window()) {
+        window()->update();
+    }
 }
 
 void EarthMapQuickItem::mousePressEvent(QMouseEvent* event) {
@@ -407,6 +599,16 @@ public:
                                 std::make_move_iterator(events.end()));
     }
 
+    void RequestPerformanceScenarioStart(const QString& name) {
+        pending_scenario_start_ = name;
+        pending_scenario_stop_ = false;
+    }
+
+    void RequestPerformanceScenarioStop() {
+        pending_scenario_start_.clear();
+        pending_scenario_stop_ = true;
+    }
+
 signals:
     // Mirrors earth_map::PerformanceStats (see EarthMapQuickItem.h's
     // Q_PROPERTYs), pre-converted to QML-friendly types here on the render
@@ -427,6 +629,11 @@ signals:
     // second, dumber measurement while mangohud is unavailable. Remove
     // once cross-checked.
     void appMeasuredStatsReady(double cpuMs, int fps);
+
+    // Emitted only when a scenario changes state (queued/start/completed),
+    // never once per frame. That keeps the QML performance overlay out of
+    // the benchmarked frame loop.
+    void performanceScenarioStateReady(bool active, QString status, QString reportPath);
 
 public slots:
     void init() {
@@ -512,15 +719,25 @@ public slots:
         glScissor(viewport_rect_.x(), viewport_rect_.y(), viewport_rect_.width(),
                   viewport_rect_.height());
 
+        const float delta_time_seconds = static_cast<float>(frame_timer_.restart()) / 1000.0f;
         earth_map::CameraController* camera = earth_map_->GetCameraController();
-        if (camera) {
+        ProcessPerformanceScenarioCommands(camera);
+
+        // A scripted benchmark or preview owns the camera for its complete
+        // route. Drop queued interactive events rather than mixing a touch
+        // gesture into a deterministic camera flight.
+        if (performance_scenario_.active) {
+            pending_events_.clear();
+        } else if (camera) {
             for (const auto& event : pending_events_) {
                 camera->ProcessInput(event);
             }
+            pending_events_.clear();
+        } else {
+            pending_events_.clear();
         }
-        pending_events_.clear();
 
-        const float delta_time_seconds = static_cast<float>(frame_timer_.restart()) / 1000.0f;
+        AdvancePerformanceScenario(camera, delta_time_seconds);
         if (camera) {
             camera->Update(delta_time_seconds);
         }
@@ -544,13 +761,13 @@ public slots:
         const double app_cpu_ms =
             std::chrono::duration<double, std::milli>(app_cpu_end - app_cpu_start).count();
 
-        ++app_frames_this_window_;
-        if (app_cpu_end - app_fps_window_start_ >= std::chrono::seconds(1)) {
-            app_current_fps_ = static_cast<int>(app_frames_this_window_);
-            app_frames_this_window_ = 0;
-            app_fps_window_start_ = app_cpu_end;
-        }
-        emit appMeasuredStatsReady(app_cpu_ms, app_current_fps_);
+        // The globe is an OpenGL underlay in Qt Quick's main render pass.
+        // Its color must remain, but its 3D depth values must not participate
+        // in the following Qt Quick HUD draw calls: otherwise ordinary QML
+        // rectangles and text can be depth-occluded by the globe depending
+        // on the camera angle. GL_SCISSOR_TEST is still enabled for exactly
+        // this item's viewport, so this leaves depth outside the map intact.
+        glClear(GL_DEPTH_BUFFER_BIT);
 
         // earth_map::Renderer measures its own frame timing internally
         // (Renderer::EndFrame(), src/renderer/renderer.cpp) -- more
@@ -560,26 +777,56 @@ public slots:
         // earth_map was built with EARTH_MAP_ENABLE_PERFORMANCE_MONITORING.
         const earth_map::PerformanceStats stats = earth_map_->GetRenderer()->GetStats();
 
-        QVariantList zone_timings;
-        zone_timings.reserve(static_cast<int>(stats.zones.size()));
-        for (const auto& zone : stats.zones) {
-            QVariantMap zone_entry;
-            zone_entry["name"] = QString::fromStdString(zone.name);
-            zone_entry["cpuMs"] = zone.cpu_ms;
-            zone_entry["gpuMs"] = zone.gpu_ms ? *zone.gpu_ms : -1.0;
-            zone_entry["hasGpuMs"] = zone.gpu_ms.has_value();
-            zone_entry["drawCalls"] = static_cast<int>(zone.draw_calls);
-            zone_entry["triangles"] = static_cast<double>(zone.triangles);
-            zone_timings.append(zone_entry);
+        earth_map::TileRenderer* tile_renderer = earth_map_->GetRenderer()->GetTileRenderer();
+        earth_map::TileRenderStats tile_stats;
+        bool has_tile_stats = false;
+        if (tile_renderer) {
+            tile_stats = tile_renderer->GetStats();
+            has_tile_stats = true;
         }
 
-        emit performanceStatsReady(static_cast<int>(stats.fps), stats.frame_cpu_ms,
-                                    stats.frame_gpu_ms ? *stats.frame_gpu_ms : -1.0,
-                                    stats.frame_gpu_ms.has_value(), zone_timings);
+        if (performance_scenario_.phase == PerformanceScenarioState::Phase::Measuring) {
+            RecordPerformanceScenarioSample(app_cpu_ms, stats, tile_stats);
+        }
+        if (performance_scenario_.finish_after_frame) {
+            FinishPerformanceScenario();
+        }
 
-        earth_map::TileRenderer* tile_renderer = earth_map_->GetRenderer()->GetTileRenderer();
-        if (tile_renderer) {
-            const earth_map::TileRenderStats tile_stats = tile_renderer->GetStats();
+        // A recording benchmark suppresses frame-by-frame QML
+        // instrumentation because the live chart and QVariant conversion
+        // would otherwise become part of its measured frame cost. A flight
+        // preview deliberately keeps these values live for visual inspection.
+        if (!performance_scenario_.active ||
+            !IsRecordingPerformanceScenario(performance_scenario_.kind)) {
+            ++app_frames_this_window_;
+            if (app_cpu_end - app_fps_window_start_ >= std::chrono::seconds(1)) {
+                app_current_fps_ = static_cast<int>(app_frames_this_window_);
+                app_frames_this_window_ = 0;
+                app_fps_window_start_ = app_cpu_end;
+            }
+            emit appMeasuredStatsReady(app_cpu_ms, app_current_fps_);
+
+            QVariantList zone_timings;
+            zone_timings.reserve(static_cast<int>(stats.zones.size()));
+            for (const auto& zone : stats.zones) {
+                QVariantMap zone_entry;
+                zone_entry["name"] = QString::fromStdString(zone.name);
+                zone_entry["cpuMs"] = zone.cpu_ms;
+                zone_entry["gpuMs"] = zone.gpu_ms ? *zone.gpu_ms : -1.0;
+                zone_entry["hasGpuMs"] = zone.gpu_ms.has_value();
+                zone_entry["drawCalls"] = static_cast<int>(zone.draw_calls);
+                zone_entry["triangles"] = static_cast<double>(zone.triangles);
+                zone_timings.append(zone_entry);
+            }
+
+            emit performanceStatsReady(static_cast<int>(stats.fps), stats.frame_cpu_ms,
+                                        stats.frame_gpu_ms ? *stats.frame_gpu_ms : -1.0,
+                                        stats.frame_gpu_ms.has_value(), zone_timings);
+        }
+
+        if (has_tile_stats &&
+            (!performance_scenario_.active ||
+             !IsRecordingPerformanceScenario(performance_scenario_.kind))) {
             emit tileRenderStatsReady(
                 static_cast<int>(tile_stats.visible_tiles),
                 static_cast<int>(tile_stats.rendered_tiles),
@@ -607,6 +854,354 @@ public slots:
     }
 
 private:
+    void ProcessPerformanceScenarioCommands(earth_map::CameraController* camera) {
+        if (!pending_scenario_start_.isEmpty()) {
+            const QString requested_name = std::exchange(pending_scenario_start_, QString{});
+            const PerformanceScenarioKind kind = ParsePerformanceScenarioKind(requested_name);
+            if (kind == PerformanceScenarioKind::None) {
+                emit performanceScenarioStateReady(
+                    false,
+                    QStringLiteral("Unknown performance scenario: %1").arg(requested_name),
+                    {});
+            } else if (!camera) {
+                emit performanceScenarioStateReady(
+                    false, QStringLiteral("Cannot start scenario: camera is unavailable"), {});
+            } else if (performance_scenario_.active) {
+                emit performanceScenarioStateReady(
+                    true, QStringLiteral("A performance scenario is already running"), {});
+            } else {
+                StartPerformanceScenario(kind, *camera);
+            }
+        }
+
+        if (pending_scenario_stop_) {
+            pending_scenario_stop_ = false;
+            if (performance_scenario_.active) {
+                performance_scenario_.completed = false;
+                performance_scenario_.finish_reason = QStringLiteral("stopped by user");
+                performance_scenario_.finish_after_frame = true;
+            }
+        }
+    }
+
+    void StartPerformanceScenario(PerformanceScenarioKind kind,
+                                  earth_map::CameraController& camera) {
+        performance_scenario_ = {};
+        performance_scenario_.kind = kind;
+        performance_scenario_.active = true;
+        performance_scenario_.started_this_frame = true;
+        performance_scenario_.started_at_utc =
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+
+        // All scripted routes begin from a known orbital camera state. The
+        // steady benchmark starts at z13; both flight modes start at z8,
+        // matching the basic example's streaming stress path.
+        camera.SetMovementMode(earth_map::CameraController::MovementMode::ORBIT);
+        const int start_zoom = kind == PerformanceScenarioKind::SteadyZ13 ? 13 : 8;
+        camera.SetGeographicPosition(44.5152, 40.1872,
+                                     AltitudeMetersForScenarioZoom(start_zoom));
+
+        if (kind == PerformanceScenarioKind::FlightPreview) {
+            performance_scenario_.phase = PerformanceScenarioState::Phase::PreviewingFlight;
+            StartFlightWaypoint(camera);
+            emit performanceScenarioStateReady(
+                true, QStringLiteral("flight preview: live HUD, no report"), {});
+            return;
+        }
+
+        performance_scenario_.phase = PerformanceScenarioState::Phase::Warmup;
+
+        emit performanceScenarioStateReady(
+            true,
+            QStringLiteral("%1: warming up for %2 s")
+                .arg(PerformanceScenarioName(kind))
+                .arg(kScenarioWarmupSeconds, 0, 'f', 0),
+            {});
+    }
+
+    void StartFlightWaypoint(earth_map::CameraController& camera) {
+        const ScenarioWaypoint& waypoint =
+            kFlightScenarioWaypoints[performance_scenario_.waypoint_index];
+        camera.FlyTo(waypoint.longitude, waypoint.latitude, waypoint.altitude_meters,
+                     static_cast<float>(waypoint.duration_seconds));
+    }
+
+    void AdvancePerformanceScenario(earth_map::CameraController* camera,
+                                    float delta_time_seconds) {
+        if (!performance_scenario_.active || performance_scenario_.finish_after_frame) {
+            return;
+        }
+
+        // The first frame after clicking Start includes arbitrary idle time
+        // since the previous Qt frame. Do not charge it to the warm-up.
+        if (performance_scenario_.started_this_frame) {
+            performance_scenario_.started_this_frame = false;
+            return;
+        }
+
+        const double delta_seconds = std::max(0.0, static_cast<double>(delta_time_seconds));
+        if (performance_scenario_.phase == PerformanceScenarioState::Phase::Warmup) {
+            performance_scenario_.warmup_elapsed_seconds += delta_seconds;
+            if (performance_scenario_.warmup_elapsed_seconds < kScenarioWarmupSeconds) {
+                return;
+            }
+
+            performance_scenario_.phase = PerformanceScenarioState::Phase::Measuring;
+            performance_scenario_.measurement_elapsed_seconds = 0.0;
+            performance_scenario_.samples.clear();
+            if (performance_scenario_.kind == PerformanceScenarioKind::Flight && camera) {
+                StartFlightWaypoint(*camera);
+            }
+            return;
+        }
+
+        if (performance_scenario_.phase != PerformanceScenarioState::Phase::PreviewingFlight) {
+            performance_scenario_.measurement_elapsed_seconds += delta_seconds;
+        }
+        if (performance_scenario_.kind == PerformanceScenarioKind::SteadyZ13) {
+            if (performance_scenario_.measurement_elapsed_seconds >= kSteadyScenarioSeconds) {
+                performance_scenario_.completed = true;
+                performance_scenario_.finish_reason = QStringLiteral("completed");
+                performance_scenario_.finish_after_frame = true;
+            }
+            return;
+        }
+
+        performance_scenario_.waypoint_elapsed_seconds += delta_seconds;
+        const ScenarioWaypoint& waypoint =
+            kFlightScenarioWaypoints[performance_scenario_.waypoint_index];
+        if (performance_scenario_.waypoint_elapsed_seconds < waypoint.duration_seconds) {
+            return;
+        }
+
+        ++performance_scenario_.waypoint_index;
+        if (performance_scenario_.waypoint_index >= kFlightScenarioWaypoints.size()) {
+            performance_scenario_.completed = true;
+            performance_scenario_.finish_reason = QStringLiteral("completed");
+            performance_scenario_.finish_after_frame = true;
+            return;
+        }
+
+        performance_scenario_.waypoint_elapsed_seconds = 0.0;
+        if (camera) {
+            StartFlightWaypoint(*camera);
+        }
+    }
+
+    void RecordPerformanceScenarioSample(double app_cpu_ms,
+                                         const earth_map::PerformanceStats& stats,
+                                         const earth_map::TileRenderStats& tile_stats) {
+        ScenarioSample sample;
+        sample.elapsed_seconds = performance_scenario_.measurement_elapsed_seconds;
+        sample.app_cpu_ms = app_cpu_ms;
+        sample.performance = stats;
+        sample.tile = tile_stats;
+        performance_scenario_.samples.push_back(std::move(sample));
+    }
+
+    QJsonObject BuildPerformanceScenarioReport() const {
+        QJsonObject report;
+        report[QStringLiteral("schema_version")] = 1;
+        report[QStringLiteral("report_type")] = QStringLiteral("earth_map.qt.performance");
+        report[QStringLiteral("scenario")] = PerformanceScenarioName(performance_scenario_.kind);
+        report[QStringLiteral("outcome")] = performance_scenario_.completed
+                                                  ? QStringLiteral("completed")
+                                                  : QStringLiteral("stopped");
+        report[QStringLiteral("reason")] = performance_scenario_.finish_reason;
+        report[QStringLiteral("started_at_utc")] = performance_scenario_.started_at_utc;
+        report[QStringLiteral("finished_at_utc")] =
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+        report[QStringLiteral("warmup_seconds")] = kScenarioWarmupSeconds;
+        report[QStringLiteral("measurement_seconds")] =
+            performance_scenario_.measurement_elapsed_seconds;
+        report[QStringLiteral("percentile_method")] =
+            QStringLiteral("linear interpolation over sorted samples");
+
+        QJsonObject benchmark_environment;
+        benchmark_environment[QStringLiteral("network")] =
+            QStringLiteral("caller-controlled; record it with the report");
+        benchmark_environment[QStringLiteral("performance_overlay")] =
+            QStringLiteral("suppressed while scenario is active");
+        report[QStringLiteral("benchmark_environment")] = benchmark_environment;
+
+        QJsonObject viewport;
+        viewport[QStringLiteral("width_px")] = viewport_rect_.width();
+        viewport[QStringLiteral("height_px")] = viewport_rect_.height();
+        report[QStringLiteral("viewport")] = viewport;
+
+        QJsonObject graphics;
+        graphics[QStringLiteral("vendor")] = GlString(GL_VENDOR);
+        graphics[QStringLiteral("renderer")] = GlString(GL_RENDERER);
+        graphics[QStringLiteral("version")] = GlString(GL_VERSION);
+        report[QStringLiteral("graphics")] = graphics;
+
+        QJsonArray samples;
+        std::vector<double> app_cpu_values;
+        std::vector<double> frame_cpu_values;
+        std::vector<double> frame_gpu_values;
+        std::vector<double> fps_values;
+        std::map<QString, std::vector<double>> zone_cpu_values;
+        std::map<QString, std::vector<double>> zone_gpu_values;
+        std::map<QString, earth_map::FrameZoneTiming> latest_zone_timings;
+
+        app_cpu_values.reserve(performance_scenario_.samples.size());
+        frame_cpu_values.reserve(performance_scenario_.samples.size());
+        frame_gpu_values.reserve(performance_scenario_.samples.size());
+        fps_values.reserve(performance_scenario_.samples.size());
+
+        for (const ScenarioSample& sample : performance_scenario_.samples) {
+            QJsonObject sample_json;
+            sample_json[QStringLiteral("elapsed_seconds")] = sample.elapsed_seconds;
+            sample_json[QStringLiteral("app_cpu_ms")] = sample.app_cpu_ms;
+            sample_json[QStringLiteral("fps")] = static_cast<int>(sample.performance.fps);
+            sample_json[QStringLiteral("frame_cpu_ms")] = sample.performance.frame_cpu_ms;
+            if (sample.performance.frame_gpu_ms) {
+                sample_json[QStringLiteral("frame_gpu_ms")] = *sample.performance.frame_gpu_ms;
+                frame_gpu_values.push_back(*sample.performance.frame_gpu_ms);
+            }
+
+            QJsonObject tile;
+            tile[QStringLiteral("visible_tiles")] = static_cast<double>(sample.tile.visible_tiles);
+            tile[QStringLiteral("ready_tiles")] = static_cast<double>(sample.tile.rendered_tiles);
+            tile[QStringLiteral("occupied_pool_layers")] =
+                static_cast<int>(sample.tile.occupied_pool_layers);
+            tile[QStringLiteral("max_pool_layers")] = static_cast<int>(sample.tile.max_pool_layers);
+            sample_json[QStringLiteral("tile")] = tile;
+
+            QJsonArray zones;
+            for (const earth_map::FrameZoneTiming& zone : sample.performance.zones) {
+                QJsonObject zone_json;
+                const QString zone_name = QString::fromStdString(zone.name);
+                zone_json[QStringLiteral("name")] = zone_name;
+                zone_json[QStringLiteral("cpu_ms")] = zone.cpu_ms;
+                zone_json[QStringLiteral("draw_calls")] = static_cast<int>(zone.draw_calls);
+                zone_json[QStringLiteral("triangles")] = static_cast<double>(zone.triangles);
+                zone_cpu_values[zone_name].push_back(zone.cpu_ms);
+                if (zone.gpu_ms) {
+                    zone_json[QStringLiteral("gpu_ms")] = *zone.gpu_ms;
+                    zone_gpu_values[zone_name].push_back(*zone.gpu_ms);
+                }
+                latest_zone_timings[zone_name] = zone;
+                zones.append(zone_json);
+            }
+            sample_json[QStringLiteral("zones")] = zones;
+            samples.append(sample_json);
+
+            app_cpu_values.push_back(sample.app_cpu_ms);
+            frame_cpu_values.push_back(sample.performance.frame_cpu_ms);
+            fps_values.push_back(static_cast<double>(sample.performance.fps));
+        }
+        report[QStringLiteral("samples")] = samples;
+
+        QJsonObject summary;
+        summary[QStringLiteral("sample_count")] =
+            static_cast<int>(performance_scenario_.samples.size());
+        summary[QStringLiteral("app_cpu")] = SummarizeSamples(app_cpu_values);
+        summary[QStringLiteral("frame_cpu")] = SummarizeSamples(frame_cpu_values);
+        summary[QStringLiteral("frame_gpu")] = SummarizeSamples(frame_gpu_values);
+        summary[QStringLiteral("fps")] = SummarizeSamples(fps_values);
+
+        QJsonObject zones_summary;
+        for (const auto& [name, values] : zone_cpu_values) {
+            QJsonObject zone_summary;
+            zone_summary[QStringLiteral("cpu")] = SummarizeSamples(values);
+            const auto gpu_it = zone_gpu_values.find(name);
+            if (gpu_it != zone_gpu_values.end()) {
+                zone_summary[QStringLiteral("gpu")] = SummarizeSamples(gpu_it->second);
+            }
+            const auto timing_it = latest_zone_timings.find(name);
+            if (timing_it != latest_zone_timings.end()) {
+                const earth_map::FrameZoneTiming& timing = timing_it->second;
+                QJsonObject gpu_timer;
+                gpu_timer[QStringLiteral("supported")] = timing.gpu_timing_supported;
+                gpu_timer[QStringLiteral("submitted")] =
+                    static_cast<double>(timing.gpu_timer.submitted);
+                gpu_timer[QStringLiteral("resolved")] =
+                    static_cast<double>(timing.gpu_timer.resolved);
+                gpu_timer[QStringLiteral("skipped_no_free_slot")] =
+                    static_cast<double>(timing.gpu_timer.skipped_no_free_slot);
+                gpu_timer[QStringLiteral("discarded_disjoint")] =
+                    static_cast<double>(timing.gpu_timer.discarded_disjoint);
+                zone_summary[QStringLiteral("gpu_timer")] = gpu_timer;
+            }
+            zones_summary[name] = zone_summary;
+        }
+        summary[QStringLiteral("zones")] = zones_summary;
+        report[QStringLiteral("summary")] = summary;
+        return report;
+    }
+
+    QString WritePerformanceScenarioReport(QString* error) const {
+        const QString app_data_path =
+            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        if (app_data_path.isEmpty()) {
+            *error = QStringLiteral("Qt returned no writable app-data directory");
+            return {};
+        }
+
+        QDir directory(app_data_path);
+        if (!directory.mkpath(QStringLiteral("earth-map-performance"))) {
+            *error = QStringLiteral("cannot create earth-map-performance directory");
+            return {};
+        }
+        if (!directory.cd(QStringLiteral("earth-map-performance"))) {
+            *error = QStringLiteral("cannot enter earth-map-performance directory");
+            return {};
+        }
+
+        const QString filename = QStringLiteral("%1-%2.json")
+                                     .arg(PerformanceScenarioName(performance_scenario_.kind))
+                                     .arg(QDateTime::currentDateTimeUtc().toString(
+                                         QStringLiteral("yyyyMMdd-HHmmsszzz")));
+        const QString report_path = directory.filePath(filename);
+        QSaveFile output(report_path);
+        if (!output.open(QIODevice::WriteOnly)) {
+            *error = QStringLiteral("cannot open %1").arg(report_path);
+            return {};
+        }
+
+        const QByteArray contents =
+            QJsonDocument(BuildPerformanceScenarioReport()).toJson(QJsonDocument::Indented);
+        if (output.write(contents) != contents.size() || !output.commit()) {
+            *error = QStringLiteral("cannot commit %1").arg(report_path);
+            return {};
+        }
+        return report_path;
+    }
+
+    void FinishPerformanceScenario() {
+        const bool completed = performance_scenario_.completed;
+        const QString outcome = completed ? QStringLiteral("completed")
+                                          : QStringLiteral("stopped");
+
+        if (!IsRecordingPerformanceScenario(performance_scenario_.kind)) {
+            performance_scenario_.active = false;
+            performance_scenario_.phase = PerformanceScenarioState::Phase::Inactive;
+            performance_scenario_.finish_after_frame = false;
+            emit performanceScenarioStateReady(
+                false, QStringLiteral("flight preview %1").arg(outcome), {});
+            return;
+        }
+
+        QString write_error;
+        const QString report_path = WritePerformanceScenarioReport(&write_error);
+        performance_scenario_.active = false;
+        performance_scenario_.phase = PerformanceScenarioState::Phase::Inactive;
+        performance_scenario_.finish_after_frame = false;
+
+        if (report_path.isEmpty()) {
+            qWarning().noquote() << "EarthMap performance report failed:" << write_error;
+            emit performanceScenarioStateReady(
+                false, QStringLiteral("%1, but report write failed: %2").arg(outcome, write_error), {});
+            return;
+        }
+
+        qInfo().noquote() << "EarthMap performance report:" << report_path;
+        emit performanceScenarioStateReady(
+            false, QStringLiteral("%1: %2 samples written").arg(
+                       outcome).arg(static_cast<int>(performance_scenario_.samples.size())), report_path);
+    }
+
     QQuickWindow* window_ = nullptr;
     QRect viewport_rect_;
     bool visible_ = true;
@@ -619,6 +1214,10 @@ private:
     std::chrono::steady_clock::time_point app_fps_window_start_ = std::chrono::steady_clock::now();
     std::uint32_t app_frames_this_window_ = 0;
     int app_current_fps_ = 0;
+
+    QString pending_scenario_start_;
+    bool pending_scenario_stop_ = false;
+    PerformanceScenarioState performance_scenario_;
 };
 
 // Deletes the renderer on the render thread with a current GL context --
@@ -648,11 +1247,21 @@ void EarthMapQuickItem::sync() {
                 &EarthMapQuickItem::setAppMeasuredStats);
         connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::tileRenderStatsReady, this,
                 &EarthMapQuickItem::setTileRenderStats);
+        connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::performanceScenarioStateReady, this,
+                &EarthMapQuickItem::setPerformanceScenarioState);
     }
 
     renderer_->SetWindow(window());
     renderer_->SetViewportRect(DeviceViewportRect());
     renderer_->SetVisible(isVisible());
+    if (!pending_performance_scenario_name_.isEmpty()) {
+        renderer_->RequestPerformanceScenarioStart(
+            std::exchange(pending_performance_scenario_name_, QString{}));
+    }
+    if (performance_scenario_stop_requested_) {
+        renderer_->RequestPerformanceScenarioStop();
+        performance_scenario_stop_requested_ = false;
+    }
     renderer_->AppendPendingEvents(TakePendingEvents());
 }
 
@@ -686,6 +1295,14 @@ void EarthMapQuickItem::setTileRenderStats(int visibleTiles, int renderedTiles, 
     tile_pool_bytes_max_ = tilePoolBytesMax;
     indirection_bytes_used_ = indirectionBytesUsed;
     emit tileRenderStatsChanged();
+}
+
+void EarthMapQuickItem::setPerformanceScenarioState(bool active, const QString& status,
+                                                     const QString& reportPath) {
+    performance_scenario_active_ = active;
+    performance_scenario_status_ = status;
+    performance_scenario_report_path_ = reportPath;
+    emit performanceScenarioChanged();
 }
 
 void EarthMapQuickItem::cleanup() {
