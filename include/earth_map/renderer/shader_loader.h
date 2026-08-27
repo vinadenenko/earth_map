@@ -17,13 +17,20 @@
  * `EARTH_MAP_GLSL_PREAMBLE R"(...)"`). Desktop GLSL and GLSL ES differ only
  * here for the shaders in this codebase -- everything after the preamble
  * is identical on both platforms. GLSL ES additionally requires an
- * explicit default float/int precision in fragment shaders (desktop GLSL
- * has no such requirement); declaring it in vertex shaders too is
- * harmless.
+ * explicit default precision in fragment shaders (desktop GLSL has no such
+ * requirement). Some GLES drivers also require a default precision for each
+ * sampler type used by a fragment shader, rather than accepting an implicit
+ * precision on sampler uniforms. Declaring these defaults in vertex shaders
+ * too is harmless.
  */
 #ifdef __ANDROID__
 #define EARTH_MAP_GLSL_PREAMBLE \
-    "#version 300 es\nprecision highp float;\nprecision highp int;\n"
+    "#version 300 es\n" \
+    "precision highp float;\n" \
+    "precision highp int;\n" \
+    "precision highp sampler2D;\n" \
+    "precision highp sampler2DArray;\n" \
+    "precision highp usampler2D;\n"
 #else
 #define EARTH_MAP_GLSL_PREAMBLE "#version 330 core\n"
 #endif
