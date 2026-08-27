@@ -59,9 +59,9 @@ public:
 
 private:
     struct ZoneState {
-        // One GPU query pair persists across frames (GL query objects are
-        // relatively expensive to create/destroy); CPU timing is
-        // per-frame only.
+        // One GPU query ring persists across frames (GL query objects are
+        // relatively expensive to create/destroy); CPU timing is per-frame
+        // only.
         std::unique_ptr<GpuElapsedTimeQuery> gpu_query;
     };
 

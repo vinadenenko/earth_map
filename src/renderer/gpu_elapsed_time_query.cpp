@@ -93,30 +93,39 @@ GpuElapsedTimeQuery::GpuElapsedTimeQuery() {
     if (!IsSupported()) {
         return;
     }
-    GetExt().GenQueries(2, query_ids_);
+    GetExt().GenQueries(static_cast<GLsizei>(query_ids_.size()), query_ids_.data());
     initialized_ = true;
 }
 
 GpuElapsedTimeQuery::~GpuElapsedTimeQuery() {
     if (initialized_) {
-        GetExt().DeleteQueries(2, query_ids_);
+        GetExt().DeleteQueries(static_cast<GLsizei>(query_ids_.size()), query_ids_.data());
     }
 }
 
 void GpuElapsedTimeQuery::Begin() {
-    if (!initialized_) {
+    if (!initialized_ || active_index_ >= 0) {
         return;
     }
-    GetExt().BeginQuery(GL_TIME_ELAPSED_EXT, query_ids_[write_index_]);
+    const auto slot = FindFreeSlot();
+    if (!slot) {
+        ++diagnostics_.skipped_no_free_slot;
+        return;
+    }
+    active_index_ = static_cast<int>(*slot);
+    GetExt().BeginQuery(GL_TIME_ELAPSED_EXT, query_ids_[*slot]);
 }
 
 void GpuElapsedTimeQuery::End() {
-    if (!initialized_) {
+    if (!initialized_ || active_index_ < 0) {
         return;
     }
     GetExt().EndQuery(GL_TIME_ELAPSED_EXT);
-    query_pending_[write_index_] = true;
-    write_index_ = 1 - write_index_;
+    const std::size_t slot = static_cast<std::size_t>(active_index_);
+    query_pending_[slot] = true;
+    submission_order_[slot] = next_submission_order_++;
+    ++diagnostics_.submitted;
+    active_index_ = -1;
 }
 
 std::optional<double> GpuElapsedTimeQuery::TryTakePreviousResultMs() {
@@ -124,16 +133,8 @@ std::optional<double> GpuElapsedTimeQuery::TryTakePreviousResultMs() {
         return std::nullopt;
     }
 
-    // write_index_ already points at the slot End() just moved *off of*
-    // (End() advances it right after marking that slot pending) -- so by
-    // the time we get here, write_index_ names the *other* slot: the one
-    // left over from the previous frame's End(), not this frame's. No
-    // inversion needed; inverting it (as an earlier version of this code
-    // did) targets this frame's own just-submitted query instead, which
-    // the GPU essentially never finishes in time, and the true previous
-    // result is silently orphaned.
-    const int read_index = write_index_;
-    if (!query_pending_[read_index]) {
+    const auto slot = FindOldestPendingSlot();
+    if (!slot) {
         return std::nullopt;
     }
 
@@ -141,22 +142,24 @@ std::optional<double> GpuElapsedTimeQuery::TryTakePreviousResultMs() {
     glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
 
     GLuint available = 0;
-    GetExt().GetQueryObjectuiv(query_ids_[read_index], GL_QUERY_RESULT_AVAILABLE_EXT, &available);
+    GetExt().GetQueryObjectuiv(query_ids_[*slot], GL_QUERY_RESULT_AVAILABLE_EXT, &available);
     if (!available) {
         return std::nullopt;
     }
 
-    query_pending_[read_index] = false;
+    query_pending_[*slot] = false;
 
     GLuint64 elapsed_nanoseconds = 0;
-    GetExt().GetQueryObjectui64v(query_ids_[read_index], GL_QUERY_RESULT_EXT, &elapsed_nanoseconds);
+    GetExt().GetQueryObjectui64v(query_ids_[*slot], GL_QUERY_RESULT_EXT, &elapsed_nanoseconds);
 
     if (disjoint) {
         // GPU clock changed mid-measurement (e.g. thermal throttling) --
         // the result is meaningless.
+        ++diagnostics_.discarded_disjoint;
         return std::nullopt;
     }
 
+    ++diagnostics_.resolved;
     return static_cast<double>(elapsed_nanoseconds) / 1'000'000.0;
 }
 
@@ -165,51 +168,85 @@ std::optional<double> GpuElapsedTimeQuery::TryTakePreviousResultMs() {
 bool GpuElapsedTimeQuery::IsSupported() { return true; }
 
 GpuElapsedTimeQuery::GpuElapsedTimeQuery() {
-    glGenQueries(2, query_ids_);
+    glGenQueries(static_cast<GLsizei>(query_ids_.size()), query_ids_.data());
     initialized_ = true;
 }
 
 GpuElapsedTimeQuery::~GpuElapsedTimeQuery() {
     if (initialized_) {
-        glDeleteQueries(2, query_ids_);
+        glDeleteQueries(static_cast<GLsizei>(query_ids_.size()), query_ids_.data());
     }
 }
 
-void GpuElapsedTimeQuery::Begin() { glBeginQuery(GL_TIME_ELAPSED, query_ids_[write_index_]); }
+void GpuElapsedTimeQuery::Begin() {
+    if (!initialized_ || active_index_ >= 0) {
+        return;
+    }
+    const auto slot = FindFreeSlot();
+    if (!slot) {
+        ++diagnostics_.skipped_no_free_slot;
+        return;
+    }
+    active_index_ = static_cast<int>(*slot);
+    glBeginQuery(GL_TIME_ELAPSED, query_ids_[*slot]);
+}
 
 void GpuElapsedTimeQuery::End() {
+    if (!initialized_ || active_index_ < 0) {
+        return;
+    }
     glEndQuery(GL_TIME_ELAPSED);
-    query_pending_[write_index_] = true;
-    write_index_ = 1 - write_index_;
+    const std::size_t slot = static_cast<std::size_t>(active_index_);
+    query_pending_[slot] = true;
+    submission_order_[slot] = next_submission_order_++;
+    ++diagnostics_.submitted;
+    active_index_ = -1;
 }
 
 std::optional<double> GpuElapsedTimeQuery::TryTakePreviousResultMs() {
-    // write_index_ already points at the slot End() just moved *off of*
-    // (End() advances it right after marking that slot pending) -- so by
-    // the time we get here, write_index_ names the *other* slot: the one
-    // left over from the previous frame's End(), not this frame's. No
-    // inversion needed; inverting it (as an earlier version of this code
-    // did) targets this frame's own just-submitted query instead, which
-    // the GPU essentially never finishes in time, and the true previous
-    // result is silently orphaned.
-    const int read_index = write_index_;
-    if (!query_pending_[read_index]) {
+    const auto slot = FindOldestPendingSlot();
+    if (!slot) {
         return std::nullopt;
     }
 
     GLint available = 0;
-    glGetQueryObjectiv(query_ids_[read_index], GL_QUERY_RESULT_AVAILABLE, &available);
+    glGetQueryObjectiv(query_ids_[*slot], GL_QUERY_RESULT_AVAILABLE, &available);
     if (!available) {
         return std::nullopt;
     }
 
-    query_pending_[read_index] = false;
+    query_pending_[*slot] = false;
+    ++diagnostics_.resolved;
 
     GLuint64 elapsed_nanoseconds = 0;
-    glGetQueryObjectui64v(query_ids_[read_index], GL_QUERY_RESULT, &elapsed_nanoseconds);
+    glGetQueryObjectui64v(query_ids_[*slot], GL_QUERY_RESULT, &elapsed_nanoseconds);
     return static_cast<double>(elapsed_nanoseconds) / 1'000'000.0;
 }
 
 #endif  // __ANDROID__
+
+std::optional<std::size_t> GpuElapsedTimeQuery::FindFreeSlot() {
+    for (std::size_t offset = 0; offset < kQueryRingSize; ++offset) {
+        const std::size_t slot = (next_write_index_ + offset) % kQueryRingSize;
+        if (!query_pending_[slot] && static_cast<int>(slot) != active_index_) {
+            next_write_index_ = (slot + 1) % kQueryRingSize;
+            return slot;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::size_t> GpuElapsedTimeQuery::FindOldestPendingSlot() const {
+    std::optional<std::size_t> oldest;
+    for (std::size_t slot = 0; slot < kQueryRingSize; ++slot) {
+        if (!query_pending_[slot]) {
+            continue;
+        }
+        if (!oldest || submission_order_[slot] < submission_order_[*oldest]) {
+            oldest = slot;
+        }
+    }
+    return oldest;
+}
 
 }  // namespace earth_map

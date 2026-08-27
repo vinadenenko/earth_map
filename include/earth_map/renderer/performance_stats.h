@@ -30,6 +30,28 @@
 namespace earth_map {
 
 /**
+ * @brief Lifetime counters for one named GPU timer-query stream.
+ *
+ * GPU elapsed queries are asynchronous.  These counters make a missing
+ * gpu_ms value diagnosable: a result can be absent because the driver has
+ * not completed it yet, because every query-ring slot was in flight, or on
+ * Android because GL_GPU_DISJOINT_EXT invalidated it.
+ */
+struct GpuTimerQueryDiagnostics {
+    /** Queries submitted to the GPU. */
+    std::uint64_t submitted = 0;
+
+    /** Valid elapsed-time results read without blocking. */
+    std::uint64_t resolved = 0;
+
+    /** Measurements skipped because every ring slot was still in flight. */
+    std::uint64_t skipped_no_free_slot = 0;
+
+    /** Android results discarded because GL_GPU_DISJOINT_EXT was set. */
+    std::uint64_t discarded_disjoint = 0;
+};
+
+/**
  * @brief CPU and GPU cost of one named subsystem phase within a frame.
  *
  * Zone names are dotted subsystem.phase strings (e.g. "tile.cull",
@@ -49,14 +71,18 @@ struct FrameZoneTiming {
      * query missing on this Android device/driver) or haven't produced a
      * result yet.
      *
-     * This is always the *previous* frame's GPU time, never the current
-     * one: GL timer queries are asynchronous, and reading a query's result
-     * before the GPU has actually finished it forces a CPU/GPU stall --
-     * which would both hurt real performance and corrupt the very number
-     * being measured. One frame of lag avoids that entirely in the
-     * overwhelming common case.
+     * This belongs to an earlier submitted frame, never the current one:
+     * GL timer queries are asynchronous, and reading a query's result before
+     * the GPU has actually finished it forces a CPU/GPU stall. The renderer
+     * uses a non-blocking query ring, so the exact lag is device-dependent.
      */
     std::optional<double> gpu_ms;
+
+    /** True when this driver supports the GPU timer-query extension/API. */
+    bool gpu_timing_supported = false;
+
+    /** Cumulative diagnostics for this zone's GPU timer-query stream. */
+    GpuTimerQueryDiagnostics gpu_timer;
 
     /** Draw calls issued while this zone was active. */
     std::uint32_t draw_calls = 0;

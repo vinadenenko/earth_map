@@ -84,6 +84,8 @@ std::vector<FrameZoneTiming> FrameZoneTimingCollector::EndFrame() {
         auto& zone_state = zone_state_.at(name);
         if (zone_state.gpu_query) {
             timing.gpu_ms = zone_state.gpu_query->TryTakePreviousResultMs();
+            timing.gpu_timing_supported = true;
+            timing.gpu_timer = zone_state.gpu_query->GetDiagnostics();
         }
 
         result.push_back(std::move(timing));

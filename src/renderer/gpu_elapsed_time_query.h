@@ -2,25 +2,30 @@
 
 /**
  * @file gpu_elapsed_time_query.h
- * @brief Ping-ponged GL elapsed-time query for one named performance zone.
+ * @brief Non-blocking ring of GL elapsed-time queries for one performance zone.
  *
  * Internal implementation detail of the performance-monitoring
  * instrumentation (see earth_map/renderer/performance_stats.h and
  * frame_zone_timing_collector.h) -- not part of the public API.
  */
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+
+#include <earth_map/renderer/performance_stats.h>
 
 namespace earth_map {
 
 /**
- * One ping-ponged pair of GL elapsed-time queries for a single zone.
+ * A ring of GL elapsed-time queries for a single zone.
  * Begin()/End() bracket the GL work to measure; TryTakePreviousResultMs()
- * returns the *prior* frame's result, never the current one -- reading a
+ * returns the oldest available result, never the current one. Reading a
  * query before the GPU has actually finished it forces a CPU/GPU stall,
- * which both hurts real performance and corrupts the measurement. One
- * frame of lag avoids that in the overwhelming common case.
+ * which both hurts real performance and corrupts the measurement. The ring
+ * prevents a slow GPU from overwriting an unresolved query; if every slot is
+ * in flight, that measurement is skipped and recorded in diagnostics.
  *
  * Desktop: core GL_TIME_ELAPSED (promoted from ARB_timer_query, core since
  * GL 3.3 -- GLEW already loads these as ordinary core entry points).
@@ -46,23 +51,36 @@ public:
       * since GL_TIME_ELAPSED is core GL 3.3+). */
     static bool IsSupported();
 
-    /** Begins timing on the buffer not currently awaiting readback. */
+    /** Begins timing on a free query slot, or records a skipped measurement
+      * when the entire ring is still awaiting GPU completion. */
     void Begin();
 
     /** Ends timing on the buffer Begin() started. */
     void End();
 
-    /** Returns the other buffer's result if the GPU has finished it
-      * (checked with a non-blocking availability query -- never stalls),
-      * and clears it for reuse. std::nullopt if not supported, not ready
-      * yet, or the driver flagged the result as disjoint/invalid. */
+    /** Returns the oldest query result if the GPU has finished it
+     * (checked with a non-blocking availability query -- never stalls),
+     * and clears it for reuse. std::nullopt if not supported, not ready
+     * yet, or the driver flagged the result as disjoint/invalid. */
     std::optional<double> TryTakePreviousResultMs();
 
+    /** Cumulative diagnostics since this query stream was created. */
+    const GpuTimerQueryDiagnostics& GetDiagnostics() const { return diagnostics_; }
+
 private:
-    std::uint32_t query_ids_[2] = {0, 0};
-    bool query_pending_[2] = {false, false};
-    int write_index_ = 0;
+    static constexpr std::size_t kQueryRingSize = 8;
+
+    std::optional<std::size_t> FindFreeSlot();
+    std::optional<std::size_t> FindOldestPendingSlot() const;
+
+    std::array<std::uint32_t, kQueryRingSize> query_ids_{};
+    std::array<bool, kQueryRingSize> query_pending_{};
+    std::array<std::uint64_t, kQueryRingSize> submission_order_{};
+    std::size_t next_write_index_ = 0;
+    std::uint64_t next_submission_order_ = 1;
+    int active_index_ = -1;
     bool initialized_ = false;
+    GpuTimerQueryDiagnostics diagnostics_;
 };
 
 }  // namespace earth_map
