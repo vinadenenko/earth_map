@@ -4,6 +4,7 @@
  */
 
 #include <earth_map/renderer/tile_renderer.h>
+#include <earth_map/renderer/geographic_quadtree.h>
 #include <earth_map/imagery/tile_matrix_set.h>
 #include <earth_map/renderer/globe_mesh.h>
 #include <earth_map/renderer/shader_loader.h>
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,6 +48,7 @@ constexpr glm::vec3 kDefaultSunDirection{0.577350269f, 0.577350269f,
 
 constexpr int kMinZoom = 0;
 constexpr int kMaxZoom = 21;
+constexpr std::uint32_t kGeographicPatchGridSubdivisions = 16;
 
 constexpr std::array<TileFragmentShadingProbe, 4> kTileFragmentShadingProbes = {
     TileFragmentShadingProbe::FullImagery,
@@ -142,6 +145,18 @@ struct ImageryRenderSnapshot {
     int zoom_level = kDefaultZoomLevel;
     int fallback_level_count = 1;
     std::array<PageTable, kMaxFallbackLevels> page_tables;
+};
+
+/** Vertex submitted by the CPU-selected geographic patch path. */
+struct GeographicPatchVertex {
+    glm::vec3 position;
+    glm::vec2 local_uv;
+};
+
+/** One direct texture-array draw of a selected geographic leaf patch. */
+struct GeographicPatchDraw {
+    renderer::ResolvedImageryPatch imagery;
+    std::size_t vertex_offset = 0;
 };
 
 /**
@@ -256,10 +271,9 @@ public:
         std::vector<TileCoordinates> visible_tile_coords;
 
         {
-            // This zone deliberately covers candidate generation, including
-            // TileMathematics::GetTilesInBounds().  The visible-tile cap is
-            // currently applied after that call, so this timing tells us
-            // whether candidate enumeration is the Android bottleneck.
+            // This zone covers source-matrix quadtree traversal on the
+            // production path. Explicit diagnostic probes retain the old
+            // TileMathematics candidate path for like-for-like attribution.
             EARTH_MAP_ZONE_SCOPE(zone_collector_, select_zone, "tile.cull.select");
 
             // The submitted view matrix defines the camera for both CPU
@@ -270,35 +284,98 @@ public:
             // Estimate optimal zoom level based on distance.
             zoom_level = CalculateOptimalZoom(camera_distance);
 
-            // Collect visible tile coordinates. Use int64_t because with
-            // zoom_level 20, n is 1048576 and n * n overflows int32_t.
-            const int64_t n = 1LL << zoom_level;
-            if (n * n <= 256) {
-                // At low zoom (≤4), request all tiles — cheap and guarantees
-                // full coverage when the ray-cast visibility bounds are sparse.
-                visible_tile_coords.reserve(static_cast<std::size_t>(n * n));
-                for (int32_t x = 0; x < n; ++x) {
-                    for (int32_t y = 0; y < n; ++y) {
-                        visible_tile_coords.emplace_back(x, y, zoom_level);
+            // Production imagery starts from the provider's declared source
+            // matrix, then refines its geographic quadtree. This replaces the
+            // old flat candidate list for the normal draw path. The explicit
+            // fragment probes retain that list so their previous performance
+            // numbers remain comparable during this investigation.
+            if (config_.fragment_shading_probe == TileFragmentShadingProbe::FullImagery &&
+                texture_coordinator_) {
+                const auto root_key = texture_coordinator_->GetDefaultImageryRootKey();
+                const auto matrix_set = root_key.has_value()
+                    ? texture_coordinator_->GetImageryTileMatrixSet(*root_key)
+                    : std::nullopt;
+                if (matrix_set.has_value()) {
+                    renderer::GeographicPatchBounds visible_region{
+                        -constants::math::PI,
+                        matrix_set->minimum_latitude_radians,
+                        constants::math::PI,
+                        matrix_set->maximum_latitude_radians,
+                    };
+                    if (zoom_level > 4) {
+                        const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
+                            canonical_camera_position, view_matrix, projection_matrix);
+                        visible_region = {
+                            constants::conversion::DegreesToRadians(visible_bounds.min.x),
+                            constants::conversion::DegreesToRadians(visible_bounds.min.y),
+                            constants::conversion::DegreesToRadians(visible_bounds.max.x),
+                            constants::conversion::DegreesToRadians(visible_bounds.max.y),
+                        };
+                    }
+
+                    const renderer::GeographicQuadtreeSelectionConfig selection_config{
+                        {visible_region},
+                        std::clamp(static_cast<std::uint32_t>(zoom_level),
+                                   matrix_set->minimum_level,
+                                   matrix_set->maximum_level),
+                        static_cast<std::size_t>(config_.max_visible_tiles),
+                    };
+                    const std::vector<imagery::ImageTileKey> selected_keys =
+                        renderer::SelectVisibleGeographicQuadtreeLeaves(
+                            *matrix_set,
+                            root_key->imagery_source_id,
+                            selection_config);
+                    visible_tile_coords.reserve(selected_keys.size());
+                    for (const imagery::ImageTileKey& key : selected_keys) {
+                        if (key.address.column > static_cast<std::uint32_t>(
+                                                    std::numeric_limits<std::int32_t>::max()) ||
+                            key.address.row > static_cast<std::uint32_t>(
+                                                  std::numeric_limits<std::int32_t>::max()) ||
+                            key.address.level > static_cast<std::uint32_t>(
+                                                    std::numeric_limits<std::int32_t>::max())) {
+                            continue;
+                        }
+                        visible_tile_coords.emplace_back(
+                            static_cast<std::int32_t>(key.address.column),
+                            static_cast<std::int32_t>(key.address.row),
+                            static_cast<std::int32_t>(key.address.level));
                     }
                 }
-            } else {
-                // At higher zoom, use visibility bounds from ray-cast
-                // geographic projection.
-                const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
-                    canonical_camera_position, view_matrix, projection_matrix);
-                const std::vector<TileCoordinates> candidate_tiles =
-                    TileMathematics::GetTilesInBounds(visible_bounds, zoom_level);
+            }
 
-                const std::size_t max_tiles_for_frame =
-                    static_cast<std::size_t>(config_.max_visible_tiles);
-
-                if (candidate_tiles.size() <= max_tiles_for_frame) {
-                    visible_tile_coords = candidate_tiles;
+            if (visible_tile_coords.empty()) {
+                // Legacy candidate selection remains available only when the
+                // explicit GPU attribution probes are active, or when no
+                // usable source declaration is installed yet. Use int64_t
+                // because with zoom_level 20, n*n overflows int32_t.
+                const int64_t n = 1LL << zoom_level;
+                if (n * n <= 256) {
+                    // At low zoom (≤4), request all tiles — cheap and
+                    // guarantees full coverage when ray-cast bounds are sparse.
+                    visible_tile_coords.reserve(static_cast<std::size_t>(n * n));
+                    for (int32_t x = 0; x < n; ++x) {
+                        for (int32_t y = 0; y < n; ++y) {
+                            visible_tile_coords.emplace_back(x, y, zoom_level);
+                        }
+                    }
                 } else {
-                    visible_tile_coords.assign(
-                        candidate_tiles.begin(),
-                        candidate_tiles.begin() + max_tiles_for_frame);
+                    // At higher zoom, use visibility bounds from ray-cast
+                    // geographic projection.
+                    const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
+                        canonical_camera_position, view_matrix, projection_matrix);
+                    const std::vector<TileCoordinates> candidate_tiles =
+                        TileMathematics::GetTilesInBounds(visible_bounds, zoom_level);
+
+                    const std::size_t max_tiles_for_frame =
+                        static_cast<std::size_t>(config_.max_visible_tiles);
+
+                    if (candidate_tiles.size() <= max_tiles_for_frame) {
+                        visible_tile_coords = candidate_tiles;
+                    } else {
+                        visible_tile_coords.assign(
+                            candidate_tiles.begin(),
+                            candidate_tiles.begin() + max_tiles_for_frame);
+                    }
                 }
             }
         }
@@ -311,7 +388,8 @@ public:
         {
             EARTH_MAP_ZONE_SCOPE(zone_collector_, page_table_zone, "tile.cull.page-table");
 
-            if (texture_coordinator_ &&
+            if (config_.fragment_shading_probe != TileFragmentShadingProbe::FullImagery &&
+                texture_coordinator_ &&
                 zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom) {
                 const coordinates::Geographic cam_geo =
                     coordinates::CoordinateMapper::CartesianToGeographic(canonical_camera_position);
@@ -414,7 +492,11 @@ public:
                 }
             }
 
-            CaptureImageryRenderSnapshot(zoom_level);
+            if (config_.fragment_shading_probe == TileFragmentShadingProbe::FullImagery) {
+                UpdateGeographicPatchDraws(visible_tile_coords);
+            } else {
+                CaptureImageryRenderSnapshot(zoom_level);
+            }
         }
 
         spdlog::debug("Tile renderer update: {} visible tiles, zoom level {}",
@@ -441,6 +523,27 @@ public:
                 spdlog::error("Tile renderer: failed to upload mesh to GPU");
                 return;
             }
+        }
+
+        // Normal rendering is CPU-selected geographic quadtree patches with
+        // direct texture-array sampling. Legacy fragment programs are kept
+        // solely for the explicit attribution probes committed earlier.
+        if (config_.fragment_shading_probe == TileFragmentShadingProbe::FullImagery) {
+            GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
+            GLboolean cull_face_enabled = glIsEnabled(GL_CULL_FACE);
+            glEnable(GL_DEPTH_TEST);
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+
+            RenderDirectGeographicImagery(view_matrix, projection_matrix, draw_zone);
+
+            if (!depth_test_enabled) {
+                glDisable(GL_DEPTH_TEST);
+            }
+            if (!cull_face_enabled) {
+                glDisable(GL_CULL_FACE);
+            }
+            return;
         }
 
         // If no visible tiles, render with base color
@@ -584,6 +687,12 @@ public:
     void ClearCache() override {
         visible_tiles_.clear();
         imagery_snapshot_ = {};
+        geographic_patch_draws_.clear();
+        geographic_patch_keys_.clear();
+        geographic_patch_vertex_offsets_.clear();
+        geographic_patch_vertices_.clear();
+        geographic_patch_geometry_cache_.clear();
+        geographic_patch_vertices_dirty_ = true;
         // Cache cleared
         spdlog::info("Tile renderer cache cleared");
     }
@@ -605,6 +714,134 @@ public:
     }
 
 private:
+    static glm::vec3 NormalizedRenderPosition(
+        const geodesy::GeodeticPosition& geodetic) {
+        // The existing camera/view pipeline still uses a unit sphere. Keep
+        // that compatibility adapter at this boundary only: geographic patch
+        // construction itself is WGS84 radians/ECEF, and the later
+        // camera-relative ECEF migration can replace this conversion without
+        // changing imagery selection, residency, or UV math.
+        const double cos_latitude = std::cos(geodetic.latitude_radians);
+        return {
+            static_cast<float>(cos_latitude * std::sin(geodetic.longitude_radians)),
+            static_cast<float>(std::sin(geodetic.latitude_radians)),
+            static_cast<float>(cos_latitude * std::cos(geodetic.longitude_radians)),
+        };
+    }
+
+    const std::vector<GeographicPatchVertex>* GetOrCreateGeographicPatchGeometry(
+        const renderer::GeographicQuadtreePatch& patch) {
+        const auto found = geographic_patch_geometry_cache_.find(patch.imagery_key);
+        if (found != geographic_patch_geometry_cache_.end()) {
+            return &found->second;
+        }
+        if (!geographic_patch_grid_.has_value()) {
+            return nullptr;
+        }
+
+        std::vector<GeographicPatchVertex> vertices;
+        vertices.reserve(geographic_patch_grid_->local_coordinates.size());
+        for (const glm::vec2& local_uv_float : geographic_patch_grid_->local_coordinates) {
+            const glm::dvec2 local_uv(local_uv_float.x, local_uv_float.y);
+            const auto geodetic = renderer::PatchLocalToGeodetic(patch, local_uv);
+            if (!geodetic.has_value()) {
+                return nullptr;
+            }
+            vertices.push_back({NormalizedRenderPosition(*geodetic), local_uv_float});
+        }
+
+        const auto [inserted, was_inserted] = geographic_patch_geometry_cache_.emplace(
+            patch.imagery_key, std::move(vertices));
+        return was_inserted ? &inserted->second : nullptr;
+    }
+
+    void UpdateGeographicPatchDraws(
+        const std::vector<TileCoordinates>& visible_tile_coords) {
+        geographic_patch_draws_.clear();
+        if (!texture_coordinator_ || !geographic_patch_grid_.has_value()) {
+            return;
+        }
+
+        struct PendingPatchDraw {
+            renderer::ResolvedImageryPatch imagery;
+        };
+        std::vector<PendingPatchDraw> pending_draws;
+        std::vector<imagery::ImageTileKey> patch_keys;
+        pending_draws.reserve(visible_tile_coords.size());
+        patch_keys.reserve(visible_tile_coords.size());
+
+        for (const TileCoordinates& tile_coords : visible_tile_coords) {
+            const auto imagery_key = texture_coordinator_->ResolveImageryTileKey(tile_coords);
+            if (!imagery_key.has_value()) {
+                continue;
+            }
+            const auto matrix_set =
+                texture_coordinator_->GetImageryTileMatrixSet(*imagery_key);
+            if (!matrix_set.has_value()) {
+                continue;
+            }
+            const auto patch = renderer::MakeGeographicQuadtreePatch(*matrix_set, *imagery_key);
+            if (!patch.has_value()) {
+                continue;
+            }
+
+            const auto resolved = renderer::ResolveResidentImageryPatch(
+                *patch,
+                kMaxFallbackLevels - 1,
+                [this](const imagery::ImageTileKey& key) {
+                    return texture_coordinator_->GetResidentImageryLayer(key);
+                });
+            if (!resolved.has_value()) {
+                continue;
+            }
+
+            if (!GetOrCreateGeographicPatchGeometry(*patch)) {
+                spdlog::warn("Failed to construct geographic imagery patch {}/{}/{}/{}/{}",
+                             imagery_key->imagery_source_id,
+                             imagery_key->matrix_set_id,
+                             imagery_key->address.level,
+                             imagery_key->address.column,
+                             imagery_key->address.row);
+                continue;
+            }
+
+            patch_keys.push_back(imagery_key.value());
+            pending_draws.push_back({*resolved});
+        }
+
+        if (patch_keys != geographic_patch_keys_) {
+            geographic_patch_vertices_.clear();
+            geographic_patch_vertex_offsets_.clear();
+            geographic_patch_vertices_.reserve(
+                patch_keys.size() * geographic_patch_grid_->local_coordinates.size());
+
+            for (const imagery::ImageTileKey& key : patch_keys) {
+                const auto geometry = geographic_patch_geometry_cache_.find(key);
+                if (geometry == geographic_patch_geometry_cache_.end()) {
+                    continue;
+                }
+                geographic_patch_vertex_offsets_.emplace(
+                    key, geographic_patch_vertices_.size());
+                geographic_patch_vertices_.insert(
+                    geographic_patch_vertices_.end(),
+                    geometry->second.begin(), geometry->second.end());
+            }
+
+            geographic_patch_keys_ = std::move(patch_keys);
+            geographic_patch_vertices_dirty_ = true;
+        }
+
+        geographic_patch_draws_.reserve(pending_draws.size());
+        for (PendingPatchDraw& pending : pending_draws) {
+            const auto offset = geographic_patch_vertex_offsets_.find(
+                pending.imagery.patch.imagery_key);
+            if (offset == geographic_patch_vertex_offsets_.end()) {
+                continue;
+            }
+            geographic_patch_draws_.push_back({std::move(pending.imagery), offset->second});
+        }
+    }
+
     void CaptureImageryRenderSnapshot(int zoom_level) {
         imagery_snapshot_ = {};
         imagery_snapshot_.zoom_level = zoom_level;
@@ -648,6 +885,17 @@ private:
     std::uint64_t frame_counter_ = 0;
     std::vector<TileRenderState> visible_tiles_;
     ImageryRenderSnapshot imagery_snapshot_;
+    std::optional<renderer::GeographicPatchGrid> geographic_patch_grid_;
+    std::vector<GeographicPatchDraw> geographic_patch_draws_;
+    std::vector<imagery::ImageTileKey> geographic_patch_keys_;
+    std::unordered_map<imagery::ImageTileKey,
+                       std::vector<GeographicPatchVertex>,
+                       imagery::ImageTileKeyHash> geographic_patch_geometry_cache_;
+    std::unordered_map<imagery::ImageTileKey,
+                       std::size_t,
+                       imagery::ImageTileKeyHash> geographic_patch_vertex_offsets_;
+    std::vector<GeographicPatchVertex> geographic_patch_vertices_;
+    bool geographic_patch_vertices_dirty_ = false;
     TileRenderStats stats_;
     FrameZoneTimingCollector zone_collector_;
     std::vector<FrameZoneTiming> last_zone_timings_;
@@ -678,13 +926,39 @@ private:
         UniformLocations uniform_locs;
     };
 
+    struct BaseGlobeUniformLocations {
+        GLint view = -1;
+        GLint projection = -1;
+        GLint model = -1;
+        GLint light_direction = -1;
+        GLint light_color = -1;
+    };
+
+    struct GeographicPatchUniformLocations {
+        GLint view = -1;
+        GLint projection = -1;
+        GLint tile_pool = -1;
+        GLint texture_layer = -1;
+        GLint uv_scale = -1;
+        GLint uv_offset = -1;
+        GLint light_direction = -1;
+        GLint light_color = -1;
+    };
+
     // OpenGL objects.  The probe programs share the same vertex shader and
     // mesh; only their compile-time-specialized fragment shader differs.
     std::array<ShaderProgramState, kTileFragmentShadingProbes.size()> shader_programs_;
+    std::uint32_t base_globe_program_ = 0;
+    BaseGlobeUniformLocations base_globe_uniform_locs_;
+    std::uint32_t geographic_patch_program_ = 0;
+    GeographicPatchUniformLocations geographic_patch_uniform_locs_;
     std::uint32_t globe_vao_ = 0;
     std::uint32_t globe_vbo_ = 0;
     std::uint32_t globe_ebo_ = 0;
     std::vector<unsigned int> globe_indices_;
+    std::uint32_t geographic_patch_vao_ = 0;
+    std::uint32_t geographic_patch_vbo_ = 0;
+    std::uint32_t geographic_patch_ebo_ = 0;
 
     // Tile atlas vertex shader source
     static constexpr const char* kTileVertexShader = EARTH_MAP_GLSL_PREAMBLE R"(
@@ -705,6 +979,71 @@ void main() {
     Normal = mat3(transpose(inverse(uModel))) * aNormal;
     TexCoord = aTexCoord;
     gl_Position = uProjection * uView * vec4(FragPos, 1.0);
+}
+)";
+
+    // Cheap base globe used while imagery is absent. The expensive legacy
+    // imagery shader is retained only for explicit diagnostic probe modes.
+    static constexpr const char* kBaseGlobeFragmentShader = EARTH_MAP_GLSL_PREAMBLE R"(
+in vec3 FragPos;
+in vec3 Normal;
+
+out vec4 FragColor;
+
+uniform vec3 uLightDirection;
+uniform vec3 uLightColor;
+
+void main() {
+    const vec3 baseColor = vec3(0.07, 0.13, 0.21);
+    const float ambientStrength = 0.25;
+    float diffuse = max(dot(normalize(Normal), uLightDirection), 0.0);
+    FragColor = vec4((ambientStrength + diffuse) * uLightColor * baseColor, 1.0);
+}
+)";
+
+    // Geographic patches receive already projected CPU geometry and a direct
+    // physical texture-array layer. No fragment ray construction, Mercator
+    // conversion, page-table lookup, or parent fallback occurs here.
+    static constexpr const char* kGeographicPatchVertexShader = EARTH_MAP_GLSL_PREAMBLE R"(
+layout (location = 0) in vec3 aPosition;
+layout (location = 1) in vec2 aLocalUv;
+
+uniform mat4 uView;
+uniform mat4 uProjection;
+
+out vec3 WorldPosition;
+out vec2 LocalUv;
+
+void main() {
+    WorldPosition = aPosition;
+    LocalUv = aLocalUv;
+    gl_Position = uProjection * uView * vec4(aPosition, 1.0);
+}
+)";
+
+    static constexpr const char* kGeographicPatchFragmentShader = EARTH_MAP_GLSL_PREAMBLE R"(
+in vec3 WorldPosition;
+in vec2 LocalUv;
+
+out vec4 FragColor;
+
+uniform sampler2DArray uTilePool;
+uniform float uTextureLayer;
+uniform vec2 uUvScale;
+uniform vec2 uUvOffset;
+uniform vec3 uLightDirection;
+uniform vec3 uLightColor;
+
+void main() {
+    const float kHalfTexel = 0.5 / 256.0;
+    vec2 uv = uUvOffset + LocalUv * uUvScale;
+    uv = clamp(uv, kHalfTexel, 1.0 - kHalfTexel);
+    vec4 texColor = texture(uTilePool, vec3(uv, uTextureLayer));
+
+    const float ambientStrength = 0.25;
+    float diffuse = max(dot(normalize(WorldPosition), uLightDirection), 0.0);
+    FragColor = vec4((ambientStrength + diffuse) * uLightColor * texColor.rgb,
+                     texColor.a);
 }
 )";
 
@@ -972,12 +1311,53 @@ void main() {
         }
     }
 
+    void CacheBaseGlobeUniformLocations() {
+        base_globe_uniform_locs_.view =
+            glGetUniformLocation(base_globe_program_, "uView");
+        base_globe_uniform_locs_.projection =
+            glGetUniformLocation(base_globe_program_, "uProjection");
+        base_globe_uniform_locs_.model =
+            glGetUniformLocation(base_globe_program_, "uModel");
+        base_globe_uniform_locs_.light_direction =
+            glGetUniformLocation(base_globe_program_, "uLightDirection");
+        base_globe_uniform_locs_.light_color =
+            glGetUniformLocation(base_globe_program_, "uLightColor");
+    }
+
+    void CacheGeographicPatchUniformLocations() {
+        geographic_patch_uniform_locs_.view =
+            glGetUniformLocation(geographic_patch_program_, "uView");
+        geographic_patch_uniform_locs_.projection =
+            glGetUniformLocation(geographic_patch_program_, "uProjection");
+        geographic_patch_uniform_locs_.tile_pool =
+            glGetUniformLocation(geographic_patch_program_, "uTilePool");
+        geographic_patch_uniform_locs_.texture_layer =
+            glGetUniformLocation(geographic_patch_program_, "uTextureLayer");
+        geographic_patch_uniform_locs_.uv_scale =
+            glGetUniformLocation(geographic_patch_program_, "uUvScale");
+        geographic_patch_uniform_locs_.uv_offset =
+            glGetUniformLocation(geographic_patch_program_, "uUvOffset");
+        geographic_patch_uniform_locs_.light_direction =
+            glGetUniformLocation(geographic_patch_program_, "uLightDirection");
+        geographic_patch_uniform_locs_.light_color =
+            glGetUniformLocation(geographic_patch_program_, "uLightColor");
+    }
+
     void CleanupShaderPrograms() {
         for (ShaderProgramState& shader_state : shader_programs_) {
             if (shader_state.program != 0) {
                 glDeleteProgram(shader_state.program);
                 shader_state.program = 0;
             }
+        }
+
+        if (base_globe_program_ != 0) {
+            glDeleteProgram(base_globe_program_);
+            base_globe_program_ = 0;
+        }
+        if (geographic_patch_program_ != 0) {
+            glDeleteProgram(geographic_patch_program_);
+            geographic_patch_program_ = 0;
         }
     }
 
@@ -997,10 +1377,181 @@ void main() {
             CacheUniformLocations(shader_state);
         }
 
-        spdlog::info("Tile renderer OpenGL state initialized with {} fragment probes "
+        base_globe_program_ = ShaderLoader::CreateProgram(
+            kTileVertexShader, kBaseGlobeFragmentShader, "geographic_base_globe");
+        if (base_globe_program_ == 0) {
+            spdlog::error("Failed to create geographic base globe shader program");
+            CleanupShaderPrograms();
+            return false;
+        }
+        CacheBaseGlobeUniformLocations();
+
+        geographic_patch_program_ = ShaderLoader::CreateProgram(
+            kGeographicPatchVertexShader,
+            kGeographicPatchFragmentShader,
+            "geographic_imagery_patch");
+        if (geographic_patch_program_ == 0) {
+            spdlog::error("Failed to create geographic imagery patch shader program");
+            CleanupShaderPrograms();
+            return false;
+        }
+        CacheGeographicPatchUniformLocations();
+
+        geographic_patch_grid_ = renderer::MakeGeographicPatchGrid(
+            kGeographicPatchGridSubdivisions);
+        if (!geographic_patch_grid_.has_value()) {
+            spdlog::error("Failed to create geographic imagery patch grid");
+            CleanupShaderPrograms();
+            return false;
+        }
+        InitializeGeographicPatchGeometry();
+
+        spdlog::info("Tile renderer OpenGL state initialized with a direct geographic "
+                     "imagery patch path and {} legacy fragment probes "
                      "(mesh will be uploaded when provided)",
                      shader_programs_.size());
         return true;
+    }
+
+    void InitializeGeographicPatchGeometry() {
+        glGenVertexArrays(1, &geographic_patch_vao_);
+        glGenBuffers(1, &geographic_patch_vbo_);
+        glGenBuffers(1, &geographic_patch_ebo_);
+
+        glBindVertexArray(geographic_patch_vao_);
+        glBindBuffer(GL_ARRAY_BUFFER, geographic_patch_vbo_);
+        glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, geographic_patch_ebo_);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     geographic_patch_grid_->indices.size() * sizeof(std::uint32_t),
+                     geographic_patch_grid_->indices.data(),
+                     GL_STATIC_DRAW);
+
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                              sizeof(GeographicPatchVertex),
+                              reinterpret_cast<const void*>(offsetof(
+                                  GeographicPatchVertex, position)));
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                              sizeof(GeographicPatchVertex),
+                              reinterpret_cast<const void*>(offsetof(
+                                  GeographicPatchVertex, local_uv)));
+        glEnableVertexAttribArray(1);
+        glBindVertexArray(0);
+    }
+
+    void UploadGeographicPatchVertices() {
+        if (!geographic_patch_vertices_dirty_) {
+            return;
+        }
+
+        glBindBuffer(GL_ARRAY_BUFFER, geographic_patch_vbo_);
+        glBufferData(GL_ARRAY_BUFFER,
+                     geographic_patch_vertices_.size() * sizeof(GeographicPatchVertex),
+                     geographic_patch_vertices_.empty()
+                         ? nullptr
+                         : geographic_patch_vertices_.data(),
+                     GL_DYNAMIC_DRAW);
+        geographic_patch_vertices_dirty_ = false;
+    }
+
+    void RenderBaseGlobe(const glm::mat4& view_matrix,
+                         const glm::mat4& projection_matrix) {
+        glUseProgram(base_globe_program_);
+        glUniformMatrix4fv(base_globe_uniform_locs_.view, 1, GL_FALSE,
+                           glm::value_ptr(view_matrix));
+        glUniformMatrix4fv(base_globe_uniform_locs_.projection, 1, GL_FALSE,
+                           glm::value_ptr(projection_matrix));
+        glUniformMatrix4fv(base_globe_uniform_locs_.model, 1, GL_FALSE,
+                           glm::value_ptr(glm::mat4(1.0f)));
+        glUniform3f(base_globe_uniform_locs_.light_direction,
+                    kDefaultSunDirection.x, kDefaultSunDirection.y,
+                    kDefaultSunDirection.z);
+        glUniform3f(base_globe_uniform_locs_.light_color, 1.0f, 1.0f, 1.0f);
+
+        glBindVertexArray(globe_vao_);
+        glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, nullptr);
+        glBindVertexArray(0);
+    }
+
+    void RenderGeographicPatches(const glm::mat4& view_matrix,
+                                 const glm::mat4& projection_matrix,
+                                 FrameZoneScope& draw_zone) {
+        if (geographic_patch_draws_.empty() || !texture_coordinator_) {
+            return;
+        }
+
+        UploadGeographicPatchVertices();
+        glUseProgram(geographic_patch_program_);
+        glUniformMatrix4fv(geographic_patch_uniform_locs_.view, 1, GL_FALSE,
+                           glm::value_ptr(view_matrix));
+        glUniformMatrix4fv(geographic_patch_uniform_locs_.projection, 1, GL_FALSE,
+                           glm::value_ptr(projection_matrix));
+        glUniform3f(geographic_patch_uniform_locs_.light_direction,
+                    kDefaultSunDirection.x, kDefaultSunDirection.y,
+                    kDefaultSunDirection.z);
+        glUniform3f(geographic_patch_uniform_locs_.light_color,
+                    1.0f, 1.0f, 1.0f);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D_ARRAY,
+                      texture_coordinator_->GetTilePoolTextureID());
+        glUniform1i(geographic_patch_uniform_locs_.tile_pool, 0);
+
+        glBindVertexArray(geographic_patch_vao_);
+        // glVertexAttribPointer captures the currently bound array buffer in
+        // this VAO. RenderBaseGlobe may have left a different VBO bound on a
+        // previous frame, so bind the patch VBO explicitly before rebasing
+        // the attributes for each cached patch range.
+        glBindBuffer(GL_ARRAY_BUFFER, geographic_patch_vbo_);
+        for (const GeographicPatchDraw& draw : geographic_patch_draws_) {
+            glUniform1f(geographic_patch_uniform_locs_.texture_layer,
+                        static_cast<float>(draw.imagery.texture_layer));
+            glUniform2f(geographic_patch_uniform_locs_.uv_scale,
+                        static_cast<float>(draw.imagery.uv_scale.x),
+                        static_cast<float>(draw.imagery.uv_scale.y));
+            glUniform2f(geographic_patch_uniform_locs_.uv_offset,
+                        static_cast<float>(draw.imagery.uv_offset.x),
+                        static_cast<float>(draw.imagery.uv_offset.y));
+
+            const std::size_t byte_offset =
+                draw.vertex_offset * sizeof(GeographicPatchVertex);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  sizeof(GeographicPatchVertex),
+                                  reinterpret_cast<const void*>(
+                                      byte_offset + offsetof(GeographicPatchVertex, position)));
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                                  sizeof(GeographicPatchVertex),
+                                  reinterpret_cast<const void*>(
+                                      byte_offset + offsetof(GeographicPatchVertex, local_uv)));
+            glDrawElements(GL_TRIANGLES,
+                           geographic_patch_grid_->indices.size(),
+                           GL_UNSIGNED_INT,
+                           nullptr);
+            draw_zone.AddDrawCall(geographic_patch_grid_->indices.size() / 3U);
+        }
+        glBindVertexArray(0);
+    }
+
+    void RenderDirectGeographicImagery(const glm::mat4& view_matrix,
+                                        const glm::mat4& projection_matrix,
+                                        FrameZoneScope& draw_zone) {
+        RenderBaseGlobe(view_matrix, projection_matrix);
+
+        // Patches are an imagery overlay over the legacy icosphere. The two
+        // independently tessellated surfaces do not share vertices, so depth
+        // testing would create false holes where the coarse patch chord falls
+        // microscopically inside the finer base mesh. Front/back culling still
+        // rejects the far hemisphere. Terrain will replace this temporary
+        // overlay relationship with one shared patch surface and depth.
+        const GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
+        glDisable(GL_DEPTH_TEST);
+        RenderGeographicPatches(view_matrix, projection_matrix, draw_zone);
+        if (depth_test_enabled) {
+            glEnable(GL_DEPTH_TEST);
+        }
+
+        stats_.rendered_tiles = geographic_patch_draws_.size();
     }
 
     bool UploadMeshToGPU() {
@@ -1117,6 +1668,18 @@ void main() {
         if (globe_ebo_) {
             glDeleteBuffers(1, &globe_ebo_);
             globe_ebo_ = 0;
+        }
+        if (geographic_patch_vao_) {
+            glDeleteVertexArrays(1, &geographic_patch_vao_);
+            geographic_patch_vao_ = 0;
+        }
+        if (geographic_patch_vbo_) {
+            glDeleteBuffers(1, &geographic_patch_vbo_);
+            geographic_patch_vbo_ = 0;
+        }
+        if (geographic_patch_ebo_) {
+            glDeleteBuffers(1, &geographic_patch_ebo_);
+            geographic_patch_ebo_ = 0;
         }
         CleanupShaderPrograms();
     }

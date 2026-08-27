@@ -118,4 +118,92 @@ TEST(GeographicQuadtreePatchGridTest, RejectsInvalidGridResolution) {
     EXPECT_FALSE(MakeGeographicPatchGrid(257).has_value());
 }
 
+TEST(GeographicQuadtreeSelectionTest, RefinesTheFullSourceMatrixToTargetLevel) {
+    const imagery::TileMatrixSet matrix_set = imagery::TileMatrixSet::WebMercatorXYZ();
+    const GeographicQuadtreeSelectionConfig config{
+        {{{-std::numbers::pi_v<double>,
+           -imagery::TileMatrixSet::kWebMercatorMaxLatitudeRadians,
+           std::numbers::pi_v<double>,
+           imagery::TileMatrixSet::kWebMercatorMaxLatitudeRadians}}},
+        2,
+        16,
+    };
+
+    const std::vector<imagery::ImageTileKey> selected =
+        SelectVisibleGeographicQuadtreeLeaves(matrix_set, "test-source", config);
+
+    ASSERT_EQ(selected.size(), 16U);
+    for (const imagery::ImageTileKey& key : selected) {
+        EXPECT_EQ(key.imagery_source_id, "test-source");
+        EXPECT_EQ(key.matrix_set_id, matrix_set.id);
+        EXPECT_EQ(key.address.level, 2U);
+    }
+}
+
+TEST(GeographicQuadtreeSelectionTest, KeepsACompleteCoarserFrontierAtTheLeafBudget) {
+    const imagery::TileMatrixSet matrix_set = imagery::TileMatrixSet::WebMercatorXYZ();
+    const GeographicQuadtreeSelectionConfig config{
+        {{{-std::numbers::pi_v<double>,
+           -imagery::TileMatrixSet::kWebMercatorMaxLatitudeRadians,
+           std::numbers::pi_v<double>,
+           imagery::TileMatrixSet::kWebMercatorMaxLatitudeRadians}}},
+        5,
+        16,
+    };
+
+    const std::vector<imagery::ImageTileKey> selected =
+        SelectVisibleGeographicQuadtreeLeaves(matrix_set, "test-source", config);
+
+    ASSERT_EQ(selected.size(), 16U);
+    for (const imagery::ImageTileKey& key : selected) {
+        EXPECT_EQ(key.address.level, 2U);
+    }
+}
+
+TEST(GeographicQuadtreeSelectionTest, SelectsOnlyIntersectingLeaves) {
+    const imagery::TileMatrixSet matrix_set = imagery::TileMatrixSet::WebMercatorXYZ();
+    const GeographicQuadtreeSelectionConfig config{
+        {{{0.1,
+           0.1,
+           std::numbers::pi_v<double> - 0.1,
+           imagery::TileMatrixSet::kWebMercatorMaxLatitudeRadians - 0.1}}},
+        2,
+        16,
+    };
+
+    const std::vector<imagery::ImageTileKey> selected =
+        SelectVisibleGeographicQuadtreeLeaves(matrix_set, "test-source", config);
+
+    ASSERT_EQ(selected.size(), 4U);
+    for (const imagery::ImageTileKey& key : selected) {
+        EXPECT_EQ(key.address.level, 2U);
+        EXPECT_GE(key.address.column, 2U);
+        EXPECT_LE(key.address.column, 3U);
+        EXPECT_LE(key.address.row, 1U);
+    }
+}
+
+TEST(GeographicQuadtreeSelectionTest, PreservesTmsRowsForTheSamePhysicalView) {
+    imagery::TileMatrixSet matrix_set = imagery::TileMatrixSet::WebMercatorXYZ();
+    matrix_set.row_order = imagery::TileRowOrder::SouthToNorth;
+    const GeographicQuadtreeSelectionConfig config{
+        {{{0.1,
+           0.1,
+           std::numbers::pi_v<double> - 0.1,
+           imagery::TileMatrixSet::kWebMercatorMaxLatitudeRadians - 0.1}}},
+        2,
+        16,
+    };
+
+    const std::vector<imagery::ImageTileKey> selected =
+        SelectVisibleGeographicQuadtreeLeaves(matrix_set, "test-source", config);
+
+    ASSERT_EQ(selected.size(), 4U);
+    for (const imagery::ImageTileKey& key : selected) {
+        EXPECT_EQ(key.address.level, 2U);
+        EXPECT_GE(key.address.row, 2U);
+        EXPECT_LE(key.address.row, 3U);
+    }
+}
+
 }  // namespace earth_map::renderer

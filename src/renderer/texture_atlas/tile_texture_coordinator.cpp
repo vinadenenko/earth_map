@@ -227,6 +227,11 @@ std::optional<imagery::ImageTileKey> TileTextureCoordinator::ResolveImageryTileK
     return loader_->ResolveImageTileKey(coords);
 }
 
+std::optional<imagery::ImageTileKey>
+TileTextureCoordinator::GetDefaultImageryRootKey() const {
+    return loader_->GetDefaultImageryRootKey();
+}
+
 std::optional<imagery::TileMatrixSet> TileTextureCoordinator::GetImageryTileMatrixSet(
     const imagery::ImageTileKey& imagery_key) const {
     return loader_->GetTileMatrixSet(imagery_key);

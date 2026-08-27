@@ -234,6 +234,13 @@ public:
         const TileCoordinates& coords) const;
 
     /**
+     * Returns the declared root identity of the default imagery source.
+     * Geographic quadtree selection uses it to stay source/matrix-aware
+     * before it creates any legacy TileCoordinates request.
+     */
+    std::optional<imagery::ImageTileKey> GetDefaultImageryRootKey() const;
+
+    /**
      * Returns the declared source matrix for a canonical imagery identity.
      * This is the renderer's bridge from provider-owned tile addressing to
      * geographic patch construction; it never infers a matrix from zoom.

@@ -386,6 +386,35 @@ public:
     }
 
     /**
+     * Returns the root identity of the default imagery source.
+     *
+     * Geographic patch selection needs the source/matrix declaration before
+     * it has a legacy XYZ request to resolve.  This is deliberately a source
+     * declaration query, not a fabricated cache key: the address is the
+     * first valid page in that source's declared matrix.
+     */
+    [[nodiscard]] std::optional<imagery::ImageTileKey>
+    GetDefaultImageryRootKey() const {
+        const TileProvider* provider = GetProvider("");
+        if (!provider) {
+            return std::nullopt;
+        }
+
+        const imagery::TileMatrixSet matrix_set = provider->GetTileMatrixSet();
+        if (!matrix_set.IsValid()) {
+            return std::nullopt;
+        }
+
+        imagery::ImageTileKey key{
+            provider->GetImagerySourceId(),
+            matrix_set.id,
+            {matrix_set.minimum_level, 0, 0},
+        };
+        return key.IsValid() ? std::optional<imagery::ImageTileKey>(std::move(key))
+                             : std::nullopt;
+    }
+
+    /**
      * Finds the declared matrix set for a canonical imagery identity.
      *
      * Source and matrix-set identifiers are verified together.  This keeps a

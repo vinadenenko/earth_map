@@ -12,6 +12,25 @@ namespace {
 
 constexpr std::uint32_t kMaximumPatchGridSubdivisions = 256;
 
+[[nodiscard]] bool Intersects(const GeographicPatchBounds& first,
+                              const GeographicPatchBounds& second) noexcept {
+    return first.west_longitude_radians < second.east_longitude_radians &&
+           first.east_longitude_radians > second.west_longitude_radians &&
+           first.south_latitude_radians < second.north_latitude_radians &&
+           first.north_latitude_radians > second.south_latitude_radians;
+}
+
+[[nodiscard]] bool IntersectsAny(
+    const GeographicPatchBounds& patch_bounds,
+    const std::vector<GeographicPatchBounds>& visible_regions) noexcept {
+    for (const GeographicPatchBounds& region : visible_regions) {
+        if (Intersects(patch_bounds, region)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 [[nodiscard]] double InverseWebMercatorLatitude(double north_to_south) noexcept {
     return std::atan(std::sinh(
         constants::math::PI * (1.0 - 2.0 * north_to_south)));
@@ -236,6 +255,86 @@ std::optional<GeographicPatchGrid> MakeGeographicPatchGrid(
     }
 
     return grid;
+}
+
+std::vector<imagery::ImageTileKey> SelectVisibleGeographicQuadtreeLeaves(
+    const imagery::TileMatrixSet& matrix_set,
+    std::string imagery_source_id,
+    const GeographicQuadtreeSelectionConfig& config) {
+    if (!matrix_set.IsValid() || imagery_source_id.empty() ||
+        !matrix_set.IsLevelSupported(config.target_level) ||
+        config.maximum_leaf_count == 0 || config.visible_regions.empty()) {
+        return {};
+    }
+    for (const GeographicPatchBounds& region : config.visible_regions) {
+        if (!region.IsValid()) {
+            return {};
+        }
+    }
+
+    const std::uint64_t root_dimension =
+        matrix_set.MatrixDimension(matrix_set.minimum_level);
+    const std::uint64_t maximum_leaf_count =
+        static_cast<std::uint64_t>(config.maximum_leaf_count);
+    if (root_dimension == 0 || root_dimension > maximum_leaf_count / root_dimension) {
+        // A source whose first available level alone cannot fit in the budget
+        // has no valid coarser source leaf. Do not invent one; the caller can
+        // retain its documented coarse-globe fallback instead.
+        return {};
+    }
+
+    std::vector<imagery::ImageTileKey> frontier;
+    frontier.reserve(static_cast<std::size_t>(root_dimension * root_dimension));
+    for (std::uint32_t row = 0; row < root_dimension; ++row) {
+        for (std::uint32_t column = 0; column < root_dimension; ++column) {
+            imagery::ImageTileKey key{
+                imagery_source_id,
+                matrix_set.id,
+                {matrix_set.minimum_level, column, row},
+            };
+            const auto patch = MakeGeographicQuadtreePatch(matrix_set, key);
+            if (patch.has_value() &&
+                IntersectsAny(patch->bounds, config.visible_regions)) {
+                frontier.push_back(std::move(key));
+            }
+        }
+    }
+
+    while (!frontier.empty() &&
+           frontier.front().address.level < config.target_level) {
+        std::vector<imagery::ImageTileKey> children;
+        children.reserve(frontier.size() * 4U);
+
+        for (const imagery::ImageTileKey& parent : frontier) {
+            const std::uint32_t child_level = parent.address.level + 1U;
+            const std::uint32_t first_column = parent.address.column * 2U;
+            const std::uint32_t first_row = parent.address.row * 2U;
+            for (std::uint32_t row_offset = 0; row_offset < 2U; ++row_offset) {
+                for (std::uint32_t column_offset = 0; column_offset < 2U;
+                     ++column_offset) {
+                    imagery::ImageTileKey child{
+                        imagery_source_id,
+                        matrix_set.id,
+                        {child_level,
+                         first_column + column_offset,
+                         first_row + row_offset},
+                    };
+                    const auto patch = MakeGeographicQuadtreePatch(matrix_set, child);
+                    if (patch.has_value() &&
+                        IntersectsAny(patch->bounds, config.visible_regions)) {
+                        children.push_back(std::move(child));
+                    }
+                }
+            }
+        }
+
+        if (children.empty() || children.size() > config.maximum_leaf_count) {
+            break;
+        }
+        frontier = std::move(children);
+    }
+
+    return frontier;
 }
 
 }  // namespace earth_map::renderer

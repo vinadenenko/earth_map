@@ -20,9 +20,11 @@
 
 #include <glm/vec2.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace earth_map::renderer {
@@ -74,6 +76,19 @@ struct GeographicPatchGrid final {
 };
 
 /**
+ * Input for the source-aware geographic-quadtree selector.
+ *
+ * A view crossing the anti-meridian is represented as two non-wrapping
+ * geographic regions.  Keeping regions explicit avoids hiding longitude
+ * wrapping in floating-point comparison code.
+ */
+struct GeographicQuadtreeSelectionConfig final {
+    std::vector<GeographicPatchBounds> visible_regions;
+    std::uint32_t target_level = 0;
+    std::size_t maximum_leaf_count = 0;
+};
+
+/**
  * Builds a source-aware geographic patch from a declared imagery matrix.
  * Returns nullopt for an invalid key/address or a projection the patch
  * renderer does not support yet.
@@ -118,6 +133,25 @@ struct GeographicPatchGrid final {
  * page selection or fragment sampling.
  */
 [[nodiscard]] std::optional<GeographicPatchGrid> MakeGeographicPatchGrid(
-    std::uint32_t subdivisions) noexcept;
+   std::uint32_t subdivisions) noexcept;
+
+/**
+ * Selects visible source-matrix leaves by refining a geographic quadtree.
+ *
+ * The selector never fabricates tile identities: every returned key carries
+ * the caller's imagery source and the declared matrix-set ID.  When the
+ * requested level would exceed `maximum_leaf_count`, it keeps the current
+ * complete refinement frontier rather than dropping an arbitrary suffix of
+ * tiles.  Those coarser leaves are valid imagery/terrain fallback patches.
+ *
+ * This is the deterministic hierarchy traversal used before the later SSE
+ * policy supplies a target level.  The caller must pass one or two
+ * non-wrapping regions; two regions represent an anti-meridian view.
+ */
+[[nodiscard]] std::vector<imagery::ImageTileKey>
+SelectVisibleGeographicQuadtreeLeaves(
+    const imagery::TileMatrixSet& matrix_set,
+    std::string imagery_source_id,
+    const GeographicQuadtreeSelectionConfig& config);
 
 }  // namespace earth_map::renderer

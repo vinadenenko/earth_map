@@ -230,6 +230,12 @@ TEST_F(TileManagementTest, TileLoaderProviders) {
     EXPECT_EQ(key->imagery_source_id, "OpenStreetMap");
     EXPECT_EQ(key->matrix_set_id, "WebMercatorQuad");
     EXPECT_EQ(key->address, (imagery::ImageTileAddress{1, 1, 1}));
+
+    const auto root_key = loader->GetDefaultImageryRootKey();
+    ASSERT_TRUE(root_key.has_value());
+    EXPECT_EQ(root_key->imagery_source_id, "OpenStreetMap");
+    EXPECT_EQ(root_key->matrix_set_id, "WebMercatorQuad");
+    EXPECT_EQ(root_key->address, (imagery::ImageTileAddress{0, 0, 0}));
 }
 
 TEST_F(TileManagementTest, TileLoadSynchronous) {
