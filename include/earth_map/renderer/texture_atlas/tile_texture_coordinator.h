@@ -234,6 +234,26 @@ public:
         const TileCoordinates& coords) const;
 
     /**
+     * Returns the declared source matrix for a canonical imagery identity.
+     * This is the renderer's bridge from provider-owned tile addressing to
+     * geographic patch construction; it never infers a matrix from zoom.
+     */
+    std::optional<imagery::TileMatrixSet> GetImageryTileMatrixSet(
+        const imagery::ImageTileKey& imagery_key) const;
+
+    /**
+     * Returns the physical texture-array layer for a resident imagery page.
+     *
+     * This deliberately bypasses page-table-window visibility. A page remains
+     * usable by CPU-resolved geographic patches even when a legacy shader
+     * page-table window is currently centred somewhere else.
+     *
+     * Render-thread only: it queries the GL-owned physical pool.
+     */
+    std::optional<std::uint16_t> GetResidentImageryLayer(
+        const imagery::ImageTileKey& imagery_key) const;
+
+    /**
      * @brief Get tile pool layer index for a tile
      *
      * @return Layer index, or -1 if not loaded

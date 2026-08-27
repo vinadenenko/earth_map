@@ -227,6 +227,24 @@ std::optional<imagery::ImageTileKey> TileTextureCoordinator::ResolveImageryTileK
     return loader_->ResolveImageTileKey(coords);
 }
 
+std::optional<imagery::TileMatrixSet> TileTextureCoordinator::GetImageryTileMatrixSet(
+    const imagery::ImageTileKey& imagery_key) const {
+    return loader_->GetTileMatrixSet(imagery_key);
+}
+
+std::optional<std::uint16_t> TileTextureCoordinator::GetResidentImageryLayer(
+    const imagery::ImageTileKey& imagery_key) const {
+    if (!imagery_key.IsValid()) {
+        return std::nullopt;
+    }
+
+    const int layer = tile_pool_->GetLayerIndex(imagery_key);
+    if (layer < 0 || layer >= static_cast<int>(IndirectionTextureManager::kInvalidLayer)) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint16_t>(layer);
+}
+
 int TileTextureCoordinator::GetTileLayerIndex(const TileCoordinates& coords) const {
     std::shared_lock<std::shared_mutex> lock(state_mutex_);
     const auto it = tile_states_.find(coords);
@@ -334,30 +352,16 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
         }
 
         if (layer >= 0) {
-            // A physical layer is useful only if the current GPU page-table
-            // window can address it.  Treat an out-of-window completion as a
-            // stale upload, not as a loaded tile: otherwise RequestTiles()
-            // will never retry it after the camera moves back into range.
+            // Physical tile-pool residency is independent of a legacy
+            // page-table window. The current shader may not address this
+            // page yet, but CPU-resolved geographic patches can use it
+            // immediately and a later window shift can replay the mapping.
             const bool mapped = indirection_manager_->SetTileLayer(
-                *cmd->imagery_key,
-                static_cast<std::uint16_t>(layer));
-
+                *cmd->imagery_key, static_cast<std::uint16_t>(layer));
             if (!mapped) {
-                tile_pool_->EvictTile(*cmd->imagery_key);
-
-                std::unique_lock<std::shared_mutex> lock(state_mutex_);
-                auto it = tile_states_.find(cmd->coords);
-                if (it != tile_states_.end() && it->second.status == TileStatus::Loading) {
-                    tile_states_.erase(it);
-                    pending_load_count_.fetch_sub(1);
-                }
-
-                spdlog::debug("Discarded stale tile upload outside current page-table window: {}",
-                              cmd->coords.GetKey());
-                if (cmd->on_complete) {
-                    cmd->on_complete(cmd->coords);
-                }
-                continue;
+                spdlog::debug(
+                    "Retained resident imagery page outside current page-table window: {}",
+                    cmd->coords.GetKey());
             }
 
             // Update state to Loaded and decrement pending counter. If the

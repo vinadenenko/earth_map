@@ -251,10 +251,10 @@ TEST_F(TileTextureCoordinatorTest, IsTileReady_ReturnsTrueAfterLoad) {
     EXPECT_TRUE(coordinator_->IsTileReady(tile));
 }
 
-TEST_F(TileTextureCoordinatorTest, UploadOutsideCurrentIndirectionWindowIsDiscarded) {
-    // Simulate a worker completion for a tile that was requested before the
-    // camera moved its high-zoom page-table window elsewhere. A stale upload
-    // must not become Loaded without a GPU indirection entry.
+TEST_F(TileTextureCoordinatorTest, UploadOutsideCurrentIndirectionWindowRemainsPhysicallyResident) {
+    // A page-table window is only a legacy GPU lookup view. It must not
+    // decide physical texture-pool residency: a CPU-resolved geographic patch
+    // can use this layer as soon as the upload completes.
     const TileCoordinates stale_tile(100, 100, 13);
     coordinator_->UpdateIndirectionWindowCenter(MakeMockImageTileKey(
         TileCoordinates(1000, 1000, 13)));
@@ -263,9 +263,14 @@ TEST_F(TileTextureCoordinatorTest, UploadOutsideCurrentIndirectionWindowIsDiscar
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     coordinator_->ProcessUploads(10);
 
-    EXPECT_EQ(coordinator_->GetTileStatus(stale_tile),
-              TileTextureCoordinator::TileStatus::NotLoaded);
-    EXPECT_EQ(coordinator_->GetTileLayerIndex(stale_tile), -1);
+    ASSERT_EQ(coordinator_->GetTileStatus(stale_tile),
+              TileTextureCoordinator::TileStatus::Loaded);
+    const int layer = coordinator_->GetTileLayerIndex(stale_tile);
+    ASSERT_GE(layer, 0);
+    EXPECT_EQ(coordinator_->GetResidentImageryLayer(MakeMockImageTileKey(stale_tile)),
+              static_cast<std::uint16_t>(layer));
+    EXPECT_EQ(coordinator_->GetIndirectionLayer(MakeMockImageTileKey(stale_tile)),
+              IndirectionTextureManager::kInvalidLayer);
 }
 
 TEST_F(TileTextureCoordinatorTest, WindowMoveReplaysResidentPageWithoutReloading) {

@@ -384,6 +384,33 @@ public:
         const TileProvider* provider = GetProvider(provider_name);
         return provider ? provider->ResolveImageTileKey(coordinates) : std::nullopt;
     }
+
+    /**
+     * Finds the declared matrix set for a canonical imagery identity.
+     *
+     * Source and matrix-set identifiers are verified together.  This keeps a
+     * renderer from applying one provider's Web-Mercator rules to another
+     * provider that happens to use the same numeric Z/X/Y address.
+     */
+    [[nodiscard]] std::optional<imagery::TileMatrixSet> GetTileMatrixSet(
+        const imagery::ImageTileKey& imagery_key) const {
+        if (!imagery_key.IsValid()) {
+            return std::nullopt;
+        }
+
+        for (const std::string& provider_name : GetProviderNames()) {
+            const TileProvider* provider = GetProvider(provider_name);
+            if (!provider || provider->GetImagerySourceId() != imagery_key.imagery_source_id) {
+                continue;
+            }
+
+            const imagery::TileMatrixSet matrix_set = provider->GetTileMatrixSet();
+            if (matrix_set.id == imagery_key.matrix_set_id) {
+                return matrix_set;
+            }
+        }
+        return std::nullopt;
+    }
     
     /**
      * @brief Get all provider names
