@@ -546,8 +546,8 @@ bool CoordinateMapper::RaySphereIntersection(
 TileCoordinates CoordinateMapper::GeographicToSphericalTile(
     const Geographic& geo,
     int32_t zoom) noexcept {
-    // TileMatrixSet is the canonical Web-Mercator contract for providers,
-    // cache keys, page tables, and shader conformance. This legacy
+    // TileMatrixSet is the canonical Web-Mercator contract for providers and
+    // cache keys. This legacy
     // normalized-sphere boundary adapts degree inputs to the authoritative
     // radians-based imagery contract instead of maintaining a second formula.
     if (!geo.IsValid() || zoom < 0) {

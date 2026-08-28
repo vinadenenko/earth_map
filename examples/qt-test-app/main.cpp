@@ -1,8 +1,26 @@
 #include <QApplication>
+#include <QDebug>
 #include <QGuiApplication>
+#include <QMetaObject>
+#include <QObject>
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+
+namespace {
+
+QString FindAutoScenario(const QStringList& arguments)
+{
+    const QString option = QStringLiteral("--earth-map-scenario=");
+    for (const QString& argument : arguments) {
+        if (argument.startsWith(option)) {
+            return argument.sliced(option.size());
+        }
+    }
+    return {};
+}
+
+}  // namespace
 
 int main(int argc, char *argv[])
 {
@@ -35,6 +53,18 @@ int main(int argc, char *argv[])
         []() { QCoreApplication::exit(-1); },
         Qt::QueuedConnection);
     engine.loadFromModule("EarthMapExample", "Main");
+
+    const QString auto_scenario = FindAutoScenario(app.arguments());
+    if (!auto_scenario.isEmpty() && !engine.rootObjects().isEmpty()) {
+        QObject* map = engine.rootObjects().constFirst()->findChild<QObject*>(
+            QStringLiteral("earthMapQuickItem"));
+        if (!map || !QMetaObject::invokeMethod(map, "startPerformanceScenario",
+                                                Qt::DirectConnection,
+                                                Q_ARG(QString, auto_scenario))) {
+            qCritical() << "Cannot start EarthMap scenario:" << auto_scenario;
+            return -1;
+        }
+    }
 
     return app.exec();
 }

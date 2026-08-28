@@ -131,34 +131,4 @@ std::optional<ImageTileAddress> TileMatrixSet::GeodeticToTile(
     return NormalizeAddress(level, column, row);
 }
 
-bool PageTableWindow::IsValid() const noexcept {
-    return contract_version == kVirtualImageryAddressContractVersion && generation > 0 &&
-           !imagery_source_id.empty() && !matrix_set_id.empty() && width > 0 && height > 0;
-}
-
-bool PageTableWindow::Matches(const ImageTileKey& key) const noexcept {
-    return IsValid() && key.IsValid() && key.imagery_source_id == imagery_source_id &&
-           key.matrix_set_id == matrix_set_id && key.address.level == level;
-}
-
-std::optional<PageTableTexel> PageTableWindow::TryGetTexel(
-    const ImageTileKey& key) const noexcept {
-    if (!Matches(key)) {
-        return std::nullopt;
-    }
-
-    const std::int64_t local_x = static_cast<std::int64_t>(key.address.column) - origin_column;
-    const std::int64_t local_y = static_cast<std::int64_t>(key.address.row) - origin_row;
-    if (local_x < 0 || local_y < 0 ||
-        local_x >= static_cast<std::int64_t>(width) ||
-        local_y >= static_cast<std::int64_t>(height)) {
-        return std::nullopt;
-    }
-
-    return PageTableTexel{
-        static_cast<std::int32_t>(local_x),
-        static_cast<std::int32_t>(local_y),
-    };
-}
-
 }  // namespace earth_map::imagery

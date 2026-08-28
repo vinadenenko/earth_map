@@ -48,12 +48,39 @@ struct TileRenderStats {
     /** Tile pool GPU memory budget if fully occupied, in bytes */
     std::uint64_t tile_pool_bytes_max = 0;
 
-    /** Indirection page-table GPU memory currently used, in bytes */
-    std::uint64_t indirection_bytes_used = 0;
+    /** Decoded pages waiting before and after this frame's upload pass */
+    std::size_t upload_queue_depth_before = 0;
+    std::size_t upload_queue_depth_after = 0;
+
+    /** Requests still loading or decoded-but-not-installed */
+    std::size_t pending_tile_loads = 0;
+
+    /** Per-frame bounded upload pass activity */
+    std::size_t upload_commands_processed = 0;
+    std::size_t upload_commands_installed = 0;
+    std::size_t tile_pool_upload_attempts = 0;
+    std::uint64_t tile_pool_upload_attempt_bytes = 0;
+
+    /** Longest decoded-page wait among commands processed this frame */
+    double upload_max_queue_wait_ms = 0.0;
+
+    /** Whole-command render-thread CPU time for this frame's upload pass */
+    double upload_total_command_cpu_ms = 0.0;
+    double upload_max_command_cpu_ms = 0.0;
+
+    /** CPU time inside TileTexturePool::UploadTile this frame */
+    double tile_pool_upload_total_cpu_ms = 0.0;
+    double tile_pool_upload_max_cpu_ms = 0.0;
+
+    /** Remaining upload-command stages, kept separate for diagnosis */
+    double upload_eviction_total_cpu_ms = 0.0;
+    double upload_eviction_max_cpu_ms = 0.0;
+    double upload_residency_state_total_cpu_ms = 0.0;
+    double upload_residency_state_max_cpu_ms = 0.0;
 };
 
 /**
- * @brief Fragment paths used to attribute virtual-imagery GPU cost.
+ * @brief Fragment paths used to attribute direct-imagery GPU cost.
  *
  * FullImagery is the normal renderer.  The other values are development
  * probes: each is compiled as a separate shader program, so selecting one
@@ -64,7 +91,7 @@ struct TileRenderStats {
 enum class TileFragmentShadingProbe : std::uint8_t {
     FullImagery,
     FlatFill,
-    CanonicalCoordinates,
+    PatchLocalCoordinates,
     UnlitImagery,
 };
 

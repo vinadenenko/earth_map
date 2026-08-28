@@ -106,43 +106,4 @@ TEST(TileProviderContractTest, BasicXyzProviderDeclaresSourceAndMatrixSet) {
     EXPECT_FALSE(provider.ResolveImageTileKey(TileCoordinates{0, 0, 1}).has_value());
 }
 
-TEST(PageTableWindowTest, ResolvesOnlyMatchingGenerationSourceAndLocalIntegerAddress) {
-    const PageTableWindow window{
-        kVirtualImageryAddressContractVersion,
-        7,
-        "osm",
-        "WebMercatorQuad",
-        21,
-        1307900,
-        792500,
-        512,
-        512,
-    };
-    const ImageTileKey key = MakeKey(21, 1307968, 792576);
-
-    ASSERT_TRUE(window.IsValid());
-    EXPECT_EQ(window.TryGetTexel(key), (PageTableTexel{68, 76}));
-    EXPECT_FALSE(window.TryGetTexel(MakeKey(18, 163486, 99073)).has_value());
-    EXPECT_FALSE(window.TryGetTexel(
-        ImageTileKey{"alternate", "WebMercatorQuad", key.address}).has_value());
-    EXPECT_FALSE(window.TryGetTexel(MakeKey(21, 1309000, 792576)).has_value());
-}
-
-TEST(PageTableWindowTest, RejectsUnknownContractVersion) {
-    PageTableWindow window{
-        kVirtualImageryAddressContractVersion + 1,
-        1,
-        "osm",
-        "WebMercatorQuad",
-        18,
-        0,
-        0,
-        512,
-        512,
-    };
-
-    EXPECT_FALSE(window.IsValid());
-    EXPECT_FALSE(window.TryGetTexel(MakeKey(18, 0, 0)).has_value());
-}
-
 }  // namespace earth_map::imagery

@@ -160,7 +160,6 @@ TEST_F(TileTextureCoordinatorTest, MemoryStatsStartEmptyAtFullCapacity) {
     EXPECT_EQ(coordinator_->GetPoolMaxLayers(), TileTextureCoordinator::kDefaultMaxPoolLayers);
     EXPECT_EQ(coordinator_->GetPoolBytesUsed(), 0U);
     EXPECT_EQ(coordinator_->GetPoolBytesMax(), kExpectedMaxBytes);
-    EXPECT_EQ(coordinator_->GetIndirectionBytesUsed(), 0U);
 }
 
 TEST_F(TileTextureCoordinatorTest, PoolBytesUsedGrowsAfterUpload) {
@@ -251,33 +250,10 @@ TEST_F(TileTextureCoordinatorTest, IsTileReady_ReturnsTrueAfterLoad) {
     EXPECT_TRUE(coordinator_->IsTileReady(tile));
 }
 
-TEST_F(TileTextureCoordinatorTest, UploadOutsideCurrentIndirectionWindowRemainsPhysicallyResident) {
-    // A page-table window is only a legacy GPU lookup view. It must not
-    // decide physical texture-pool residency: a CPU-resolved geographic patch
-    // can use this layer as soon as the upload completes.
-    const TileCoordinates stale_tile(100, 100, 13);
-    coordinator_->UpdateIndirectionWindowCenter(MakeMockImageTileKey(
-        TileCoordinates(1000, 1000, 13)));
-    coordinator_->RequestTiles({stale_tile}, 0);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    coordinator_->ProcessUploads(10);
-
-    ASSERT_EQ(coordinator_->GetTileStatus(stale_tile),
-              TileTextureCoordinator::TileStatus::Loaded);
-    const int layer = coordinator_->GetTileLayerIndex(stale_tile);
-    ASSERT_GE(layer, 0);
-    EXPECT_EQ(coordinator_->GetResidentImageryLayer(MakeMockImageTileKey(stale_tile)),
-              static_cast<std::uint16_t>(layer));
-    EXPECT_EQ(coordinator_->GetIndirectionLayer(MakeMockImageTileKey(stale_tile)),
-              IndirectionTextureManager::kInvalidLayer);
-}
-
-TEST_F(TileTextureCoordinatorTest, WindowMoveReplaysResidentPageWithoutReloading) {
+TEST_F(TileTextureCoordinatorTest, UploadMakesCanonicalPagePhysicallyResident) {
     const TileCoordinates tile(1000, 1000, 13);
     const imagery::ImageTileKey imagery_key = MakeMockImageTileKey(tile);
 
-    coordinator_->UpdateIndirectionWindowCenter(imagery_key);
     coordinator_->RequestTiles({tile}, 0);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     coordinator_->ProcessUploads(10);
@@ -285,19 +261,7 @@ TEST_F(TileTextureCoordinatorTest, WindowMoveReplaysResidentPageWithoutReloading
     ASSERT_TRUE(coordinator_->IsTileReady(tile));
     const int pool_layer = coordinator_->GetTileLayerIndex(tile);
     ASSERT_GE(pool_layer, 0);
-    EXPECT_EQ(coordinator_->GetIndirectionLayer(imagery_key),
-              static_cast<std::uint16_t>(pool_layer));
-
-    coordinator_->UpdateIndirectionWindowCenter(
-        MakeMockImageTileKey(TileCoordinates(3000, 3000, 13)));
-    EXPECT_EQ(coordinator_->GetIndirectionLayer(imagery_key),
-              IndirectionTextureManager::kInvalidLayer);
-
-    coordinator_->UpdateIndirectionWindowCenter(imagery_key);
-
-    EXPECT_TRUE(coordinator_->IsTileReady(tile));
-    EXPECT_EQ(coordinator_->GetTileLayerIndex(tile), pool_layer);
-    EXPECT_EQ(coordinator_->GetIndirectionLayer(imagery_key),
+    EXPECT_EQ(coordinator_->GetResidentImageryLayer(imagery_key),
               static_cast<std::uint16_t>(pool_layer));
 }
 
@@ -363,6 +327,33 @@ TEST_F(TileTextureCoordinatorTest, ProcessUploads_DrainsQueue) {
 
     // At least some tiles should be ready
     EXPECT_GE(ready_count, 1);
+}
+
+TEST_F(TileTextureCoordinatorTest, ProcessUploadsReportsQueueAndTransferWork) {
+    const TileCoordinates tile(3, 4, 5);
+    coordinator_->RequestTiles({tile}, 0);
+
+    // The mock loader sleeps for 10 ms.  This deliberately leaves one decoded
+    // command in the render-thread queue before ProcessUploads observes it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    const TileTextureCoordinator::UploadProcessStats stats =
+        coordinator_->ProcessUploads(1);
+
+    ASSERT_TRUE(coordinator_->IsTileReady(tile));
+    EXPECT_EQ(stats.queue_depth_before, 1U);
+    EXPECT_EQ(stats.queue_depth_after, 0U);
+    EXPECT_EQ(stats.commands_processed, 1U);
+    EXPECT_EQ(stats.commands_installed, 1U);
+    EXPECT_EQ(stats.tile_pool_upload_attempts, 1U);
+    EXPECT_EQ(stats.tile_pool_upload_attempt_bytes, 256U * 256U * 4U);
+    EXPECT_GE(stats.max_queue_wait_ms, 0.0);
+    EXPECT_GE(stats.total_command_cpu_ms, stats.max_command_cpu_ms);
+    EXPECT_GE(stats.total_tile_pool_upload_cpu_ms,
+              stats.max_tile_pool_upload_cpu_ms);
+    EXPECT_GE(stats.total_eviction_cpu_ms, stats.max_eviction_cpu_ms);
+    EXPECT_GE(stats.total_residency_state_cpu_ms,
+              stats.max_residency_state_cpu_ms);
 }
 
 TEST_F(TileTextureCoordinatorTest, ProcessUploads_MultipleFrames) {

@@ -155,10 +155,8 @@ int TileTexturePool::UploadTile(
 
     // Upload to GL
     if (!skip_gl_init_ && texture_array_id_ != 0) {
-        // Clear any stale GL errors from previous operations (e.g. render pass
-        // binding texture 0 to usampler2D uniforms before indirection textures
-        // are allocated). Without this, glGetError() below would pick up errors
-        // unrelated to the actual upload.
+        // Clear stale GL errors from a previous operation so the check below
+        // attributes failures to this upload.
         while (glGetError() != GL_NO_ERROR) {}
 
         glBindTexture(GL_TEXTURE_2D_ARRAY, texture_array_id_);
@@ -181,10 +179,8 @@ int TileTexturePool::UploadTile(
         const GLenum error = glGetError();
         if (error != GL_NO_ERROR) {
             spdlog::error("GL error during tile pool upload: {}", error);
-            // The layer was reserved before issuing GL commands.  The caller
-            // will not install an indirection entry after this failure, so the
-            // reservation must be released here rather than becoming an
-            // unreachable physical page.
+            // The layer was reserved before issuing GL commands, so release
+            // it rather than leaving an unreachable physical page.
             EvictTile(imagery_key);
             return -1;
         }

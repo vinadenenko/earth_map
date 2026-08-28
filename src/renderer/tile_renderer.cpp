@@ -11,7 +11,6 @@
 #include <earth_map/math/projection.h>
 #include <earth_map/math/tile_mathematics.h>
 #include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
-#include <earth_map/renderer/tile_pool/indirection_texture_manager.h>
 #include <earth_map/coordinates/coordinate_mapper.h>
 #include <earth_map/constants.h>
 #include <spdlog/spdlog.h>
@@ -39,7 +38,6 @@ namespace earth_map {
 
 namespace {
 
-constexpr int kDefaultZoomLevel = 2;
 constexpr int kMaxFallbackLevels = 5;
 // A globe is lit by a distant sun, not a nearby point lamp. Keeping this
 // vector normalized lets the fragment shader use a single dot product.
@@ -53,7 +51,7 @@ constexpr std::uint32_t kGeographicPatchGridSubdivisions = 16;
 constexpr std::array<TileFragmentShadingProbe, 4> kTileFragmentShadingProbes = {
     TileFragmentShadingProbe::FullImagery,
     TileFragmentShadingProbe::FlatFill,
-    TileFragmentShadingProbe::CanonicalCoordinates,
+    TileFragmentShadingProbe::PatchLocalCoordinates,
     TileFragmentShadingProbe::UnlitImagery,
 };
 
@@ -61,7 +59,7 @@ constexpr std::size_t TileFragmentProbeIndex(TileFragmentShadingProbe probe) {
     switch (probe) {
     case TileFragmentShadingProbe::FullImagery: return 0;
     case TileFragmentShadingProbe::FlatFill: return 1;
-    case TileFragmentShadingProbe::CanonicalCoordinates: return 2;
+    case TileFragmentShadingProbe::PatchLocalCoordinates: return 2;
     case TileFragmentShadingProbe::UnlitImagery: return 3;
     }
     return 0;
@@ -71,7 +69,7 @@ const char* TileFragmentProbeName(TileFragmentShadingProbe probe) {
     switch (probe) {
     case TileFragmentShadingProbe::FullImagery: return "full";
     case TileFragmentShadingProbe::FlatFill: return "flat-fill";
-    case TileFragmentShadingProbe::CanonicalCoordinates: return "canonical-coordinates";
+    case TileFragmentShadingProbe::PatchLocalCoordinates: return "patch-local-coordinates";
     case TileFragmentShadingProbe::UnlitImagery: return "unlit-imagery";
     }
     return "full";
@@ -126,25 +124,6 @@ struct TileRenderState {
     bool is_visible;                 ///< Whether tile is currently visible
     float last_used;                 ///< Last frame this tile was used
     float load_priority;              ///< Priority for loading (0.0 = highest)
-};
-
-/**
- * Immutable page-table state submitted to the imagery shader for one frame.
- *
- * Page-table windows are mutable derived views of physical tile residency.
- * Capture the GL texture together with its exact immutable window before
- * rendering so a draw cannot combine values from different generations.
- */
-struct ImageryRenderSnapshot {
-    struct PageTable {
-        std::uint32_t texture_id = 0;
-        imagery::PageTableWindow window;
-        bool has_page_table = false;
-    };
-
-    int zoom_level = kDefaultZoomLevel;
-    int fallback_level_count = 1;
-    std::array<PageTable, kMaxFallbackLevels> page_tables;
 };
 
 /** Vertex submitted by the CPU-selected geographic patch path. */
@@ -209,7 +188,26 @@ public:
         // Process GL uploads from worker threads (must be on GL thread)
         if (texture_coordinator_) {
             EARTH_MAP_ZONE_SCOPE(zone_collector_, upload_zone, "tile.upload");
-            texture_coordinator_->ProcessUploads();
+            const TileTextureCoordinator::UploadProcessStats upload_stats =
+                texture_coordinator_->ProcessUploads();
+            stats_.upload_queue_depth_before = upload_stats.queue_depth_before;
+            stats_.upload_queue_depth_after = upload_stats.queue_depth_after;
+            stats_.upload_commands_processed = upload_stats.commands_processed;
+            stats_.upload_commands_installed = upload_stats.commands_installed;
+            stats_.tile_pool_upload_attempts = upload_stats.tile_pool_upload_attempts;
+            stats_.tile_pool_upload_attempt_bytes = upload_stats.tile_pool_upload_attempt_bytes;
+            stats_.upload_max_queue_wait_ms = upload_stats.max_queue_wait_ms;
+            stats_.upload_total_command_cpu_ms = upload_stats.total_command_cpu_ms;
+            stats_.upload_max_command_cpu_ms = upload_stats.max_command_cpu_ms;
+            stats_.tile_pool_upload_total_cpu_ms =
+                upload_stats.total_tile_pool_upload_cpu_ms;
+            stats_.tile_pool_upload_max_cpu_ms = upload_stats.max_tile_pool_upload_cpu_ms;
+            stats_.upload_eviction_total_cpu_ms = upload_stats.total_eviction_cpu_ms;
+            stats_.upload_eviction_max_cpu_ms = upload_stats.max_eviction_cpu_ms;
+            stats_.upload_residency_state_total_cpu_ms =
+                upload_stats.total_residency_state_cpu_ms;
+            stats_.upload_residency_state_max_cpu_ms =
+                upload_stats.max_residency_state_cpu_ms;
         }
 
     }
@@ -284,13 +282,11 @@ public:
             // Estimate optimal zoom level based on distance.
             zoom_level = CalculateOptimalZoom(camera_distance);
 
-            // Production imagery starts from the provider's declared source
-            // matrix, then refines its geographic quadtree. This replaces the
-            // old flat candidate list for the normal draw path. The explicit
-            // fragment probes retain that list so their previous performance
-            // numbers remain comparable during this investigation.
-            if (config_.fragment_shading_probe == TileFragmentShadingProbe::FullImagery &&
-                texture_coordinator_) {
+            // Every imagery path starts from the provider's declared source
+            // matrix and refines the same geographic quadtree. Diagnostic
+            // probes specialise only the direct patch fragment shader; they
+            // must not switch back to a different renderer.
+            if (texture_coordinator_) {
                 const auto root_key = texture_coordinator_->GetDefaultImageryRootKey();
                 const auto matrix_set = root_key.has_value()
                     ? texture_coordinator_->GetImageryTileMatrixSet(*root_key)
@@ -344,10 +340,9 @@ public:
             }
 
             if (visible_tile_coords.empty()) {
-                // Legacy candidate selection remains available only when the
-                // explicit GPU attribution probes are active, or when no
-                // usable source declaration is installed yet. Use int64_t
-                // because with zoom_level 20, n*n overflows int32_t.
+                // This fallback is only for startup before a provider source
+                // declaration is available. Use int64_t because with
+                // zoom_level 20, n*n overflows int32_t.
                 const int64_t n = 1LL << zoom_level;
                 if (n * n <= 256) {
                     // At low zoom (≤4), request all tiles — cheap and
@@ -376,38 +371,6 @@ public:
                             candidate_tiles.begin(),
                             candidate_tiles.begin() + max_tiles_for_frame);
                     }
-                }
-            }
-        }
-
-        // Keep every page-table window sampled by the shader centered on the
-        // current camera.  UpdateIndirectionWindowCenter replays resident pages
-        // into a new generation, so moving a parent window no longer drops its
-        // usable mapping.  This is essential for a direct jump to a high zoom:
-        // the four parent levels must be addressable before exact imagery arrives.
-        {
-            EARTH_MAP_ZONE_SCOPE(zone_collector_, page_table_zone, "tile.cull.page-table");
-
-            if (config_.fragment_shading_probe != TileFragmentShadingProbe::FullImagery &&
-                texture_coordinator_ &&
-                zoom_level > IndirectionTextureManager::kMaxFullIndirectionZoom) {
-                const coordinates::Geographic cam_geo =
-                    coordinates::CoordinateMapper::CartesianToGeographic(canonical_camera_position);
-                TileCoordinates center_tile =
-                    coordinates::CoordinateMapper::GeographicToSphericalTile(cam_geo, zoom_level);
-
-                const int fallback_level_count = std::min(kMaxFallbackLevels, zoom_level + 1);
-                for (int level = 0; level < fallback_level_count; ++level) {
-                    if (const auto center_imagery_key =
-                            texture_coordinator_->ResolveImageryTileKey(center_tile);
-                        center_imagery_key.has_value()) {
-                        texture_coordinator_->UpdateIndirectionWindowCenter(*center_imagery_key);
-                    }
-
-                    if (center_tile.zoom == kMinZoom) {
-                        break;
-                    }
-                    center_tile = center_tile.GetParent();
                 }
             }
         }
@@ -492,11 +455,7 @@ public:
                 }
             }
 
-            if (config_.fragment_shading_probe == TileFragmentShadingProbe::FullImagery) {
-                UpdateGeographicPatchDraws(visible_tile_coords);
-            } else {
-                CaptureImageryRenderSnapshot(zoom_level);
-            }
+            UpdateGeographicPatchDraws(visible_tile_coords);
         }
 
         spdlog::debug("Tile renderer update: {} visible tiles, zoom level {}",
@@ -525,126 +484,12 @@ public:
             }
         }
 
-        // Normal rendering is CPU-selected geographic quadtree patches with
-        // direct texture-array sampling. Legacy fragment programs are kept
-        // solely for the explicit attribution probes committed earlier.
-        if (config_.fragment_shading_probe == TileFragmentShadingProbe::FullImagery) {
-            GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
-            GLboolean cull_face_enabled = glIsEnabled(GL_CULL_FACE);
-            glEnable(GL_DEPTH_TEST);
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
-
-            RenderDirectGeographicImagery(view_matrix, projection_matrix, draw_zone);
-
-            if (!depth_test_enabled) {
-                glDisable(GL_DEPTH_TEST);
-            }
-            if (!cull_face_enabled) {
-                glDisable(GL_CULL_FACE);
-            }
-            return;
-        }
-
-        // If no visible tiles, render with base color
-        // (Don't skip rendering - globe should always be visible)
-
-        // Save current OpenGL state
         GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
         GLboolean cull_face_enabled = glIsEnabled(GL_CULL_FACE);
-
-        // Enable required states
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
-
-        // Each performance probe is a separately linked program.  There is
-        // no uniform-controlled branch in the fragment shader being timed.
-        const ShaderProgramState& shader_state = ActiveShaderProgram();
-        const UniformLocations& uniform_locs = shader_state.uniform_locs;
-        glUseProgram(shader_state.program);
-
-        // Set matrices
-        glUniformMatrix4fv(uniform_locs.view, 1, GL_FALSE, glm::value_ptr(view_matrix));
-        glUniformMatrix4fv(uniform_locs.projection, 1, GL_FALSE, glm::value_ptr(projection_matrix));
-        glUniformMatrix4fv(uniform_locs.model, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
-
-        const glm::vec3 canonical_camera_position =
-            glm::vec3(glm::inverse(view_matrix)[3]);
-        const glm::mat3 camera_to_world = glm::mat3(glm::inverse(view_matrix));
-        const glm::vec2 projection_scale(projection_matrix[0][0],
-                                         projection_matrix[1][1]);
-        const float ray_sphere_c =
-            glm::dot(canonical_camera_position, canonical_camera_position) - 1.0f;
-        GLint viewport[4] = {0, 0, 0, 0};
-        glGetIntegerv(GL_VIEWPORT, viewport);
-        glUniform3f(uniform_locs.camera_position,
-                    canonical_camera_position.x, canonical_camera_position.y,
-                    canonical_camera_position.z);
-        glUniformMatrix3fv(uniform_locs.camera_to_world, 1, GL_FALSE,
-                           glm::value_ptr(camera_to_world));
-        glUniform2f(uniform_locs.projection_scale,
-                    projection_scale.x, projection_scale.y);
-        glUniform1f(uniform_locs.ray_sphere_c, ray_sphere_c);
-        glUniform4i(uniform_locs.viewport,
-                    viewport[0], viewport[1], viewport[2], viewport[3]);
-
-        // Set lighting uniforms. The sun direction is normalized on the CPU.
-        glUniform3f(uniform_locs.light_direction, kDefaultSunDirection.x,
-                    kDefaultSunDirection.y, kDefaultSunDirection.z);
-        glUniform3f(uniform_locs.light_color, 1.0f, 1.0f, 1.0f);
-
-        const int current_zoom = imagery_snapshot_.zoom_level;
-
-        // Set zoom and fallback level uniforms
-        glUniform1i(uniform_locs.zoom_level, current_zoom);
-
-        const int num_fallback = imagery_snapshot_.fallback_level_count;
-        glUniform1i(uniform_locs.num_fallback_levels, num_fallback);
-
-        // Bind tile pool texture array to unit 0
-        glActiveTexture(GL_TEXTURE0);
-        std::uint32_t pool_texture_id = 0;
-        if (texture_coordinator_) {
-            pool_texture_id = texture_coordinator_->GetTilePoolTextureID();
-        }
-        glBindTexture(GL_TEXTURE_2D_ARRAY, pool_texture_id);
-
-        glUniform1i(uniform_locs.tile_pool, 0);
-
-        // Bind indirection textures for zoom Z through Z-(N-1) to units 1..N.
-        // Always bind ALL 5 units to valid GL_TEXTURE_2D targets.
-        // Unused levels get the dummy 1x1 texture (kInvalidLayer).
-        // This prevents undefined behavior from sampler/target type mismatch
-        // (usampler2D pointing at GL_TEXTURE_2D_ARRAY on unit 0).
-        for (int level = 0; level < kMaxFallbackLevels; ++level) {
-            const GLint tex_unit = 1 + level;
-
-            glActiveTexture(GL_TEXTURE0 + tex_unit);
-
-            const ImageryRenderSnapshot::PageTable& page_table =
-                imagery_snapshot_.page_tables[level];
-            std::uint32_t indirection_id = page_table.texture_id;
-            glm::ivec2 offset(0, 0);
-            if (page_table.has_page_table) {
-                offset = {
-                    static_cast<int>(page_table.window.origin_column),
-                    static_cast<int>(page_table.window.origin_row),
-                };
-            }
-
-            glBindTexture(GL_TEXTURE_2D, indirection_id);
-            glUniform1i(uniform_locs.indirection[level], tex_unit);
-            glUniform2i(uniform_locs.indirection_offset[level], offset.x, offset.y);
-        }
-
-        // Render globe mesh with atlas texture
-        glBindVertexArray(globe_vao_);
-        glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, 0);
-        glBindVertexArray(0);
-        draw_zone.AddDrawCall(globe_indices_.size() / 3);
-
-        // Restore previous OpenGL state
+        RenderDirectGeographicImagery(view_matrix, projection_matrix, draw_zone);
         if (!depth_test_enabled) {
             glDisable(GL_DEPTH_TEST);
         }
@@ -652,9 +497,6 @@ public:
             glDisable(GL_CULL_FACE);
         }
 
-        stats_.rendered_tiles = static_cast<std::size_t>(std::count_if(
-            visible_tiles_.begin(), visible_tiles_.end(),
-            [](const TileRenderState& tile) { return tile.is_ready; }));
     }
 
     TileRenderStats GetStats() const override {
@@ -664,7 +506,7 @@ public:
             result.max_pool_layers = texture_coordinator_->GetPoolMaxLayers();
             result.tile_pool_bytes_used = texture_coordinator_->GetPoolBytesUsed();
             result.tile_pool_bytes_max = texture_coordinator_->GetPoolBytesMax();
-            result.indirection_bytes_used = texture_coordinator_->GetIndirectionBytesUsed();
+            result.pending_tile_loads = texture_coordinator_->GetPendingLoadCount();
         }
         return result;
     }
@@ -686,7 +528,6 @@ public:
 
     void ClearCache() override {
         visible_tiles_.clear();
-        imagery_snapshot_ = {};
         geographic_patch_draws_.clear();
         geographic_patch_keys_.clear();
         geographic_patch_vertex_offsets_.clear();
@@ -842,41 +683,6 @@ private:
         }
     }
 
-    void CaptureImageryRenderSnapshot(int zoom_level) {
-        imagery_snapshot_ = {};
-        imagery_snapshot_.zoom_level = zoom_level;
-        imagery_snapshot_.fallback_level_count =
-            std::min(kMaxFallbackLevels, zoom_level + 1);
-
-        for (int level = 0; level < kMaxFallbackLevels; ++level) {
-            const int table_zoom = zoom_level - level;
-            auto& page_table = imagery_snapshot_.page_tables[level];
-
-            if (!texture_coordinator_ || table_zoom < kMinZoom) {
-                continue;
-            }
-
-            const auto table_key = texture_coordinator_->ResolveImageryTileKey(
-                TileCoordinates(0, 0, table_zoom));
-            if (!table_key.has_value()) {
-                page_table.texture_id = texture_coordinator_->GetIndirectionTextureID({});
-                continue;
-            }
-
-            const auto binding =
-                texture_coordinator_->GetIndirectionPageTableBinding(*table_key);
-            if (!binding.has_value()) {
-                page_table.texture_id =
-                    texture_coordinator_->GetIndirectionTextureID(*table_key);
-                continue;
-            }
-
-            page_table.texture_id = binding->texture_id;
-            page_table.window = binding->window;
-            page_table.has_page_table = true;
-        }
-    }
-
     TileRenderConfig config_;
     TileTextureCoordinator* texture_coordinator_ = nullptr;
     GlobeMesh* globe_mesh_ = nullptr;  // External globe mesh to render on
@@ -884,7 +690,6 @@ private:
     bool mesh_uploaded_to_gpu_ = false;  // Track if mesh data is on GPU
     std::uint64_t frame_counter_ = 0;
     std::vector<TileRenderState> visible_tiles_;
-    ImageryRenderSnapshot imagery_snapshot_;
     std::optional<renderer::GeographicPatchGrid> geographic_patch_grid_;
     std::vector<GeographicPatchDraw> geographic_patch_draws_;
     std::vector<imagery::ImageTileKey> geographic_patch_keys_;
@@ -901,30 +706,6 @@ private:
     std::vector<FrameZoneTiming> last_zone_timings_;
 
     std::vector<TileCoordinates> last_visible_tiles_;
-
-    // Cached uniform locations (populated after shader compilation)
-    struct UniformLocations {
-        GLint view = -1;
-        GLint projection = -1;
-        GLint model = -1;
-        GLint camera_position = -1;
-        GLint camera_to_world = -1;
-        GLint projection_scale = -1;
-        GLint ray_sphere_c = -1;
-        GLint viewport = -1;
-        GLint light_direction = -1;
-        GLint light_color = -1;
-        GLint zoom_level = -1;
-        GLint num_fallback_levels = -1;
-        GLint tile_pool = -1;
-        GLint indirection[5] = {-1, -1, -1, -1, -1};
-        GLint indirection_offset[5] = {-1, -1, -1, -1, -1};
-    };
-
-    struct ShaderProgramState {
-        std::uint32_t program = 0;
-        UniformLocations uniform_locs;
-    };
 
     struct BaseGlobeUniformLocations {
         GLint view = -1;
@@ -945,13 +726,17 @@ private:
         GLint light_color = -1;
     };
 
-    // OpenGL objects.  The probe programs share the same vertex shader and
-    // mesh; only their compile-time-specialized fragment shader differs.
-    std::array<ShaderProgramState, kTileFragmentShadingProbes.size()> shader_programs_;
+    struct GeographicPatchProgramState {
+        std::uint32_t program = 0;
+        GeographicPatchUniformLocations uniform_locs;
+    };
+
+    // The imagery probes specialise the same direct geographic-patch shader.
+    // They never change tile selection, residency, or texture binding.
+    std::array<GeographicPatchProgramState, kTileFragmentShadingProbes.size()>
+        geographic_patch_programs_;
     std::uint32_t base_globe_program_ = 0;
     BaseGlobeUniformLocations base_globe_uniform_locs_;
-    std::uint32_t geographic_patch_program_ = 0;
-    GeographicPatchUniformLocations geographic_patch_uniform_locs_;
     std::uint32_t globe_vao_ = 0;
     std::uint32_t globe_vbo_ = 0;
     std::uint32_t globe_ebo_ = 0;
@@ -960,7 +745,7 @@ private:
     std::uint32_t geographic_patch_vbo_ = 0;
     std::uint32_t geographic_patch_ebo_ = 0;
 
-    // Tile atlas vertex shader source
+    // Coarse base-globe vertex shader.
     static constexpr const char* kTileVertexShader = EARTH_MAP_GLSL_PREAMBLE R"(
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
@@ -982,8 +767,7 @@ void main() {
 }
 )";
 
-    // Cheap base globe used while imagery is absent. The expensive legacy
-    // imagery shader is retained only for explicit diagnostic probe modes.
+    // Cheap base globe used where no imagery patch is resident yet.
     static constexpr const char* kBaseGlobeFragmentShader = EARTH_MAP_GLSL_PREAMBLE R"(
 in vec3 FragPos;
 in vec3 Normal;
@@ -1003,7 +787,7 @@ void main() {
 
     // Geographic patches receive already projected CPU geometry and a direct
     // physical texture-array layer. No fragment ray construction, Mercator
-    // conversion, page-table lookup, or parent fallback occurs here.
+    // conversion, GPU lookup, or parent fallback occurs here.
     static constexpr const char* kGeographicPatchVertexShader = EARTH_MAP_GLSL_PREAMBLE R"(
 layout (location = 0) in vec3 aPosition;
 layout (location = 1) in vec2 aLocalUv;
@@ -1021,7 +805,11 @@ void main() {
 }
 )";
 
-    static constexpr const char* kGeographicPatchFragmentShader = EARTH_MAP_GLSL_PREAMBLE R"(
+    static constexpr const char* kGeographicPatchFragmentShaderBody = R"(
+#ifndef EARTH_MAP_TILE_FRAGMENT_PROBE
+#define EARTH_MAP_TILE_FRAGMENT_PROBE 0
+#endif
+
 in vec3 WorldPosition;
 in vec2 LocalUv;
 
@@ -1035,280 +823,38 @@ uniform vec3 uLightDirection;
 uniform vec3 uLightColor;
 
 void main() {
+#if EARTH_MAP_TILE_FRAGMENT_PROBE == 1
+    FragColor = vec4(0.20, 0.45, 0.85, 1.0);
+    return;
+#elif EARTH_MAP_TILE_FRAGMENT_PROBE == 2
+    FragColor = vec4(LocalUv, 0.0, 1.0);
+    return;
+#endif
+
     const float kHalfTexel = 0.5 / 256.0;
     vec2 uv = uUvOffset + LocalUv * uUvScale;
     uv = clamp(uv, kHalfTexel, 1.0 - kHalfTexel);
     vec4 texColor = texture(uTilePool, vec3(uv, uTextureLayer));
 
+ #if EARTH_MAP_TILE_FRAGMENT_PROBE == 3
+    FragColor = texColor;
+ #else
     const float ambientStrength = 0.25;
     float diffuse = max(dot(normalize(WorldPosition), uLightDirection), 0.0);
     FragColor = vec4((ambientStrength + diffuse) * uLightColor * texColor.rgb,
                      texColor.a);
+ #endif
 }
 )";
 
-    // Tile pool + indirection fragment shader. BuildTileFragmentShader()
-    // prepends the GLES/desktop preamble and selects one compile-time probe.
-    static constexpr const char* kTileFragmentShaderBody = R"(
-#ifndef EARTH_MAP_TILE_FRAGMENT_PROBE
-#define EARTH_MAP_TILE_FRAGMENT_PROBE 0
-#endif
-
-in vec3 FragPos;
-in vec3 Normal;
-in vec2 TexCoord;
-
-out vec4 FragColor;
-
-uniform sampler2DArray uTilePool;
-uniform usampler2D uIndirection0;
-uniform usampler2D uIndirection1;
-uniform usampler2D uIndirection2;
-uniform usampler2D uIndirection3;
-uniform usampler2D uIndirection4;
-uniform int uZoomLevel;
-uniform int uNumFallbackLevels;
-uniform ivec2 uIndirectionOffset0;
-uniform ivec2 uIndirectionOffset1;
-uniform ivec2 uIndirectionOffset2;
-uniform ivec2 uIndirectionOffset3;
-uniform ivec2 uIndirectionOffset4;
-uniform vec3 uCameraPosition;
-uniform mat3 uCameraToWorld;
-uniform vec2 uProjectionScale;
-uniform float uRaySphereC;
-uniform ivec4 uViewport;
-uniform vec3 uLightDirection;
-uniform vec3 uLightColor;
-
-bool canonicalSurfacePoint(out vec3 point) {
-    vec2 viewportSize = vec2(uViewport.z, uViewport.w);
-    vec2 viewportOrigin = vec2(uViewport.x, uViewport.y);
-    vec2 ndc = ((gl_FragCoord.xy - viewportOrigin) / viewportSize) * 2.0 - 1.0;
-    vec3 cameraRay = vec3(ndc / uProjectionScale, -1.0);
-    vec3 rayDirection = normalize(uCameraToWorld * cameraRay);
-    float halfB = dot(uCameraPosition, rayDirection);
-    float discriminant = halfB * halfB - uRaySphereC;
-    if (discriminant < 0.0) return false;
-
-    float root = sqrt(discriminant);
-    float farT = -halfB + root;
-    float nearT = abs(farT) > 1e-8 ? uRaySphereC / farT : -halfB - root;
-    float t = nearT > 0.0 ? nearT : farT;
-    if (t <= 0.0) return false;
-
-    point = uCameraPosition + t * rayDirection;
-    return true;
-}
-
-void surfaceToTileAndFrac(vec3 point, int zoom, out ivec2 tile, out vec2 frac) {
-    const float PI = 3.14159265358979323846;
-    // The map surface is the sphere hit by the view ray, not the interpolated
-    // icosphere triangle. The intersection has small floating-point radial
-    // error, so normalize before treating Y as sin(latitude). The CPU path
-    // does the same before converting to canonical Web-Mercator coordinates.
-    vec3 unitPoint = normalize(point);
-    const float maxMercatorSinLatitude = 0.9962721;
-    float norm_x = (atan(unitPoint.x, unitPoint.z) / PI + 1.0) * 0.5;
-    float sinLatitude = clamp(unitPoint.y,
-                              -maxMercatorSinLatitude,
-                              maxMercatorSinLatitude);
-    float norm_y = (1.0 - 0.5 * log((1.0 + sinLatitude) /
-                                    (1.0 - sinLatitude)) / PI) * 0.5;
-
-    // Scale by tile count at this zoom level
-    int n = 1 << zoom;
-    float fx = norm_x * float(n);
-    float fy = norm_y * float(n);
-
-    int tileX = int(floor(fx));
-    // TileMatrixSet declares XYZ longitude as horizontally wrapping. atan()
-    // can produce +PI at the anti-meridian, where floor(fx) equals n.
-    tileX = tileX == n ? 0 : clamp(tileX, 0, n - 1);
-    tile = ivec2(tileX, clamp(int(floor(fy)), 0, n - 1));
-
-    // Use subtraction instead of fract() to avoid precision loss on large values
-    frac = vec2(fx - floor(fx), fy - floor(fy));
-}
-
-uint safeFetch(usampler2D tex, ivec2 coord) {
-    ivec2 sz = textureSize(tex, 0);
-    if (coord.x < 0 || coord.y < 0 || coord.x >= sz.x || coord.y >= sz.y)
-        return 0xFFFFu;
-    return texelFetch(tex, coord, 0).r;
-}
-
-uint lookupLayer(int level, ivec2 tile) {
-    if      (level == 0) return safeFetch(uIndirection0, tile - uIndirectionOffset0);
-    else if (level == 1) return safeFetch(uIndirection1, tile - uIndirectionOffset1);
-    else if (level == 2) return safeFetch(uIndirection2, tile - uIndirectionOffset2);
-    else if (level == 3) return safeFetch(uIndirection3, tile - uIndirectionOffset3);
-    else                 return safeFetch(uIndirection4, tile - uIndirectionOffset4);
-}
-
-// Diagnostic visualization: shows which fallback level is being used.
-// Keep this disabled for normal rendering; flip to 1 only while diagnosing
-// virtual-texture residency.
-const int kDiagnosticMode = 0;
-
-// Fallback level colors (RGB)
-const vec3 kColorLevel0 = vec3(0.0, 1.0, 0.0);  // Green = exact zoom
-const vec3 kColorLevel1 = vec3(1.0, 1.0, 0.0);  // Yellow = parent
-const vec3 kColorLevel2 = vec3(1.0, 0.5, 0.0);  // Orange = grandparent
-const vec3 kColorLevel3 = vec3(1.0, 0.0, 0.0);  // Red = great-grandparent
-const vec3 kColorLevel4 = vec3(1.0, 0.0, 1.0);  // Magenta = great-great-grandparent
-const vec3 kColorMissing = vec3(0.5, 0.5, 0.5); // Gray = no tile found
-
-vec3 canonicalOrGeometrySurfacePoint() {
-    vec3 surfacePoint;
-    if (!canonicalSurfacePoint(surfacePoint)) {
-        // A valid globe pixel has a forward ray/sphere hit. Retain a safe
-        // fallback only for malformed camera state.
-        surfacePoint = normalize(FragPos);
-    }
-    return surfacePoint;
-}
-
-bool sampleImagery(vec3 surfacePoint, out vec4 sampledColor, out int sampledLevel) {
-    // Resolve the canonical coordinate once. Fallback pages are ancestors in
-    // the same quadtree, so their address and local UV follow directly from
-    // this result and need no additional ray/surface/Mercator conversion.
-    ivec2 leafTile;
-    vec2 leafFrac;
-    surfaceToTileAndFrac(surfacePoint, uZoomLevel, leafTile, leafFrac);
-
-    ivec2 tile = leafTile;
-    vec2 frac = leafFrac;
-    for (int level = 0; level < uNumFallbackLevels; level++) {
-
-        uint layerIdx = lookupLayer(level, tile);
-
-        if (layerIdx != 0xFFFFu) {
-            // Clamp UV to prevent GL_LINEAR filtering from sampling outside tile boundaries.
-            // Half-texel inset prevents bleeding from adjacent tiles in the texture array.
-            const float kHalfTexel = 0.5 / 256.0;
-            vec2 clamped_frac = clamp(frac, kHalfTexel, 1.0 - kHalfTexel);
-            sampledColor = texture(uTilePool, vec3(clamped_frac, float(layerIdx)));
-            sampledLevel = level;
-            return true;
-        }
-
-        // Only calculate a parent after this page has missed. This keeps the
-        // exact-resident path free of ancestor arithmetic while still deriving
-        // all fallback coordinates from the one canonical Mercator result.
-        if (level + 1 < uNumFallbackLevels) {
-            ivec2 parentTile = tile / 2;
-            ivec2 childOffset = tile - parentTile * 2;
-            frac = (vec2(childOffset) + frac) * 0.5;
-            tile = parentTile;
-        }
-    }
-    return false;
-}
-
-void main() {
-#if EARTH_MAP_TILE_FRAGMENT_PROBE == 1
-    // Fixed-color fragment path: geometry, depth, and raster/fill only.
-    FragColor = vec4(0.20, 0.45, 0.85, 1.0);
-#elif EARTH_MAP_TILE_FRAGMENT_PROBE == 2
-    // Keep the exact canonical coordinate calculation observable so the
-    // compiler cannot eliminate it, but do no imagery lookup or lighting.
-    vec3 surfacePoint = canonicalOrGeometrySurfacePoint();
-    ivec2 tile;
-    vec2 frac;
-    surfaceToTileAndFrac(surfacePoint, uZoomLevel, tile, frac);
-    FragColor = vec4(frac, float((tile.x ^ tile.y) & 1), 1.0);
-#else
-    vec3 surfacePoint = canonicalOrGeometrySurfacePoint();
-
-    vec4 texColor;
-    int sampledLevel = 0;
-    bool hasImagery = sampleImagery(surfacePoint, texColor, sampledLevel);
-
-#if EARTH_MAP_TILE_FRAGMENT_PROBE == 3
-    // Full virtual-texture lookup/sampling with no lighting calculation.
-    FragColor = hasImagery ? texColor : vec4(0.85, 0.82, 0.75, 1.0);
-    return;
-#else
-
-    float ambientStrength = 0.25;
-    vec3 ambient = ambientStrength * uLightColor;
-    vec3 norm = normalize(Normal);
-    float diff = max(dot(norm, uLightDirection), 0.0);
-    vec3 diffuse = diff * uLightColor;
-
-    if (hasImagery) {
-        // Apply diagnostic overlay if enabled.
-        vec3 finalColor = (ambient + diffuse) * texColor.rgb;
-        if (kDiagnosticMode == 1) {
-            vec3 diagColor;
-            if (sampledLevel == 0) diagColor = kColorLevel0;
-            else if (sampledLevel == 1) diagColor = kColorLevel1;
-            else if (sampledLevel == 2) diagColor = kColorLevel2;
-            else if (sampledLevel == 3) diagColor = kColorLevel3;
-            else diagColor = kColorLevel4;
-
-            // Blend tile color with diagnostic color (50/50 blend).
-            finalColor = mix(finalColor, diagColor, 0.5);
-        }
-
-        FragColor = vec4(finalColor, texColor.a);
-        return;
-    }
-
-    vec3 baseColor = kDiagnosticMode == 1 ? kColorMissing : vec3(0.85, 0.82, 0.75);
-    FragColor = vec4((ambient + diffuse) * baseColor, 1.0);
-#endif
-#endif
-}
-)";
-
-    static std::string BuildTileFragmentShader(
+    static std::string BuildGeographicPatchFragmentShader(
         TileFragmentShadingProbe probe) {
         std::string source = EARTH_MAP_GLSL_PREAMBLE;
         source += "#define EARTH_MAP_TILE_FRAGMENT_PROBE ";
         source += std::to_string(TileFragmentProbeIndex(probe));
         source += "\n";
-        source += kTileFragmentShaderBody;
+        source += kGeographicPatchFragmentShaderBody;
         return source;
-    }
-
-    const ShaderProgramState& ActiveShaderProgram() const {
-        return shader_programs_[TileFragmentProbeIndex(config_.fragment_shading_probe)];
-    }
-
-    void CacheUniformLocations(ShaderProgramState& shader_state) {
-        const std::uint32_t program = shader_state.program;
-        UniformLocations& uniform_locs = shader_state.uniform_locs;
-        uniform_locs.view = glGetUniformLocation(program, "uView");
-        uniform_locs.projection = glGetUniformLocation(program, "uProjection");
-        uniform_locs.model = glGetUniformLocation(program, "uModel");
-        uniform_locs.camera_position = glGetUniformLocation(program, "uCameraPosition");
-        uniform_locs.camera_to_world = glGetUniformLocation(program, "uCameraToWorld");
-        uniform_locs.projection_scale = glGetUniformLocation(program, "uProjectionScale");
-        uniform_locs.ray_sphere_c = glGetUniformLocation(program, "uRaySphereC");
-        uniform_locs.viewport = glGetUniformLocation(program, "uViewport");
-        uniform_locs.light_direction =
-            glGetUniformLocation(program, "uLightDirection");
-        uniform_locs.light_color = glGetUniformLocation(program, "uLightColor");
-        uniform_locs.zoom_level = glGetUniformLocation(program, "uZoomLevel");
-        uniform_locs.num_fallback_levels =
-            glGetUniformLocation(program, "uNumFallbackLevels");
-        uniform_locs.tile_pool = glGetUniformLocation(program, "uTilePool");
-
-        const char* indirection_names[] = {
-            "uIndirection0", "uIndirection1", "uIndirection2",
-            "uIndirection3", "uIndirection4"
-        };
-        const char* offset_names[] = {
-            "uIndirectionOffset0", "uIndirectionOffset1", "uIndirectionOffset2",
-            "uIndirectionOffset3", "uIndirectionOffset4"
-        };
-        for (int i = 0; i < kMaxFallbackLevels; ++i) {
-            uniform_locs.indirection[i] = glGetUniformLocation(program, indirection_names[i]);
-            uniform_locs.indirection_offset[i] =
-                glGetUniformLocation(program, offset_names[i]);
-        }
     }
 
     void CacheBaseGlobeUniformLocations() {
@@ -1324,27 +870,21 @@ void main() {
             glGetUniformLocation(base_globe_program_, "uLightColor");
     }
 
-    void CacheGeographicPatchUniformLocations() {
-        geographic_patch_uniform_locs_.view =
-            glGetUniformLocation(geographic_patch_program_, "uView");
-        geographic_patch_uniform_locs_.projection =
-            glGetUniformLocation(geographic_patch_program_, "uProjection");
-        geographic_patch_uniform_locs_.tile_pool =
-            glGetUniformLocation(geographic_patch_program_, "uTilePool");
-        geographic_patch_uniform_locs_.texture_layer =
-            glGetUniformLocation(geographic_patch_program_, "uTextureLayer");
-        geographic_patch_uniform_locs_.uv_scale =
-            glGetUniformLocation(geographic_patch_program_, "uUvScale");
-        geographic_patch_uniform_locs_.uv_offset =
-            glGetUniformLocation(geographic_patch_program_, "uUvOffset");
-        geographic_patch_uniform_locs_.light_direction =
-            glGetUniformLocation(geographic_patch_program_, "uLightDirection");
-        geographic_patch_uniform_locs_.light_color =
-            glGetUniformLocation(geographic_patch_program_, "uLightColor");
+    void CacheGeographicPatchUniformLocations(GeographicPatchProgramState& state) {
+        const std::uint32_t program = state.program;
+        GeographicPatchUniformLocations& uniform_locs = state.uniform_locs;
+        uniform_locs.view = glGetUniformLocation(program, "uView");
+        uniform_locs.projection = glGetUniformLocation(program, "uProjection");
+        uniform_locs.tile_pool = glGetUniformLocation(program, "uTilePool");
+        uniform_locs.texture_layer = glGetUniformLocation(program, "uTextureLayer");
+        uniform_locs.uv_scale = glGetUniformLocation(program, "uUvScale");
+        uniform_locs.uv_offset = glGetUniformLocation(program, "uUvOffset");
+        uniform_locs.light_direction = glGetUniformLocation(program, "uLightDirection");
+        uniform_locs.light_color = glGetUniformLocation(program, "uLightColor");
     }
 
     void CleanupShaderPrograms() {
-        for (ShaderProgramState& shader_state : shader_programs_) {
+        for (GeographicPatchProgramState& shader_state : geographic_patch_programs_) {
             if (shader_state.program != 0) {
                 glDeleteProgram(shader_state.program);
                 shader_state.program = 0;
@@ -1355,26 +895,23 @@ void main() {
             glDeleteProgram(base_globe_program_);
             base_globe_program_ = 0;
         }
-        if (geographic_patch_program_ != 0) {
-            glDeleteProgram(geographic_patch_program_);
-            geographic_patch_program_ = 0;
-        }
     }
 
     bool InitializeOpenGLState() {
         for (const TileFragmentShadingProbe probe : kTileFragmentShadingProbes) {
-            ShaderProgramState& shader_state = shader_programs_[TileFragmentProbeIndex(probe)];
-            const std::string fragment_shader = BuildTileFragmentShader(probe);
+            GeographicPatchProgramState& shader_state =
+                geographic_patch_programs_[TileFragmentProbeIndex(probe)];
+            const std::string fragment_shader = BuildGeographicPatchFragmentShader(probe);
             const std::string program_name =
-                std::string("virtual_imagery_globe.") + TileFragmentProbeName(probe);
+                std::string("geographic_imagery_patch.") + TileFragmentProbeName(probe);
             shader_state.program = ShaderLoader::CreateProgram(
-                kTileVertexShader, fragment_shader.c_str(), program_name);
+                kGeographicPatchVertexShader, fragment_shader.c_str(), program_name);
             if (shader_state.program == 0) {
                 spdlog::error("Failed to create {} shader program", program_name);
                 CleanupShaderPrograms();
                 return false;
             }
-            CacheUniformLocations(shader_state);
+            CacheGeographicPatchUniformLocations(shader_state);
         }
 
         base_globe_program_ = ShaderLoader::CreateProgram(
@@ -1386,17 +923,6 @@ void main() {
         }
         CacheBaseGlobeUniformLocations();
 
-        geographic_patch_program_ = ShaderLoader::CreateProgram(
-            kGeographicPatchVertexShader,
-            kGeographicPatchFragmentShader,
-            "geographic_imagery_patch");
-        if (geographic_patch_program_ == 0) {
-            spdlog::error("Failed to create geographic imagery patch shader program");
-            CleanupShaderPrograms();
-            return false;
-        }
-        CacheGeographicPatchUniformLocations();
-
         geographic_patch_grid_ = renderer::MakeGeographicPatchGrid(
             kGeographicPatchGridSubdivisions);
         if (!geographic_patch_grid_.has_value()) {
@@ -1407,9 +933,9 @@ void main() {
         InitializeGeographicPatchGeometry();
 
         spdlog::info("Tile renderer OpenGL state initialized with a direct geographic "
-                     "imagery patch path and {} legacy fragment probes "
+                     "imagery patch path and {} fragment probes "
                      "(mesh will be uploaded when provided)",
-                     shader_programs_.size());
+                     geographic_patch_programs_.size());
         return true;
     }
 
@@ -1482,21 +1008,24 @@ void main() {
         }
 
         UploadGeographicPatchVertices();
-        glUseProgram(geographic_patch_program_);
-        glUniformMatrix4fv(geographic_patch_uniform_locs_.view, 1, GL_FALSE,
+        const GeographicPatchProgramState& program_state =
+            geographic_patch_programs_[TileFragmentProbeIndex(config_.fragment_shading_probe)];
+        const GeographicPatchUniformLocations& uniform_locs = program_state.uniform_locs;
+        glUseProgram(program_state.program);
+        glUniformMatrix4fv(uniform_locs.view, 1, GL_FALSE,
                            glm::value_ptr(view_matrix));
-        glUniformMatrix4fv(geographic_patch_uniform_locs_.projection, 1, GL_FALSE,
+        glUniformMatrix4fv(uniform_locs.projection, 1, GL_FALSE,
                            glm::value_ptr(projection_matrix));
-        glUniform3f(geographic_patch_uniform_locs_.light_direction,
+        glUniform3f(uniform_locs.light_direction,
                     kDefaultSunDirection.x, kDefaultSunDirection.y,
                     kDefaultSunDirection.z);
-        glUniform3f(geographic_patch_uniform_locs_.light_color,
+        glUniform3f(uniform_locs.light_color,
                     1.0f, 1.0f, 1.0f);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D_ARRAY,
                       texture_coordinator_->GetTilePoolTextureID());
-        glUniform1i(geographic_patch_uniform_locs_.tile_pool, 0);
+        glUniform1i(uniform_locs.tile_pool, 0);
 
         glBindVertexArray(geographic_patch_vao_);
         // glVertexAttribPointer captures the currently bound array buffer in
@@ -1505,12 +1034,12 @@ void main() {
         // the attributes for each cached patch range.
         glBindBuffer(GL_ARRAY_BUFFER, geographic_patch_vbo_);
         for (const GeographicPatchDraw& draw : geographic_patch_draws_) {
-            glUniform1f(geographic_patch_uniform_locs_.texture_layer,
+            glUniform1f(uniform_locs.texture_layer,
                         static_cast<float>(draw.imagery.texture_layer));
-            glUniform2f(geographic_patch_uniform_locs_.uv_scale,
+            glUniform2f(uniform_locs.uv_scale,
                         static_cast<float>(draw.imagery.uv_scale.x),
                         static_cast<float>(draw.imagery.uv_scale.y));
-            glUniform2f(geographic_patch_uniform_locs_.uv_offset,
+            glUniform2f(uniform_locs.uv_offset,
                         static_cast<float>(draw.imagery.uv_offset.x),
                         static_cast<float>(draw.imagery.uv_offset.y));
 

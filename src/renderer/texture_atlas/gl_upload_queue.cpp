@@ -14,6 +14,8 @@ void GLUploadQueue::Push(std::unique_ptr<GLUploadCommand> cmd) {
         return; // Ignore null commands
     }
 
+    cmd->enqueued_at = std::chrono::steady_clock::now();
+
     std::lock_guard<std::mutex> lock(mutex_);
     queue_.push_back(std::move(cmd));
 }

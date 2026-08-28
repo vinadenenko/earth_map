@@ -375,8 +375,8 @@ public:
      * Resolve a renderer request to the provider's canonical imagery identity.
      *
      * TileCoordinates remain only at the current renderer request boundary.
-     * Components below the loader (cache, upload, physical residency, and
-     * page-table updates) must use the returned ImageTileKey instead.
+     * Components below the loader (cache, upload, and physical residency)
+     * must use the returned ImageTileKey instead.
      */
     [[nodiscard]] std::optional<imagery::ImageTileKey> ResolveImageTileKey(
         const TileCoordinates& coordinates,

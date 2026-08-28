@@ -387,6 +387,14 @@ and all baseline scenes plus high-zoom terrain scenes pass.
 
 **Proposed commit:** `refactor: remove superseded icosphere imagery path`
 
+## Known regressions to resolve before retiring the coarse fallback
+
+- The current geographic-patch imagery path leaves visible holes at both poles.
+  This did not occur with the previous renderer.  Treat it as a correctness
+  regression in polar coverage/topology, not as an acceptable limitation or a
+  visual workaround.  Add polar fixtures and resolve it before Phase 9 removes
+  the coarse fallback.
+
 ## Decisions intentionally deferred
 
 These are not required to begin and must not expand early phases:
@@ -410,4 +418,3 @@ verified.
   geometric error, and screen-space-error traversal.
 - Cesium Quantized Mesh specification: streamed terrain tile hierarchy and
   terrain geometric-error concepts.
-

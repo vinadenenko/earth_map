@@ -6,7 +6,8 @@
 #include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
 #include <spdlog/spdlog.h>
 
-#include <array>
+#include <chrono>
+#include <limits>
 #include <utility>
 
 namespace earth_map {
@@ -36,14 +37,6 @@ TileTextureCoordinator::TileTextureCoordinator(
         skip_gl_init
     );
 
-    if (tile_pool_->GetMaxLayers() >= IndirectionTextureManager::kInvalidLayer) {
-        throw std::invalid_argument(
-            "Pool max_layers must be less than indirection sentinel value (0xFFFF)");
-    }
-
-    // Create indirection texture manager
-    indirection_manager_ = std::make_unique<IndirectionTextureManager>(skip_gl_init);
-
     // Create worker pool
     worker_pool_ = std::make_unique<TileLoadWorkerPool>(
         loader_,
@@ -51,7 +44,7 @@ TileTextureCoordinator::TileTextureCoordinator(
         num_worker_threads
     );
 
-    spdlog::info("TileTextureCoordinator initialized with {} workers (tile pool + indirection)",
+    spdlog::info("TileTextureCoordinator initialized with {} workers and a texture-array pool",
                  num_worker_threads);
 }
 
@@ -159,69 +152,6 @@ std::uint64_t TileTextureCoordinator::GetPoolBytesMax() const {
     return tile_pool_->GetBytesMax();
 }
 
-std::uint64_t TileTextureCoordinator::GetIndirectionBytesUsed() const {
-    return indirection_manager_->GetBytesUsed();
-}
-
-std::uint32_t TileTextureCoordinator::GetIndirectionTextureID(
-    const imagery::ImageTileKey& imagery_key) const {
-    return indirection_manager_->GetTextureID(imagery_key);
-}
-
-std::uint16_t TileTextureCoordinator::GetIndirectionLayer(
-    const imagery::ImageTileKey& imagery_key) const {
-    return indirection_manager_->GetTileLayer(imagery_key);
-}
-
-glm::ivec2 TileTextureCoordinator::GetIndirectionOffset(
-    const imagery::ImageTileKey& imagery_key) const {
-    return indirection_manager_->GetWindowOffset(imagery_key);
-}
-
-std::optional<IndirectionTextureManager::PageTableBinding>
-TileTextureCoordinator::GetIndirectionPageTableBinding(
-    const imagery::ImageTileKey& imagery_key) const {
-    return indirection_manager_->GetPageTableBinding(imagery_key);
-}
-
-void TileTextureCoordinator::UpdateIndirectionWindowCenter(
-    const imagery::ImageTileKey& center_tile) {
-    if (!indirection_manager_->UpdateWindowCenter(center_tile)) {
-        return;
-    }
-
-    // A page table is a windowed, derived GPU view of the physical pool. A
-    // window shift can clear entries that remain resident in the pool; replay
-    // every resident page that belongs to this table so revisiting an area
-    // never requires a redundant download/upload to become drawable again.
-    std::vector<std::pair<imagery::ImageTileKey, std::uint16_t>> resident_pages;
-    {
-        std::shared_lock<std::shared_mutex> lock(state_mutex_);
-        resident_pages.reserve(tile_states_.size());
-        for (const auto& entry : tile_states_) {
-            const TileState& state = entry.second;
-            if (state.status != TileStatus::Loaded || !state.imagery_key.has_value() ||
-                state.pool_layer < 0 ||
-                state.imagery_key->imagery_source_id != center_tile.imagery_source_id ||
-                state.imagery_key->matrix_set_id != center_tile.matrix_set_id ||
-                state.imagery_key->address.level != center_tile.address.level) {
-                continue;
-            }
-
-            const int current_layer = tile_pool_->GetLayerIndex(*state.imagery_key);
-            if (current_layer == state.pool_layer) {
-                resident_pages.emplace_back(
-                    *state.imagery_key,
-                    static_cast<std::uint16_t>(current_layer));
-            }
-        }
-    }
-
-    for (const auto& [imagery_key, layer] : resident_pages) {
-        indirection_manager_->SetTileLayer(imagery_key, layer);
-    }
-}
-
 std::optional<imagery::ImageTileKey> TileTextureCoordinator::ResolveImageryTileKey(
     const TileCoordinates& coords) const {
     return loader_->ResolveImageTileKey(coords);
@@ -244,7 +174,7 @@ std::optional<std::uint16_t> TileTextureCoordinator::GetResidentImageryLayer(
     }
 
     const int layer = tile_pool_->GetLayerIndex(imagery_key);
-    if (layer < 0 || layer >= static_cast<int>(IndirectionTextureManager::kInvalidLayer)) {
+    if (layer < 0 || layer > static_cast<int>(std::numeric_limits<std::uint16_t>::max())) {
         return std::nullopt;
     }
     return static_cast<std::uint16_t>(layer);
@@ -262,45 +192,94 @@ std::uint32_t TileTextureCoordinator::GetAtlasTextureID() const {
     return tile_pool_->GetTextureArrayID();
 }
 
-void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
+TileTextureCoordinator::UploadProcessStats TileTextureCoordinator::ProcessUploads(
+    int max_uploads_per_frame) {
+    UploadProcessStats stats;
+    stats.queue_depth_before = upload_queue_->Size();
+
     if (max_uploads_per_frame <= 0) {
-        return;
+        stats.queue_depth_after = upload_queue_->Size();
+        return stats;
     }
 
-    int processed_count = 0;
     for (int i = 0; i < max_uploads_per_frame; ++i) {
         auto cmd = upload_queue_->TryPop();
         if (!cmd) {
             break;
         }
 
-        processed_count++;
+        const auto command_start = std::chrono::steady_clock::now();
+        ++stats.commands_processed;
+        if (cmd->enqueued_at != std::chrono::steady_clock::time_point{}) {
+            const double queue_wait_ms = std::chrono::duration<double, std::milli>(
+                command_start - cmd->enqueued_at).count();
+            if (queue_wait_ms > stats.max_queue_wait_ms) {
+                stats.max_queue_wait_ms = queue_wait_ms;
+            }
+        }
+        const auto finish_command = [&stats, command_start]() {
+            const double command_cpu_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - command_start).count();
+            stats.total_command_cpu_ms += command_cpu_ms;
+            if (command_cpu_ms > stats.max_command_cpu_ms) {
+                stats.max_command_cpu_ms = command_cpu_ms;
+            }
+        };
+        const auto record_stage = [](double& total_cpu_ms,
+                                     double& max_cpu_ms,
+                                     std::chrono::steady_clock::time_point start) {
+            const double elapsed_cpu_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+            total_cpu_ms += elapsed_cpu_ms;
+            if (elapsed_cpu_ms > max_cpu_ms) {
+                max_cpu_ms = elapsed_cpu_ms;
+            }
+        };
 
         if (!cmd->imagery_key.has_value() || !cmd->imagery_key->IsValid()) {
+            const auto state_start = std::chrono::steady_clock::now();
             std::unique_lock<std::shared_mutex> lock(state_mutex_);
             auto it = tile_states_.find(cmd->coords);
             if (it != tile_states_.end() && it->second.status == TileStatus::Loading) {
                 tile_states_.erase(it);
                 pending_load_count_.fetch_sub(1);
             }
+            record_stage(stats.total_residency_state_cpu_ms,
+                         stats.max_residency_state_cpu_ms,
+                         state_start);
             spdlog::error("Rejected unkeyed imagery upload for tile {}", cmd->coords.GetKey());
             if (cmd->on_complete) {
                 cmd->on_complete(cmd->coords);
             }
+            finish_command();
             continue;
         }
 
+        const auto upload_to_pool = [&]() {
+            const auto upload_start = std::chrono::steady_clock::now();
+            ++stats.tile_pool_upload_attempts;
+            stats.tile_pool_upload_attempt_bytes += cmd->pixel_data.size();
+            const int result = tile_pool_->UploadTile(
+                *cmd->imagery_key,
+                cmd->pixel_data.data(),
+                cmd->width,
+                cmd->height,
+                cmd->channels);
+            const double upload_cpu_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - upload_start).count();
+            stats.total_tile_pool_upload_cpu_ms += upload_cpu_ms;
+            if (upload_cpu_ms > stats.max_tile_pool_upload_cpu_ms) {
+                stats.max_tile_pool_upload_cpu_ms = upload_cpu_ms;
+            }
+            return result;
+        };
+
         // Upload to tile pool
-        int layer = tile_pool_->UploadTile(
-            *cmd->imagery_key,
-            cmd->pixel_data.data(),
-            cmd->width,
-            cmd->height,
-            cmd->channels
-        );
+        int layer = upload_to_pool();
 
         // Pool full — evict LRU tile and retry
         if (layer < 0 && tile_pool_->GetFreeLayers() == 0) {
+            const auto eviction_start = std::chrono::steady_clock::now();
             auto candidate = tile_pool_->GetEvictionCandidate();
             if (candidate.has_value()) {
                 std::optional<TileCoordinates> candidate_coords;
@@ -316,18 +295,6 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
                     }
                 }
 
-                if (candidate_coords.has_value()) {
-                    indirection_manager_->ClearTile(*candidate);
-                } else {
-                    spdlog::error(
-                        "Physical imagery page lost its legacy page-table owner before eviction: "
-                        "{}/{}/{}/{}/{}",
-                        candidate->imagery_source_id,
-                        candidate->matrix_set_id,
-                        candidate->address.level,
-                        candidate->address.column,
-                        candidate->address.row);
-                }
                 tile_pool_->EvictTile(*candidate);
 
                 {
@@ -346,34 +313,24 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
                     candidate->address.row,
                     cmd->coords.GetKey());
 
-                layer = tile_pool_->UploadTile(
-                    *cmd->imagery_key,
-                    cmd->pixel_data.data(),
-                    cmd->width,
-                    cmd->height,
-                    cmd->channels
-                );
+            }
+            record_stage(stats.total_eviction_cpu_ms,
+                         stats.max_eviction_cpu_ms,
+                         eviction_start);
+            if (candidate.has_value()) {
+                // Transfer time belongs to the physical upload metric, not
+                // the LRU bookkeeping metric above.
+                layer = upload_to_pool();
             }
         }
 
         if (layer >= 0) {
-            // Physical tile-pool residency is independent of a legacy
-            // page-table window. The current shader may not address this
-            // page yet, but CPU-resolved geographic patches can use it
-            // immediately and a later window shift can replay the mapping.
-            const bool mapped = indirection_manager_->SetTileLayer(
-                *cmd->imagery_key, static_cast<std::uint16_t>(layer));
-            if (!mapped) {
-                spdlog::debug(
-                    "Retained resident imagery page outside current page-table window: {}",
-                    cmd->coords.GetKey());
-            }
-
             // Update state to Loaded and decrement pending counter. If the
             // request was cancelled while its command was queued, do not leave
-            // an unowned physical page or an indirection mapping behind.
+            // an unowned physical page behind.
             bool installed = false;
             {
+                const auto state_start = std::chrono::steady_clock::now();
                 std::unique_lock<std::shared_mutex> lock(state_mutex_);
                 auto it = tile_states_.find(cmd->coords);
                 if (it != tile_states_.end() && it->second.status == TileStatus::Loading) {
@@ -383,32 +340,47 @@ void TileTextureCoordinator::ProcessUploads(int max_uploads_per_frame) {
                     pending_load_count_.fetch_sub(1);
                     installed = true;
                 }
+                record_stage(stats.total_residency_state_cpu_ms,
+                             stats.max_residency_state_cpu_ms,
+                             state_start);
             }
 
             if (installed) {
+                ++stats.commands_installed;
                 spdlog::trace("Tile {} uploaded to pool layer {}",
                               cmd->coords.GetKey(), layer);
             } else {
-                indirection_manager_->ClearTile(*cmd->imagery_key);
+                const auto eviction_start = std::chrono::steady_clock::now();
                 tile_pool_->EvictTile(*cmd->imagery_key);
+                record_stage(stats.total_eviction_cpu_ms,
+                             stats.max_eviction_cpu_ms,
+                             eviction_start);
                 spdlog::debug("Discarded upload whose request state was removed: {}",
                               cmd->coords.GetKey());
             }
         } else {
             // Upload failed — remove from pending state
+            const auto state_start = std::chrono::steady_clock::now();
             std::unique_lock<std::shared_mutex> lock(state_mutex_);
             auto it = tile_states_.find(cmd->coords);
             if (it != tile_states_.end() && it->second.status == TileStatus::Loading) {
                 tile_states_.erase(it);
                 pending_load_count_.fetch_sub(1);
             }
+            record_stage(stats.total_residency_state_cpu_ms,
+                         stats.max_residency_state_cpu_ms,
+                         state_start);
             spdlog::warn("Failed to upload tile {} to pool", cmd->coords.GetKey());
         }
 
         if (cmd->on_complete) {
             cmd->on_complete(cmd->coords);
         }
+        finish_command();
     }
+
+    stats.queue_depth_after = upload_queue_->Size();
+    return stats;
 }
 
 void TileTextureCoordinator::TouchTiles(const std::vector<TileCoordinates>& tiles) {
@@ -459,11 +431,6 @@ std::size_t TileTextureCoordinator::EvictUnusedTiles(std::chrono::seconds max_ag
         auto it = tile_states_.find(coords);
         if (it == tile_states_.end() || it->second.status != TileStatus::Loaded) {
             continue;
-        }
-
-        // Clear from indirection texture
-        if (it->second.imagery_key.has_value()) {
-            indirection_manager_->ClearTile(*it->second.imagery_key);
         }
 
         // Evict from tile pool

@@ -10,7 +10,7 @@
  * The renderer will select patches on the CPU, resolve the best resident
  * virtual-texture page once per patch, and issue direct texture-array draws.
  * The fragment shader therefore receives only a layer and local UV transform;
- * it does not perform a ray cast, a Mercator projection, or a page-table walk.
+ * it does not perform a ray cast, a Mercator projection, or a GPU lookup walk.
  */
 
 #pragma once

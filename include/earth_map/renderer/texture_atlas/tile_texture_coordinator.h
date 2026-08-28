@@ -24,8 +24,6 @@
 #include <earth_map/renderer/texture_atlas/tile_load_worker_pool.h>
 #include <earth_map/renderer/texture_atlas/gl_upload_queue.h>
 #include <earth_map/renderer/tile_pool/tile_texture_pool.h>
-#include <earth_map/renderer/tile_pool/indirection_texture_manager.h>
-#include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 #include <atomic>
 #include <memory>
@@ -64,6 +62,30 @@ public:
     static constexpr std::uint32_t kDefaultMaxPoolLayers = 512;
 
     /**
+     * Per-frame observability for decoded-page processing on the render
+     * thread. Whole-command time is separate from TileTexturePool time so a
+     * long frame can be attributed to transfer/driver synchronization or to
+     * surrounding eviction and state work.
+     */
+    struct UploadProcessStats {
+        std::size_t queue_depth_before = 0;
+        std::size_t queue_depth_after = 0;
+        std::size_t commands_processed = 0;
+        std::size_t commands_installed = 0;
+        std::size_t tile_pool_upload_attempts = 0;
+        std::uint64_t tile_pool_upload_attempt_bytes = 0;
+        double total_command_cpu_ms = 0.0;
+        double max_command_cpu_ms = 0.0;
+        double total_tile_pool_upload_cpu_ms = 0.0;
+        double max_tile_pool_upload_cpu_ms = 0.0;
+        double total_eviction_cpu_ms = 0.0;
+        double max_eviction_cpu_ms = 0.0;
+        double total_residency_state_cpu_ms = 0.0;
+        double max_residency_state_cpu_ms = 0.0;
+        double max_queue_wait_ms = 0.0;
+    };
+
+    /**
      * @brief Tile loading state
      */
     enum class TileStatus {
@@ -80,9 +102,7 @@ public:
         int pool_layer = -1;  ///< Tile pool layer index (valid if Loaded)
         /// Canonical physical-residency identity (valid if Loaded).
         ///
-        /// The request map remains TileCoordinates only until the indirection
-        /// manager migrates in the next step. Physical GPU ownership must
-        /// already use this source-aware identity.
+        /// Physical GPU ownership uses this source-aware identity.
         std::optional<imagery::ImageTileKey> imagery_key;
         std::chrono::steady_clock::time_point request_time;  ///< When tile was requested
     };
@@ -178,53 +198,6 @@ public:
     /** @brief Get tile pool GPU memory budget if fully occupied, in bytes */
     std::uint64_t GetPoolBytesMax() const;
 
-    /** @brief Get indirection page-table GPU memory currently used, in bytes */
-    std::uint64_t GetIndirectionBytesUsed() const;
-
-    /**
-     * @brief Get indirection texture ID for a zoom level
-     *
-     * @return OpenGL texture ID, or 0 if not allocated
-     */
-    std::uint32_t GetIndirectionTextureID(
-        const imagery::ImageTileKey& imagery_key) const;
-
-    /**
-     * Returns the current page-table mapping for a canonical page.
-     *
-     * This is an observability/testing query. A page may remain physically
-     * resident while returning kInvalidLayer when it is outside the active
-     * page-table window.
-     */
-    std::uint16_t GetIndirectionLayer(
-        const imagery::ImageTileKey& imagery_key) const;
-
-    /**
-     * @brief Get indirection window offset for a zoom level
-     *
-     * For full-mode zooms (0-12), returns (0,0).
-     * For windowed zooms (13+), returns the tile coordinate offset.
-     */
-    glm::ivec2 GetIndirectionOffset(
-        const imagery::ImageTileKey& imagery_key) const;
-
-    /**
-     * Captures the GL texture and page-table window from one page-table
-     * generation. The renderer uses this single value to build its immutable
-     * per-frame imagery snapshot.
-     */
-    std::optional<IndirectionTextureManager::PageTableBinding>
-    GetIndirectionPageTableBinding(
-        const imagery::ImageTileKey& imagery_key) const;
-
-    /**
-     * @brief Update indirection window center for windowed zoom levels
-     *
-     * Should be called when camera moves to keep the indirection window
-     * centered on the visible area.
-     */
-    void UpdateIndirectionWindowCenter(const imagery::ImageTileKey& center_tile);
-
     /**
      * Resolves the legacy renderer request into the default provider's
      * canonical imagery identity. This is the only coordinate-to-imagery
@@ -251,10 +224,6 @@ public:
     /**
      * Returns the physical texture-array layer for a resident imagery page.
      *
-     * This deliberately bypasses page-table-window visibility. A page remains
-     * usable by CPU-resolved geographic patches even when a legacy shader
-     * page-table window is currently centred somewhere else.
-     *
      * Render-thread only: it queries the GL-owned physical pool.
      */
     std::optional<std::uint16_t> GetResidentImageryLayer(
@@ -275,7 +244,8 @@ public:
     /**
      * @brief Process upload queue (must be called from GL thread)
      *
-     * Drains the GL upload queue and uploads tiles to the atlas.
+     * Drains the GL upload queue and uploads tiles to the physical texture
+     * pool.
      * Should be called once per frame from the rendering thread.
      *
      * @param max_uploads_per_frame Maximum uploads per call (default: 5)
@@ -283,8 +253,9 @@ public:
      *
      * Thread Safety: MUST be called from GL thread only
      * Performance: O(max_uploads_per_frame)
+     * @return Measurements for this call, including an empty queue pass.
      */
-    void ProcessUploads(int max_uploads_per_frame = 5);
+    UploadProcessStats ProcessUploads(int max_uploads_per_frame = 5);
 
     /**
      * Marks currently selected resident pages as recently used.
@@ -356,9 +327,6 @@ private:
 
     /// Tile texture pool (GL_TEXTURE_2D_ARRAY, GL thread only)
     std::unique_ptr<TileTexturePool> tile_pool_;
-
-    /// Indirection texture manager (per-zoom lookup textures, GL thread only)
-    std::unique_ptr<IndirectionTextureManager> indirection_manager_;
 
     /// Number of tiles currently in Loading state (atomic for lock-free reads)
     std::atomic<std::size_t> pending_load_count_{0};

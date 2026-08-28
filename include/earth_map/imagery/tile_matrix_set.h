@@ -1,11 +1,11 @@
 /**
  * @file tile_matrix_set.h
- * @brief Canonical imagery tile identities and page-table addressing.
+ * @brief Canonical imagery tile identities and source-matrix addressing.
  *
  * Imagery is projected data draped over the WGS84 globe.  This file is the
- * contract between future geographic-patch selection, streaming, residency,
- * GPU page-table updates, and shader sampling.  It intentionally contains no
- * normalized globe-space coordinates and no OpenGL types.
+ * contract between geographic-patch selection, streaming, and physical
+ * texture residency. It intentionally contains no normalized globe-space
+ * coordinates and no OpenGL types.
  */
 
 #pragma once
@@ -18,9 +18,6 @@
 #include <string>
 
 namespace earth_map::imagery {
-
-/** Increment when a future incompatible virtual-address layout is introduced. */
-inline constexpr std::uint32_t kVirtualImageryAddressContractVersion = 1;
 
 /** Projection used by the imagery source tile matrix. */
 enum class ImageryProjection : std::uint8_t {
@@ -115,39 +112,6 @@ public:
     [[nodiscard]] std::optional<ImageTileAddress> GeodeticToTile(
         const geodesy::GeodeticPosition& geodetic,
         std::uint32_t level) const noexcept;
-};
-
-/** Integer texel relative to one page-table window. */
-struct PageTableTexel final {
-    std::int32_t x = 0;
-    std::int32_t y = 0;
-
-    constexpr bool operator==(const PageTableTexel& other) const noexcept = default;
-};
-
-/**
- * Immutable description of one page-table generation.
- *
- * The render snapshot owns this value.  A shader may sample a page table only
- * using an address resolved against the same source, matrix set, level, and
- * generation.  The window origin is integer tile space, never a float world
- * coordinate.
- */
-struct PageTableWindow final {
-    std::uint32_t contract_version = kVirtualImageryAddressContractVersion;
-    std::uint64_t generation = 0;
-    std::string imagery_source_id;
-    std::string matrix_set_id;
-    std::uint32_t level = 0;
-    std::int64_t origin_column = 0;
-    std::int64_t origin_row = 0;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-
-    [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] bool Matches(const ImageTileKey& key) const noexcept;
-    [[nodiscard]] std::optional<PageTableTexel> TryGetTexel(
-        const ImageTileKey& key) const noexcept;
 };
 
 }  // namespace earth_map::imagery

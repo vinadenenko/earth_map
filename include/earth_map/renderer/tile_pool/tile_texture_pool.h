@@ -66,7 +66,7 @@ public:
      *
      * If the imagery page already exists, updates it in place. If the pool is
      * full, returns failure; the residency coordinator selects and evicts an
-     * LRU page explicitly so it can clear the matching page-table entry.
+     * LRU page explicitly before retrying the upload.
      *
      * @return Layer index (0 to max_layers-1), or -1 on failure
      */

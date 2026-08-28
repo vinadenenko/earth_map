@@ -16,6 +16,7 @@ Window {
 
     EarthMapQuickItem {
         id: map
+        objectName: "earthMapQuickItem"
         anchors.fill: parent
         // anchors.margins: 100
         focus: true
@@ -202,11 +203,6 @@ Window {
                 value: map.tilePoolBytesUsed
             }
 
-            Text {
-                text: "Indirection VRAM: " + bytesToMiB(map.indirectionBytesUsed).toFixed(2) + " MiB"
-                color: "white"
-                font.pixelSize: 13
-            }
         }
     }
 
@@ -243,6 +239,11 @@ Window {
                 enabled: !map.performanceScenarioActive
                 onClicked: map.startPerformanceScenario("flight")
             }
+            Button {
+                text: "Run jump stress"
+                enabled: !map.performanceScenarioActive
+                onClicked: map.startPerformanceScenario("jump-stress")
+            }
 
             Text {
                 text: "GPU fragment probes (steady z13)"
@@ -255,9 +256,9 @@ Window {
                 onClicked: map.startPerformanceScenario("steady-z13-flat-fill")
             }
             Button {
-                text: "Canonical coordinates"
+                text: "Patch-local coordinates"
                 enabled: !map.performanceScenarioActive
-                onClicked: map.startPerformanceScenario("steady-z13-canonical-coordinates")
+                onClicked: map.startPerformanceScenario("steady-z13-patch-local-coordinates")
             }
             Button {
                 text: "Unlit imagery"

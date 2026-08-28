@@ -89,7 +89,6 @@ class EarthMapQuickItem : public QQuickItem {
     Q_PROPERTY(int maxPoolLayers READ maxPoolLayers NOTIFY tileRenderStatsChanged FINAL)
     Q_PROPERTY(double tilePoolBytesUsed READ tilePoolBytesUsed NOTIFY tileRenderStatsChanged FINAL)
     Q_PROPERTY(double tilePoolBytesMax READ tilePoolBytesMax NOTIFY tileRenderStatsChanged FINAL)
-    Q_PROPERTY(double indirectionBytesUsed READ indirectionBytesUsed NOTIFY tileRenderStatsChanged FINAL)
 
     // The benchmark runner is deliberately owned by the render thread: it
     // controls CameraController there, records renderer statistics without
@@ -121,17 +120,16 @@ public:
     int maxPoolLayers() const { return max_pool_layers_; }
     double tilePoolBytesUsed() const { return tile_pool_bytes_used_; }
     double tilePoolBytesMax() const { return tile_pool_bytes_max_; }
-    double indirectionBytesUsed() const { return indirection_bytes_used_; }
 
     bool performanceScenarioActive() const { return performance_scenario_active_; }
     QString performanceScenarioStatus() const { return performance_scenario_status_; }
     QString performanceScenarioReportPath() const { return performance_scenario_report_path_; }
 
-    // Valid names are "steady-z13", "flight", and "flight-preview". The
-    // preview follows the flight route without recording a report and keeps
-    // the live QML HUD active. The call is received on the GUI thread and
-    // forwarded at the next Qt Quick synchronization point so
-    // CameraController remains render-thread-owned.
+    // Scenario names include steady-z13, cold-start-z13, flight, jump-stress,
+    // and flight-preview. The preview follows the flight route without
+    // recording a report. The call is received on the GUI thread and forwarded
+    // at the next Qt Quick synchronization point so CameraController remains
+    // render-thread-owned.
     Q_INVOKABLE void startPerformanceScenario(const QString& name);
     Q_INVOKABLE void stopPerformanceScenario();
 
@@ -160,7 +158,7 @@ public slots:
     // from paint() on the render thread.
     void setTileRenderStats(int visibleTiles, int renderedTiles, double averageLod,
                             int occupiedPoolLayers, int maxPoolLayers, double tilePoolBytesUsed,
-                            double tilePoolBytesMax, double indirectionBytesUsed);
+                            double tilePoolBytesMax);
 
     void setPerformanceScenarioState(bool active, const QString& status,
                                      const QString& reportPath);
@@ -201,7 +199,6 @@ private:
     int max_pool_layers_ = 0;
     double tile_pool_bytes_used_ = 0.0;
     double tile_pool_bytes_max_ = 0.0;
-    double indirection_bytes_used_ = 0.0;
 
     bool performance_scenario_active_ = false;
     QString performance_scenario_status_;

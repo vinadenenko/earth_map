@@ -18,6 +18,7 @@
 #include <deque>
 #include <mutex>
 #include <optional>
+#include <chrono>
 
 namespace earth_map {
 
@@ -49,6 +50,10 @@ struct GLUploadCommand {
 
     /// Optional callback executed after upload completes (on GL thread)
     std::function<void(const TileCoordinates&)> on_complete;
+
+    /// Set by GLUploadQueue::Push so the render thread can measure how long
+    /// decoded work waits before it is allowed to consume GL time.
+    std::chrono::steady_clock::time_point enqueued_at{};
 
     /**
      * @brief Default constructor
