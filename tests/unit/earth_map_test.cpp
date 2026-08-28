@@ -38,14 +38,23 @@ TEST_F(EarthMapTest, Initialization) {
     // EXPECT_TRUE(initialized);
 }
 
-TEST_F(EarthMapTest, GettersAfterCreation) {
+TEST_F(EarthMapTest, PlacemarkLayerAvailableBeforeInitialization) {
     auto earth_map = EarthMap::Create(config_);
     ASSERT_NE(earth_map, nullptr);
-    
-    // These should return valid pointers even before initialization
-    EXPECT_NE(earth_map->GetRenderer(), nullptr);
-    EXPECT_NE(earth_map->GetSceneManager(), nullptr);
-    EXPECT_NE(earth_map->GetCameraController(), nullptr);
+
+    // Rendering subsystems are created only during Initialize(), after a GL
+    // context is current. Placemark feature ownership is deliberately safe to
+    // use immediately after construction.
+    EXPECT_NE(earth_map->GetPlacemarkLayer(), nullptr);
+}
+
+TEST_F(EarthMapTest, UsesApplicationSuppliedPlacemarkLayer) {
+    const auto supplied_layer = placemarks::PlacemarkLayer::Create();
+    config_.placemark_layer = supplied_layer;
+
+    const auto earth_map = EarthMap::Create(config_);
+    ASSERT_NE(earth_map, nullptr);
+    EXPECT_EQ(earth_map->GetPlacemarkLayer(), supplied_layer);
 }
 
 TEST_F(EarthMapTest, PerformanceStatsFormat) {

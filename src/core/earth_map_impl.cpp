@@ -18,6 +18,10 @@ EarthMapImpl::EarthMapImpl(const Configuration& config)
     if (!ValidateConfiguration(config)) {
         throw std::runtime_error("Invalid configuration parameters");
     }
+
+    if (!config_.placemark_layer) {
+        config_.placemark_layer = placemarks::PlacemarkLayer::Create();
+    }
 }
 
 EarthMapImpl::~EarthMapImpl() {
@@ -83,6 +87,10 @@ SceneManager* EarthMapImpl::GetSceneManager() {
 
 CameraController* EarthMapImpl::GetCameraController() {
     return camera_controller_.get();
+}
+
+std::shared_ptr<placemarks::PlacemarkLayer> EarthMapImpl::GetPlacemarkLayer() {
+    return config_.placemark_layer;
 }
 
 bool EarthMapImpl::LoadData(const std::string& file_path) {

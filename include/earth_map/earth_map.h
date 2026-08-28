@@ -20,6 +20,7 @@
 #include <earth_map/data/srtm_loader.h>
 #include <earth_map/renderer/elevation_manager.h>
 #include <earth_map/renderer/tile_renderer.h>
+#include <earth_map/placemarks/placemark_layer.h>
 
 namespace earth_map {
 
@@ -56,6 +57,12 @@ struct Configuration {
 
     /** Imagery selection and per-frame upload budget configuration. */
     TileRenderConfig tile_render_config;
+
+    /**
+     * Optional application-owned placemark layer. A null value creates the
+     * default layer owned by EarthMap.
+     */
+    std::shared_ptr<placemarks::PlacemarkLayer> placemark_layer;
 };
 
 /**
@@ -132,6 +139,14 @@ public:
      * @return CameraController* Pointer to the camera controller (non-owning)
      */
     virtual CameraController* GetCameraController() = 0;
+
+    /**
+     * Gets the map's placemark feature layer.
+     *
+     * This exposes feature ownership only. Rendering, spatial indexing, GPU
+     * resources, terrain anchoring, and picking remain internal subsystems.
+     */
+    virtual std::shared_ptr<placemarks::PlacemarkLayer> GetPlacemarkLayer() = 0;
     
     /**
      * @brief Load data from a file
