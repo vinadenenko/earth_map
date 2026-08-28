@@ -29,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <shared_mutex>
 #include <cstdint>
 #include <chrono>
@@ -248,14 +249,29 @@ public:
      * pool.
      * Should be called once per frame from the rendering thread.
      *
-     * @param max_uploads_per_frame Maximum uploads per call (default: 5)
-     *                              Limits GPU upload time per frame
+     * @param max_uploads_per_frame Maximum physical uploads per call
+     *                              (default: one tile per frame).
      *
      * Thread Safety: MUST be called from GL thread only
      * Performance: O(max_uploads_per_frame)
      * @return Measurements for this call, including an empty queue pass.
      */
-    UploadProcessStats ProcessUploads(int max_uploads_per_frame = 5);
+    static constexpr int kDefaultMaxUploadsPerFrame = 1;
+    UploadProcessStats ProcessUploads(
+        int max_uploads_per_frame = kDefaultMaxUploadsPerFrame);
+
+    /**
+     * Sets the exact and ancestor pages useful for the current camera view.
+     *
+     * Exact pages receive priority over fallbacks. Queued worker and decoded
+     * work outside this set is cancelled or discarded before it can consume a
+     * physical texture-array upload. Loaded pages remain resident and are
+     * still governed by the physical-pool LRU.
+     *
+     * Render thread only.
+     */
+    void UpdateActiveRequests(const std::vector<TileCoordinates>& exact_tiles,
+                              const std::vector<TileCoordinates>& ancestor_tiles);
 
     /**
      * Marks currently selected resident pages as recently used.

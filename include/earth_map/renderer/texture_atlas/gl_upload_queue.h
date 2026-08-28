@@ -19,6 +19,7 @@
 #include <mutex>
 #include <optional>
 #include <chrono>
+#include <unordered_map>
 
 namespace earth_map {
 
@@ -83,9 +84,9 @@ struct GLUploadCommand {
  * - Size() is thread-safe (approximate)
  *
  * Design Rationale:
- * - FIFO ordering ensures tiles are uploaded in request order
- * - Non-blocking TryPop() allows GL thread to budget upload time per frame
- * - Bounded memory via atlas eviction (managed by caller)
+ * - The current camera request set is admitted ahead of stale decoded work
+ * - Equal-priority uploads retain FIFO ordering for deterministic behavior
+ * - Non-blocking TryPop() lets the GL thread impose a per-frame transfer budget
  */
 class GLUploadQueue {
 public:
@@ -128,9 +129,23 @@ public:
      * @return Unique pointer to upload command, or nullptr if empty
      *
      * Thread Safety: Safe to call from multiple threads, but intended for single consumer
-     * FIFO Guarantee: Commands are returned in the order they were pushed
+     * Ordering: Commands for the active view are returned before stale work;
+     * equal-priority commands retain push order.
      */
     std::unique_ptr<GLUploadCommand> TryPop();
+
+    /**
+     * Replaces the set of decoded pages that are still useful for the current
+     * camera view. Commands outside that set are discarded immediately, and
+     * retained commands receive the supplied priority (lower is sooner).
+     *
+     * Subsequent Push calls also discard commands outside this set. This is
+     * intentionally a render-thread scheduling policy: it cannot cancel a
+     * network request already executing on a worker, but it prevents that
+     * completed stale request from consuming GL upload time.
+     */
+    void SetActivePriorities(
+        std::unordered_map<TileCoordinates, int, TileCoordinatesHash> priorities);
 
     /**
      * @brief Get current queue size (thread-safe, approximate)
@@ -159,8 +174,19 @@ private:
     /// Mutex protecting queue access
     mutable std::mutex mutex_;
 
-    /// Internal queue storage (FIFO)
-    std::deque<std::unique_ptr<GLUploadCommand>> queue_;
+    struct QueuedCommand {
+        std::unique_ptr<GLUploadCommand> command;
+        int priority = 0;
+        std::uint64_t sequence = 0;
+    };
+
+    /// Internal queue storage. Selection is priority-first and FIFO on ties.
+    std::deque<QueuedCommand> queue_;
+
+    /// Current render-view admission filter. Empty means no filter has been set.
+    std::unordered_map<TileCoordinates, int, TileCoordinatesHash> active_priorities_;
+    bool active_filter_enabled_ = false;
+    std::uint64_t next_sequence_ = 0;
 };
 
 } // namespace earth_map

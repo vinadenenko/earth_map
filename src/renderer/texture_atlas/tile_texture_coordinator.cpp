@@ -236,6 +236,18 @@ TileTextureCoordinator::UploadProcessStats TileTextureCoordinator::ProcessUpload
             }
         };
 
+        // A worker can complete while the camera moves. The active-request
+        // refresh normally removes such commands from GLUploadQueue, but this
+        // check closes the race without issuing a GL upload for stale data.
+        {
+            std::shared_lock<std::shared_mutex> lock(state_mutex_);
+            const auto state = tile_states_.find(cmd->coords);
+            if (state == tile_states_.end() || state->second.status != TileStatus::Loading) {
+                finish_command();
+                continue;
+            }
+        }
+
         if (!cmd->imagery_key.has_value() || !cmd->imagery_key->IsValid()) {
             const auto state_start = std::chrono::steady_clock::now();
             std::unique_lock<std::shared_mutex> lock(state_mutex_);
@@ -381,6 +393,46 @@ TileTextureCoordinator::UploadProcessStats TileTextureCoordinator::ProcessUpload
 
     stats.queue_depth_after = upload_queue_->Size();
     return stats;
+}
+
+void TileTextureCoordinator::UpdateActiveRequests(
+    const std::vector<TileCoordinates>& exact_tiles,
+    const std::vector<TileCoordinates>& ancestor_tiles) {
+    std::unordered_set<TileCoordinates, TileCoordinatesHash> active_tiles;
+    active_tiles.reserve(exact_tiles.size() + ancestor_tiles.size());
+    std::unordered_map<TileCoordinates, int, TileCoordinatesHash> upload_priorities;
+    upload_priorities.reserve(exact_tiles.size() + ancestor_tiles.size());
+
+    for (const TileCoordinates& tile : exact_tiles) {
+        active_tiles.insert(tile);
+        upload_priorities.insert_or_assign(tile, 0);
+    }
+    for (const TileCoordinates& tile : ancestor_tiles) {
+        active_tiles.insert(tile);
+        upload_priorities.try_emplace(tile, 1);
+    }
+
+    upload_queue_->SetActivePriorities(std::move(upload_priorities));
+    worker_pool_->CancelQueuedRequestsExcept(active_tiles);
+
+    std::size_t cancelled = 0;
+    {
+        std::unique_lock<std::shared_mutex> lock(state_mutex_);
+        for (auto it = tile_states_.begin(); it != tile_states_.end();) {
+            if (it->second.status == TileStatus::Loading &&
+                !active_tiles.contains(it->first)) {
+                it = tile_states_.erase(it);
+                pending_load_count_.fetch_sub(1);
+                ++cancelled;
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    if (cancelled != 0) {
+        spdlog::debug("Cancelled {} stale tile requests", cancelled);
+    }
 }
 
 void TileTextureCoordinator::TouchTiles(const std::vector<TileCoordinates>& tiles) {

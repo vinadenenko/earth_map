@@ -384,14 +384,13 @@ public:
             EARTH_MAP_ZONE_SCOPE(zone_collector_, request_zone, "tile.cull.requests");
 
             if (texture_coordinator_ && !visible_tile_coords.empty()) {
-                // Calculate priority based on camera distance (closer = lower number = higher priority).
-                const int priority = static_cast<int>(camera_distance * 10.0f);
-                const int ancestor_priority = std::max(kMinZoom, priority - 1);
                 const std::vector<TileCoordinates> ancestor_tiles =
                     BuildAncestorFallbackRequests(visible_tile_coords);
 
-                texture_coordinator_->RequestTiles(ancestor_tiles, ancestor_priority);
-                texture_coordinator_->RequestTiles(visible_tile_coords, priority);
+                texture_coordinator_->UpdateActiveRequests(
+                    visible_tile_coords, ancestor_tiles);
+                texture_coordinator_->RequestTiles(ancestor_tiles, 1);
+                texture_coordinator_->RequestTiles(visible_tile_coords, 0);
 
                 // Keep both exact and fallback pages selected for this frame at
                 // the front of the physical-layer LRU. This is render-thread

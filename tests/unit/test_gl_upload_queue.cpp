@@ -100,6 +100,27 @@ TEST_F(GLUploadQueueTest, FIFOOrdering) {
     EXPECT_EQ(queue_->Size(), 0u);
 }
 
+TEST_F(GLUploadQueueTest, ActiveViewCommandsPreemptAndDiscardStaleCommands) {
+    const TileCoordinates stale(1, 1, 5);
+    const TileCoordinates fallback(2, 2, 5);
+    const TileCoordinates exact(3, 3, 5);
+
+    queue_->Push(CreateTestCommand(stale.x, stale.y, stale.zoom));
+    queue_->Push(CreateTestCommand(fallback.x, fallback.y, fallback.zoom));
+    queue_->Push(CreateTestCommand(exact.x, exact.y, exact.zoom));
+
+    queue_->SetActivePriorities({{fallback, 1}, {exact, 0}});
+    EXPECT_EQ(queue_->Size(), 2U);
+
+    const auto first = queue_->TryPop();
+    ASSERT_NE(first, nullptr);
+    EXPECT_EQ(first->coords, exact);
+
+    const auto second = queue_->TryPop();
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(second->coords, fallback);
+}
+
 TEST_F(GLUploadQueueTest, DataIntegrity) {
     const std::uint32_t width = 256;
     const std::uint32_t height = 256;

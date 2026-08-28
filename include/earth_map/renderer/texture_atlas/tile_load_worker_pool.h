@@ -138,6 +138,14 @@ public:
         std::function<void(const TileCoordinates&)> on_complete = nullptr);
 
     /**
+     * Drops requests that have not started and no longer belong to the active
+     * camera request set. Requests already executing are allowed to finish;
+     * their decoded result is filtered by GLUploadQueue.
+     */
+    void CancelQueuedRequestsExcept(
+        const std::unordered_set<TileCoordinates, TileCoordinatesHash>& active_tiles);
+
+    /**
      * @brief Shutdown worker pool
      *
      * Signals workers to stop processing and waits for them to finish.

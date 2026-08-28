@@ -88,6 +88,23 @@ void TileLoadWorkerPool::SubmitRequest(
     queue_cv_.notify_one();
 }
 
+void TileLoadWorkerPool::CancelQueuedRequestsExcept(
+    const std::unordered_set<TileCoordinates, TileCoordinatesHash>& active_tiles) {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+
+    std::priority_queue<TileLoadRequest> retained;
+    while (!request_queue_.empty()) {
+        TileLoadRequest request = request_queue_.top();
+        request_queue_.pop();
+        if (active_tiles.contains(request.coords)) {
+            retained.push(std::move(request));
+        } else {
+            in_flight_.erase(request.coords);
+        }
+    }
+    request_queue_ = std::move(retained);
+}
+
 std::size_t TileLoadWorkerPool::GetPendingCount() const {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     return request_queue_.size();
