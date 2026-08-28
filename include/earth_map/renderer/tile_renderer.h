@@ -9,6 +9,7 @@
  */
 
 #include <earth_map/math/tile_mathematics.h>
+#include <earth_map/geodesy/wgs84_ellipsoid.h>
 #include <earth_map/renderer/performance_stats.h>
 #include <glm/glm.hpp>
 #include <memory>
@@ -20,7 +21,6 @@ namespace earth_map {
 // Forward declarations
 class TileManager;
 class TileTextureCoordinator;
-class GlobeMesh;
 struct Frustum;
 
 /**
@@ -164,26 +164,16 @@ public:
     virtual void SetTextureCoordinator(TileTextureCoordinator* coordinator) = 0;
 
     /**
-     * @brief Set globe mesh to render tiles on
-     *
-     * CRITICAL: Tile renderer MUST use the provided mesh geometry, not generate its own.
-     * This ensures tiles are rendered on the actual displaced geometry with elevation data.
-     *
-     * @param globe_mesh Pointer to globe mesh (non-owning)
-     */
-    virtual void SetGlobeMesh(GlobeMesh* globe_mesh) = 0;
-
-    /**
      * @brief Update visible tiles based on camera position
      * 
      * @param view_matrix Current camera view matrix
      * @param projection_matrix Current camera projection matrix  
-     * @param camera_position Current camera position in world space
+     * @param camera_position Current WGS84 ECEF camera position in metres
      * @param frustum Current camera frustum for culling
      */
     virtual void UpdateVisibleTiles(const glm::mat4& view_matrix,
                                     const glm::mat4& projection_matrix,
-                                    const glm::vec3& camera_position) = 0;
+                                    const geodesy::EcefPosition& camera_position) = 0;
     
     /**
      * @brief Render all visible tiles

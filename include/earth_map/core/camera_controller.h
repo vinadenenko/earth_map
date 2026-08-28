@@ -10,10 +10,12 @@
 
 #include "earth_map/math/frustum.h"
 #include <earth_map/math/bounding_box.h>
+#include <earth_map/geodesy/wgs84_ellipsoid.h>
 #include "earth_map/renderer/camera.h"
 #include <glm/glm.hpp>
 #include <memory>
 #include <cstdint>
+#include <utility>
 
 namespace earth_map {
 
@@ -61,19 +63,8 @@ public:
      */
     virtual void SetGeographicPosition(double longitude, double latitude, double altitude) = 0;
     
-    /**
-     * @brief Set camera position in Cartesian coordinates
-     * 
-     * @param position 3D position in world space
-     */
-    virtual void SetPosition(const glm::vec3& position) = 0;
-    
-    /**
-     * @brief Get camera position
-     * 
-     * @return glm::vec3 Current camera position
-     */
-    virtual glm::vec3 GetPosition() const = 0;
+    virtual void SetEcefPosition(const geodesy::EcefPosition& position) = 0;
+    [[nodiscard]] virtual geodesy::EcefPosition GetEcefPosition() const = 0;
     
     /**
      * @brief Set camera target in geographic coordinates
@@ -84,19 +75,15 @@ public:
      */
     virtual void SetGeographicTarget(double longitude, double latitude, double altitude) = 0;
     
+    virtual void SetEcefTarget(const geodesy::EcefPosition& target) = 0;
+    [[nodiscard]] virtual geodesy::EcefPosition GetEcefTarget() const = 0;
+
     /**
-     * @brief Set camera target
-     * 
-     * @param target Target point in world space
+     * Casts a screen ray in the physical WGS84/ECEF world.
+     * Screen coordinates are normalized to [0, 1].
      */
-    virtual void SetTarget(const glm::vec3& target) = 0;
-    
-    /**
-     * @brief Get camera target
-     * 
-     * @return glm::vec3 Current camera target
-     */
-    virtual glm::vec3 GetTarget() const = 0;
+    [[nodiscard]] virtual std::pair<geodesy::EcefPosition, glm::dvec3> ScreenToEcefRay(
+        float screen_x, float screen_y, float aspect_ratio) const = 0;
     
     /**
      * @brief Set camera orientation
@@ -168,7 +155,7 @@ public:
      /**
       * @brief Get camera forward vector
       *
-      * @return glm::vec3 Normalized forward direction in world space
+      * @return Normalized forward direction in the camera-relative ENU render frame
       */
      virtual glm::vec3 GetForwardVector() const = 0;
     
@@ -270,7 +257,7 @@ public:
      * @param target Target point in world space
      * @see Camera::LookAt for detailed documentation
      */
-    virtual void LookAt(const glm::vec3& target) = 0;
+    virtual void LookAt(const geodesy::EcefPosition& target) = 0;
 
 protected:
     /**

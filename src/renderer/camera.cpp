@@ -1,1190 +1,685 @@
 #include <earth_map/renderer/camera.h>
+
+#include "ecef_render_frame.h"
+
 #include <earth_map/earth_map.h>
-#include <earth_map/constants.h>
-#include <earth_map/coordinates/coordinate_mapper.h>
-#include <earth_map/coordinates/coordinate_spaces.h>
-#include <earth_map/math/geodetic_calculations.h>
+
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
-// #include <glm/gtx/euler_angles.hpp>
-// #include <glm/gtx/quaternion.hpp>
-#include <spdlog/spdlog.h>
-#include <cmath>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp>
+
 #include <algorithm>
-#include <chrono>
-#include <set>
+#include <cmath>
+#include <limits>
+#include <memory>
 
 namespace earth_map {
+namespace {
 
-/**
- * @brief Internal camera state for validation
- *
- * All state mutations flow through ApplyState() which validates
- * and clamps this struct to enforce camera constraints.
- */
-struct CameraState {
-    glm::vec3 position{0.0f};
-    float heading = 0.0f;
-    float pitch = 0.0f;
-    float roll = 0.0f;
-};
+constexpr double kMinimumLookDistanceMeters = 1.0;
+constexpr double kDefaultCameraAltitudeMeters =
+    geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters * 1.5;
 
-/**
- * @brief Easing functions for smooth camera animation
- */
-namespace Easing {
-    float Linear(float t) { return t; }
-    
-    float EaseInQuad(float t) { return t * t; }
-    float EaseOutQuad(float t) { return 1.0f - (1.0f - t) * (1.0f - t); }
-    float EaseInOutQuad(float t) { 
-        return t < 0.5f ? 2.0f * t * t : 1.0f - 2.0f * (1.0f - t) * (1.0f - t); 
-    }
-    
-    float EaseInCubic(float t) { return t * t * t; }
-    float EaseOutCubic(float t) { return 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t); }
-    float EaseInOutCubic(float t) {
-        return t < 0.5f ? 4.0f * t * t * t : 1.0f - 4.0f * (1.0f - t) * (1.0f - t) * (1.0f - t);
-    }
-    
-    float EaseInExpo(float t) { return t == 0.0f ? 0.0f : std::pow(2.0f, 10.0f * (t - 1.0f)); }
-    float EaseOutExpo(float t) { return t == 1.0f ? 1.0f : 1.0f - std::pow(2.0f, -10.0f * t); }
-    float EaseInOutExpo(float t) {
-        if (t == 0.0f) return 0.0f;
-        if (t == 1.0f) return 1.0f;
-        return t < 0.5f ? 0.5f * std::pow(2.0f, 20.0f * t - 10.0f) : 
-                         0.5f * (2.0f - std::pow(2.0f, -20.0f * t + 10.0f));
-    }
+[[nodiscard]] double DegreesToRadians(const double degrees) noexcept {
+    return degrees * glm::pi<double>() / 180.0;
 }
 
-/**
- * @brief Camera animation data
- */
-struct CameraAnimation {
+[[nodiscard]] double RadiansToDegrees(const double radians) noexcept {
+    return radians * 180.0 / glm::pi<double>();
+}
+
+[[nodiscard]] double NormalizeDegrees(double degrees) noexcept {
+    degrees = std::fmod(degrees, 360.0);
+    return degrees < 0.0 ? degrees + 360.0 : degrees;
+}
+
+[[nodiscard]] double ShortestLongitudeDelta(const double from, const double to) noexcept {
+    double delta = to - from;
+    while (delta > glm::pi<double>()) {
+        delta -= glm::two_pi<double>();
+    }
+    while (delta < -glm::pi<double>()) {
+        delta += glm::two_pi<double>();
+    }
+    return delta;
+}
+
+[[nodiscard]] geodesy::GeodeticPosition GeographicDegrees(
+    const double longitude,
+    const double latitude,
+    const double height_meters) noexcept {
+    return {
+        .latitude_radians = std::clamp(DegreesToRadians(latitude), -glm::half_pi<double>(), glm::half_pi<double>()),
+        .longitude_radians = DegreesToRadians(longitude),
+        .ellipsoid_height_meters = height_meters,
+    };
+}
+
+[[nodiscard]] glm::dvec3 NormalizedOr(const glm::dvec3& value, const glm::dvec3& fallback) noexcept {
+    const double length = glm::length(value);
+    return length > std::numeric_limits<double>::epsilon() ? value / length : fallback;
+}
+
+[[nodiscard]] glm::dvec3 LocalDirection(const double heading_degrees, const double pitch_degrees) noexcept {
+    const double heading = DegreesToRadians(heading_degrees);
+    const double pitch = DegreesToRadians(pitch_degrees);
+    return {
+        std::sin(heading) * std::cos(pitch),
+        std::cos(heading) * std::cos(pitch),
+        std::sin(pitch),
+    };
+}
+
+[[nodiscard]] float EaseInOutCubic(const float value) noexcept {
+    return value < 0.5f
+        ? 4.0f * value * value * value
+        : 1.0f - 4.0f * std::pow(1.0f - value, 3.0f);
+}
+
+struct CameraAnimation final {
     bool active = false;
-    float duration = 0.0f;
-    float elapsed = 0.0f;
-    
-    glm::vec3 start_position{0.0f};
-    glm::vec3 target_position{0.0f};
-    glm::vec3 start_orientation{0.0f};
-    glm::vec3 target_orientation{0.0f};
-    
-    std::function<float(float)> easing_function = Easing::EaseInOutCubic;
-    
-    void Reset() {
+    float duration_seconds = 0.0f;
+    float elapsed_seconds = 0.0f;
+    geodesy::GeodeticPosition start_camera;
+    geodesy::GeodeticPosition target_camera;
+    geodesy::GeodeticPosition start_target;
+    geodesy::GeodeticPosition target_target;
+    glm::dvec3 start_orientation{0.0};
+    glm::dvec3 target_orientation{0.0};
+    bool animate_position = false;
+    bool animate_orientation = false;
+
+    void Reset() noexcept {
         active = false;
-        duration = 0.0f;
-        elapsed = 0.0f;
-    }
-    
-    bool IsComplete() const {
-        return active && elapsed >= duration;
-    }
-    
-    float GetProgress() const {
-        return duration > 0.0f ? std::clamp(elapsed / duration, 0.0f, 1.0f) : 1.0f;
+        duration_seconds = 0.0f;
+        elapsed_seconds = 0.0f;
+        animate_position = false;
+        animate_orientation = false;
     }
 };
 
-/**
- * @brief Base camera implementation
- */
 class CameraImpl : public Camera {
 public:
     explicit CameraImpl(const Configuration& config)
         : config_(config) {
-        spdlog::info("Creating camera implementation");
         Reset();
     }
-    
-    virtual ~CameraImpl() {
-        spdlog::info("Destroying camera implementation");
-    }
-    
+
     bool Initialize() override {
-        if (initialized_) {
-            return true;
-        }
-        
-        spdlog::info("Initializing camera");
         initialized_ = true;
-        
-        // Initialize coordinate system
-        // if (!coordinate_system_->Initialize()) {
-        //     spdlog::error("Failed to initialize coordinate system");
-        //     return false;
-        // }
-        
-        spdlog::info("Camera initialized successfully");
         return true;
     }
-    
-    void Update(float delta_time) override {
-        UpdateAnimation(delta_time);
-        UpdateMovement(delta_time);
+
+    void Update(const float delta_time) override {
+        UpdateAnimation(std::max(delta_time, 0.0f));
+        UpdateMovement(std::max(delta_time, 0.0f));
         UpdateClippingPlanes();
         UpdateViewMatrix();
     }
-    
-    void SetGeographicPosition(double longitude, double latitude, double altitude) override {
-        using namespace earth_map::coordinates;
-        Geographic geo(latitude, longitude, altitude);
-        World world = CoordinateMapper::GeographicToWorld(geo);
 
-        CameraState state = GetCurrentState();
-        state.position = world.position;
-        ApplyState(state);
-        SetFromState(state);
+    void SetGeographicPosition(
+        const double longitude,
+        const double latitude,
+        const double altitude) override {
+        const geodesy::GeodeticPosition camera = GeographicDegrees(
+            longitude, latitude, ClampHeight(altitude));
+        position_ = geodesy::Wgs84Ellipsoid::ToEcef(camera);
+        target_ = geodesy::Wgs84Ellipsoid::ToEcef({
+            .latitude_radians = camera.latitude_radians,
+            .longitude_radians = camera.longitude_radians,
+            .ellipsoid_height_meters = 0.0,
+        });
+        UpdateOrientationFromTarget();
         UpdateViewMatrix();
     }
 
-    void SetPosition(const glm::vec3& position) override {
-        CameraState state = GetCurrentState();
-        state.position = position;
-        ApplyState(state);
-        SetFromState(state);
+    void SetEcefPosition(const geodesy::EcefPosition& position) override {
+        position_ = ClampPositionHeight(position);
+        EnsureValidTarget();
+        UpdateOrientationFromTarget();
         UpdateViewMatrix();
     }
-    
-    glm::vec3 GetPosition() const override {
+
+    [[nodiscard]] geodesy::EcefPosition GetEcefPosition() const override {
         return position_;
     }
-    
-    void SetGeographicTarget(double longitude, double latitude, double altitude) override {
-        using namespace earth_map::coordinates;
-        Geographic geo(latitude, longitude, altitude);
-        World world = CoordinateMapper::GeographicToWorld(geo);
-        SetTarget(world.position); // Use SetTarget to also update orientation
+
+    void SetGeographicTarget(
+        const double longitude,
+        const double latitude,
+        const double altitude) override {
+        SetEcefTarget(geodesy::Wgs84Ellipsoid::ToEcef(
+            GeographicDegrees(longitude, latitude, altitude)));
     }
-    
-    void SetTarget(const glm::vec3& target) override {
+
+    void SetEcefTarget(const geodesy::EcefPosition& target) override {
         target_ = target;
-
-        // Calculate orientation from position→target direction
-        glm::vec3 direction = glm::normalize(target - position_);
-
-        // Calculate heading (yaw) from x,z components
-        // atan2(x, z) gives angle in XZ plane
-        float new_heading = glm::degrees(std::atan2(direction.x, direction.z));
-
-        // Calculate pitch from y component
-        // Clamp direction.y to [-1, 1] to handle numerical errors
-        float clamped_y = std::clamp(direction.y, -1.0f, 1.0f);
-        float new_pitch = glm::degrees(std::asin(clamped_y));
-
-        // Apply constraints via ApplyState
-        CameraState state = GetCurrentState();
-        state.heading = new_heading;
-        state.pitch = new_pitch;
-        ApplyState(state);
-        SetFromState(state);
-
+        EnsureValidTarget();
+        UpdateOrientationFromTarget();
         UpdateViewMatrix();
     }
-    
-    glm::vec3 GetTarget() const override {
-        if (movement_mode_ == MovementMode::ORBIT) {
-            // ORBIT mode: Return stored fixed target
-            return target_;
-        } else {
-            // FREE mode: Calculate target from current orientation
-            float heading_rad = glm::radians(heading_);
-            float pitch_rad = glm::radians(pitch_);
 
-            glm::vec3 forward;
-            forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
-            forward.y = std::sin(pitch_rad);
-            forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
-            forward = glm::normalize(forward);
-
-            // Return point at fixed distance from position along forward direction
-            return position_ + forward;
-        }
+    [[nodiscard]] geodesy::EcefPosition GetEcefTarget() const override {
+        return target_;
     }
-    
-    void SetOrientation(double heading, double pitch, double roll) override {
-        CameraState state = GetCurrentState();
-        state.heading = static_cast<float>(heading);
-        state.pitch = static_cast<float>(pitch);
-        state.roll = static_cast<float>(roll);
-        ApplyState(state);
-        SetFromState(state);
+
+    void SetOrientation(const double heading, const double pitch, const double roll) override {
+        heading_degrees_ = NormalizeDegrees(heading);
+        pitch_degrees_ = std::clamp(pitch,
+                                    static_cast<double>(constraints_.min_pitch),
+                                    static_cast<double>(constraints_.max_pitch));
+        roll_degrees_ = std::clamp(roll, -180.0, 180.0);
+
+        const renderer::EcefRenderFrame camera_frame = CurrentRenderFrame();
+        const double look_distance = std::max(
+            glm::length(position_.meters - target_.meters), kMinimumLookDistanceMeters);
+        target_ = camera_frame.FromLocal(
+            LocalDirection(heading_degrees_, pitch_degrees_) * look_distance);
         UpdateViewMatrix();
     }
-    
-    glm::vec3 GetOrientation() const override {
-        return glm::vec3(heading_, pitch_, roll_);
+
+    [[nodiscard]] glm::vec3 GetOrientation() const override {
+        return glm::vec3(static_cast<float>(heading_degrees_),
+                         static_cast<float>(pitch_degrees_),
+                         static_cast<float>(roll_degrees_));
     }
-    
-    void SetFieldOfView(float fov_y) override {
-        fov_y_ = glm::clamp(fov_y, 1.0f, 179.0f);
+
+    void SetFieldOfView(const float fov_y) override {
+        fov_y_ = std::clamp(fov_y, 1.0f, 179.0f);
     }
-    
-    float GetFieldOfView() const override {
+
+    [[nodiscard]] float GetFieldOfView() const override {
         return fov_y_;
     }
-    
-    void SetClippingPlanes(float near_plane, float far_plane) override {
-        near_plane_ = std::max(near_plane, 0.001f);
-        far_plane_ = std::max(far_plane, near_plane_ + 0.1f);
+
+    void SetClippingPlanes(const float near_plane, const float far_plane) override {
+        near_plane_ = std::max(near_plane, 0.01f);
+        far_plane_ = std::max(far_plane, near_plane_ + 1.0f);
+        clipping_planes_explicit_ = true;
     }
 
-    float GetNearPlane() const override {
+    [[nodiscard]] float GetNearPlane() const override {
         return near_plane_;
     }
 
-    float GetFarPlane() const override {
+    [[nodiscard]] float GetFarPlane() const override {
         return far_plane_;
     }
-    
-    glm::mat4 GetViewMatrix() const override {
+
+    [[nodiscard]] glm::mat4 GetViewMatrix() const override {
         return view_matrix_;
     }
-    
-    glm::mat4 GetProjectionMatrix(float aspect_ratio) const override {
+
+    [[nodiscard]] glm::mat4 GetProjectionMatrix(const float aspect_ratio) const override {
         if (projection_type_ == CameraProjectionType::PERSPECTIVE) {
             return glm::perspective(glm::radians(fov_y_), aspect_ratio, near_plane_, far_plane_);
-        } else {
-            float half_height = far_plane_ * glm::tan(glm::radians(fov_y_) * 0.5f);
-            float half_width = half_height * aspect_ratio;
-            return glm::ortho(-half_width, half_width, -half_height, half_height, near_plane_, far_plane_);
         }
+        const float half_height = far_plane_ * std::tan(glm::radians(fov_y_) * 0.5f);
+        return glm::ortho(-half_height * aspect_ratio, half_height * aspect_ratio,
+                          -half_height, half_height, near_plane_, far_plane_);
     }
-    
-    glm::mat4 GetViewProjectionMatrix(float aspect_ratio) const override {
-        return GetProjectionMatrix(aspect_ratio) * GetViewMatrix();
+
+    [[nodiscard]] glm::mat4 GetViewProjectionMatrix(const float aspect_ratio) const override {
+        return GetProjectionMatrix(aspect_ratio) * view_matrix_;
     }
-    
-    void SetProjectionType(CameraProjectionType projection_type) override {
+
+    void SetProjectionType(const CameraProjectionType projection_type) override {
         projection_type_ = projection_type;
     }
-    
-    CameraProjectionType GetProjectionType() const override {
+
+    [[nodiscard]] CameraProjectionType GetProjectionType() const override {
         return projection_type_;
     }
-    
-    void SetMovementMode(MovementMode movement_mode) override {
+
+    void SetMovementMode(const MovementMode movement_mode) override {
         movement_mode_ = movement_mode;
     }
-    
-    MovementMode GetMovementMode() const override {
+
+    [[nodiscard]] MovementMode GetMovementMode() const override {
         return movement_mode_;
     }
-    
+
     void SetConstraints(const CameraConstraints& constraints) override {
         constraints_ = constraints;
+        position_ = ClampPositionHeight(position_);
+        UpdateViewMatrix();
     }
-    
-    CameraConstraints GetConstraints() const override {
+
+    [[nodiscard]] CameraConstraints GetConstraints() const override {
         return constraints_;
     }
-    
+
     bool ProcessInput(const InputEvent& event) override {
         switch (event.type) {
-            case InputEvent::Type::MOUSE_MOVE:
-                return HandleMouseMove(event);
             case InputEvent::Type::MOUSE_BUTTON_PRESS:
-                return HandleMousePress(event);
+            case InputEvent::Type::TOUCH_START:
+                dragging_ = true;
+                return true;
             case InputEvent::Type::MOUSE_BUTTON_RELEASE:
-                return HandleMouseRelease(event);
+            case InputEvent::Type::TOUCH_END:
+                dragging_ = false;
+                return true;
+            case InputEvent::Type::MOUSE_MOVE:
+            case InputEvent::Type::TOUCH_MOVE:
+                if (!dragging_) {
+                    return false;
+                }
+                if (event.button == 2) {
+                    Pan(event.dx, event.dy);
+                } else {
+                    Rotate(event.dx * 0.25f, -event.dy * 0.25f);
+                }
+                return true;
             case InputEvent::Type::MOUSE_SCROLL:
-                return HandleMouseScroll(event);
+                Zoom(std::exp(-event.scroll_delta * 0.1f));
+                return true;
             case InputEvent::Type::KEY_PRESS:
-                return HandleKeyPress(event);
+                return SetMovementKey(event.key, true);
             case InputEvent::Type::KEY_RELEASE:
-                return HandleKeyRelease(event);
+                return SetMovementKey(event.key, false);
             case InputEvent::Type::DOUBLE_CLICK:
-                return HandleDoubleClick(event);
-            default:
-                return false;
+                Zoom(0.5f);
+                return true;
         }
+        return false;
     }
-    
-    AnimationState GetAnimationState() const override {
+
+    [[nodiscard]] AnimationState GetAnimationState() const override {
         if (!animation_.active) {
             return AnimationState::IDLE;
         }
-        
-        if (animation_.IsComplete()) {
-            return AnimationState::IDLE;
-        }
-        
-        // Determine animation type based on what's changing
-        if (glm::length(animation_.target_position - animation_.start_position) > 0.01f) {
+        if (animation_.animate_position) {
             return AnimationState::MOVING;
         }
-        if (glm::length(animation_.target_orientation - animation_.start_orientation) > 0.01f) {
-            return AnimationState::ROTATING;
-        }
-        return AnimationState::IDLE;
+        return animation_.animate_orientation ? AnimationState::ROTATING : AnimationState::IDLE;
     }
-    
-    bool IsAnimating() const override {
-        return animation_.active && !animation_.IsComplete();
+
+    [[nodiscard]] bool IsAnimating() const override {
+        return animation_.active;
     }
-    
+
     void Reset() override {
-        // Set default position looking at the globe (normalized units)
-        position_ = glm::vec3(0.0f, 0.0f, constants::camera::DEFAULT_CAMERA_DISTANCE_NORMALIZED);
-        up_ = glm::vec3(0.0f, 1.0f, 0.0f);
-
-        roll_ = 0.0f;
-
-        fov_y_ = constants::camera::DEFAULT_FOV;
-        near_plane_ = constants::camera::DEFAULT_NEAR_PLANE_NORMALIZED;
-        far_plane_ = constants::camera::DEFAULT_FAR_PLANE_NORMALIZED;
-
+        const geodesy::GeodeticPosition camera{
+            .latitude_radians = 0.0,
+            .longitude_radians = 0.0,
+            .ellipsoid_height_meters = kDefaultCameraAltitudeMeters,
+        };
+        position_ = geodesy::Wgs84Ellipsoid::ToEcef(camera);
+        // Globe overview deliberately looks at the ECEF origin. ECEF is a
+        // Cartesian frame, so its origin is a valid look target even though
+        // it is not a geodetic surface position.
+        target_ = geodesy::EcefPosition{glm::dvec3(0.0)};
+        fov_y_ = 45.0f;
+        near_plane_ = 1000.0f;
+        far_plane_ = 30000000.0f;
+        clipping_planes_explicit_ = false;
         projection_type_ = CameraProjectionType::PERSPECTIVE;
-        movement_mode_ = MovementMode::ORBIT;  // Default to ORBIT mode
-
-        // Reset movement state
+        movement_mode_ = MovementMode::ORBIT;
         movement_forward_ = movement_right_ = movement_up_ = 0.0f;
-        rotation_x_ = rotation_y_ = rotation_z_ = 0.0f;
-
-        // Set target and calculate orientation from position→target direction
-        SetTarget(glm::vec3(0.0f, 0.0f, 0.0f));
-
+        dragging_ = false;
         animation_.Reset();
+        UpdateOrientationFromTarget();
+        UpdateClippingPlanes();
+        UpdateViewMatrix();
     }
-    
-    void AnimateToGeographic(double longitude, double latitude, double altitude, float duration) override {
-        using namespace earth_map::coordinates;
-        Geographic geo(latitude, longitude, altitude);
-        World world = CoordinateMapper::GeographicToWorld(geo);
 
-        animation_.start_position = position_;
-        animation_.target_position = world.position;
-        animation_.start_orientation = glm::vec3(heading_, pitch_, roll_);
-        animation_.duration = duration;
-        animation_.elapsed = 0.0f;
-        animation_.active = true;
-        animation_.easing_function = Easing::EaseInOutCubic;
+    void AnimateToGeographic(
+        const double longitude,
+        const double latitude,
+        const double altitude,
+        const float duration) override {
+        StartGeographicAnimation(longitude, latitude, altitude, duration, false);
     }
-    
-    void AnimateToOrientation(double heading, double pitch, double roll, float duration) override {
-        animation_.start_orientation = glm::vec3(heading_, pitch_, roll_);
-        animation_.target_orientation = glm::vec3(
-            static_cast<float>(heading), 
-            static_cast<float>(pitch), 
-            static_cast<float>(roll)
-        );
-        animation_.duration = duration;
-        animation_.elapsed = 0.0f;
+
+    void AnimateToOrientation(
+        const double heading,
+        const double pitch,
+        const double roll,
+        const float duration) override {
+        animation_.Reset();
         animation_.active = true;
-        animation_.easing_function = Easing::EaseInOutCubic;
+        animation_.duration_seconds = std::max(duration, 0.0f);
+        animation_.start_orientation = {heading_degrees_, pitch_degrees_, roll_degrees_};
+        animation_.target_orientation = {
+            NormalizeDegrees(heading),
+            std::clamp(pitch, static_cast<double>(constraints_.min_pitch),
+                       static_cast<double>(constraints_.max_pitch)),
+            std::clamp(roll, -180.0, 180.0),
+        };
+        animation_.animate_orientation = true;
     }
-    
+
     void StopAnimations() override {
         animation_.Reset();
     }
 
-    // =========================================================================
-    // High-Level Camera Control API Implementation
-    // =========================================================================
-
-    void Zoom(float factor) override {
-        if (factor <= 0.0f) {
-            return;  // Invalid factor
+    void Zoom(const float factor) override {
+        if (!(factor > 0.0f)) {
+            return;
         }
-
-        CameraState state = GetCurrentState();
-
-        // Both ORBIT and FREE modes: zoom relative to ORIGIN (globe center).
-        // This ensures ApplyState() distance constraints work correctly,
-        // since ApplyState always checks distance from origin.
-        // In ORBIT mode, target_ should always be origin anyway.
-        float current_distance = glm::length(state.position);
-
-        if (current_distance > 0.0001f) {
-            float new_distance = current_distance * factor;
-            state.position = glm::normalize(state.position) * new_distance;
+        const glm::dvec3 offset = position_.meters - target_.meters;
+        const double distance = glm::length(offset);
+        if (distance <= kMinimumLookDistanceMeters) {
+            return;
         }
-
-        // ApplyState enforces distance constraints relative to origin
-        ApplyState(state);
-        SetFromState(state);
+        position_.meters = target_.meters + offset * static_cast<double>(factor);
+        position_ = ClampPositionHeight(position_);
+        UpdateOrientationFromTarget();
+        UpdateClippingPlanes();
         UpdateViewMatrix();
     }
 
-    void Pan(float screen_dx, float screen_dy) override {
-        CameraState state = GetCurrentState();
-
-        // Sensitivity scales with altitude for consistent feel
-        float distance = glm::length(state.position);
-        float sensitivity = distance * 0.001f;
-
-        if (movement_mode_ == MovementMode::ORBIT) {
-            // ORBIT mode: rotate view around the globe
-            // Horizontal movement changes heading (longitude-like)
-            // Vertical movement changes pitch (latitude-like)
-            state.heading -= screen_dx * sensitivity * 10.0f;
-            state.pitch -= screen_dy * sensitivity * 10.0f;
-        } else {
-            // FREE mode: translate camera position
-            glm::vec3 right = GetRightVector();
-            glm::vec3 up = GetUpVector();
-
-            state.position += right * screen_dx * sensitivity;
-            state.position -= up * screen_dy * sensitivity;  // Screen Y is inverted
+    void Pan(const float screen_dx, const float screen_dy) override {
+        const auto target_geodetic = geodesy::Wgs84Ellipsoid::FromEcef(target_);
+        const auto camera_geodetic = geodesy::Wgs84Ellipsoid::FromEcef(position_);
+        if (!camera_geodetic.has_value()) {
+            return;
+        }
+        if (!target_geodetic.has_value()) {
+            // Globe overview orbits the Cartesian Earth centre. A centre has
+            // no geodetic latitude/longitude, so route a drag through the
+            // physical orbit operation instead of inventing a fake surface
+            // coordinate for it.
+            Rotate(-screen_dx * 0.15f, -screen_dy * 0.15f);
+            return;
         }
 
-        ApplyState(state);
-        SetFromState(state);
+        const double camera_height = std::max(camera_geodetic->ellipsoid_height_meters,
+                                              static_cast<double>(constraints_.min_altitude));
+        const double metres_per_input_unit = std::max(camera_height * 0.002, 1.0);
+        const double east_meters = -static_cast<double>(screen_dx) * metres_per_input_unit;
+        const double north_meters = static_cast<double>(screen_dy) * metres_per_input_unit;
+        target_ = geodesy::Wgs84Ellipsoid::ToEcef(OffsetGeodetic(*target_geodetic, east_meters, north_meters));
+        position_ = ClampPositionHeight(geodesy::Wgs84Ellipsoid::ToEcef(
+            OffsetGeodetic(*camera_geodetic, east_meters, north_meters)));
+        UpdateOrientationFromTarget();
         UpdateViewMatrix();
     }
 
-    void Rotate(float delta_heading, float delta_pitch) override {
-        CameraState state = GetCurrentState();
-
-        state.heading += delta_heading;
-        state.pitch += delta_pitch;
-
-        // ApplyState handles pitch clamping and heading normalization
-        ApplyState(state);
-        SetFromState(state);
+    void Rotate(const float delta_heading, const float delta_pitch) override {
+        const auto target_geodetic = geodesy::Wgs84Ellipsoid::FromEcef(target_);
+        if (!target_geodetic.has_value()) {
+            const glm::dquat yaw = glm::angleAxis(
+                DegreesToRadians(-delta_heading), glm::dvec3(0.0, 0.0, 1.0));
+            const glm::dquat pitch = glm::angleAxis(
+                DegreesToRadians(delta_pitch), glm::dvec3(0.0, 1.0, 0.0));
+            position_.meters = pitch * yaw * position_.meters;
+            UpdateOrientationFromTarget();
+            UpdateViewMatrix();
+            return;
+        }
+        const renderer::EcefRenderFrame frame = renderer::EcefRenderFrame::FromCamera(*target_geodetic);
+        glm::dvec3 local_camera = frame.ToLocal(position_);
+        const glm::dquat yaw = glm::angleAxis(DegreesToRadians(-delta_heading), glm::dvec3(0.0, 0.0, 1.0));
+        local_camera = yaw * local_camera;
+        const glm::dvec3 local_forward = NormalizedOr(-local_camera, glm::dvec3(0.0, 0.0, -1.0));
+        const glm::dvec3 local_right = NormalizedOr(glm::cross(local_forward, glm::dvec3(0.0, 0.0, 1.0)),
+                                                    glm::dvec3(1.0, 0.0, 0.0));
+        const glm::dquat pitch = glm::angleAxis(DegreesToRadians(delta_pitch), local_right);
+        position_ = ClampPositionHeight(frame.FromLocal(pitch * local_camera));
+        UpdateOrientationFromTarget();
         UpdateViewMatrix();
     }
 
-    void FlyTo(double longitude, double latitude, double altitude_meters,
-               float duration_seconds) override {
-        using namespace earth_map::coordinates;
+    void FlyTo(const double longitude, const double latitude, const double altitude_meters,
+               const float duration_seconds) override {
+        StartGeographicAnimation(longitude, latitude, altitude_meters, duration_seconds, true);
+    }
 
-        // Clamp altitude to constraints before starting animation
-        double clamped_altitude = std::clamp(
-            altitude_meters,
-            static_cast<double>(constraints_.min_altitude),
-            static_cast<double>(constraints_.max_altitude)
-        );
+    void LookAt(const geodesy::EcefPosition& target) override {
+        SetEcefTarget(target);
+    }
 
-        Geographic geo(latitude, longitude, clamped_altitude);
-        World world = CoordinateMapper::GeographicToWorld(geo);
+    [[nodiscard]] glm::vec3 GetForwardVector() const override {
+        const renderer::EcefRenderFrame frame = CurrentRenderFrame();
+        return glm::vec3(NormalizedOr(frame.ToLocal(target_), glm::dvec3(0.0, 0.0, -1.0)));
+    }
 
-        // Validate target position with ApplyState
-        CameraState target_state;
-        target_state.position = world.position;
-        target_state.heading = heading_;  // Keep current orientation initially
-        target_state.pitch = pitch_;
-        target_state.roll = roll_;
-        ApplyState(target_state);
+    [[nodiscard]] glm::vec3 GetRightVector() const override {
+        return glm::vec3(NormalizedOr(glm::cross(glm::dvec3(GetForwardVector()), glm::dvec3(0.0, 0.0, 1.0)),
+                                      glm::dvec3(1.0, 0.0, 0.0)));
+    }
 
-        // Calculate orientation to look at globe center from new position
-        glm::vec3 direction = glm::normalize(glm::vec3(0.0f) - target_state.position);
-        float target_heading = glm::degrees(std::atan2(direction.x, direction.z));
-        float target_pitch = glm::degrees(std::asin(std::clamp(direction.y, -1.0f, 1.0f)));
-        target_pitch = std::clamp(target_pitch, constraints_.min_pitch, constraints_.max_pitch);
+    [[nodiscard]] glm::vec3 GetUpVector() const override {
+        return glm::normalize(glm::cross(GetRightVector(), GetForwardVector()));
+    }
 
-        // Set up animation
-        animation_.start_position = position_;
-        animation_.target_position = target_state.position;
-        animation_.start_orientation = glm::vec3(heading_, pitch_, roll_);
-        animation_.target_orientation = glm::vec3(target_heading, target_pitch, 0.0f);
-        animation_.duration = duration_seconds;
-        animation_.elapsed = 0.0f;
+    [[nodiscard]] std::pair<geodesy::EcefPosition, glm::dvec3> ScreenToEcefRay(
+        const float screen_x,
+        const float screen_y,
+        const float aspect_ratio) const override {
+        const glm::mat4 inverse = glm::inverse(GetViewProjectionMatrix(aspect_ratio));
+        const float x = screen_x * 2.0f - 1.0f;
+        const float y = 1.0f - screen_y * 2.0f;
+        glm::vec4 near_point = inverse * glm::vec4(x, y, -1.0f, 1.0f);
+        glm::vec4 far_point = inverse * glm::vec4(x, y, 1.0f, 1.0f);
+        near_point /= near_point.w;
+        far_point /= far_point.w;
+        const renderer::EcefRenderFrame frame = CurrentRenderFrame();
+        const geodesy::EcefPosition origin = frame.FromLocal(glm::dvec3(near_point));
+        const geodesy::EcefPosition end = frame.FromLocal(glm::dvec3(far_point));
+        return {origin, NormalizedOr(end.meters - origin.meters, glm::dvec3(0.0, 0.0, -1.0))};
+    }
+
+private:
+    [[nodiscard]] double ClampHeight(const double height) const noexcept {
+        return std::clamp(height,
+                          static_cast<double>(constraints_.min_altitude),
+                          static_cast<double>(constraints_.max_altitude));
+    }
+
+    [[nodiscard]] geodesy::EcefPosition ClampPositionHeight(
+        const geodesy::EcefPosition& position) const noexcept {
+        const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(position);
+        if (!geodetic.has_value()) {
+            return position_;
+        }
+        geodesy::GeodeticPosition clamped = *geodetic;
+        clamped.ellipsoid_height_meters = ClampHeight(clamped.ellipsoid_height_meters);
+        return geodesy::Wgs84Ellipsoid::ToEcef(clamped);
+    }
+
+    [[nodiscard]] renderer::EcefRenderFrame CurrentRenderFrame() const {
+        const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(position_);
+        return renderer::EcefRenderFrame::FromCamera(geodetic.value_or(
+            geodesy::GeodeticPosition{0.0, 0.0, kDefaultCameraAltitudeMeters}));
+    }
+
+    [[nodiscard]] geodesy::GeodeticPosition OffsetGeodetic(
+        const geodesy::GeodeticPosition& source,
+        const double east_meters,
+        const double north_meters) const noexcept {
+        geodesy::GeodeticPosition result = source;
+        const double radius = geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters + source.ellipsoid_height_meters;
+        result.latitude_radians = std::clamp(source.latitude_radians + north_meters / radius,
+                                             -glm::half_pi<double>(), glm::half_pi<double>());
+        const double longitude_radius = std::max(radius * std::abs(std::cos(source.latitude_radians)), 1.0);
+        result.longitude_radians += east_meters / longitude_radius;
+        return result;
+    }
+
+    void EnsureValidTarget() noexcept {
+        if (glm::length(target_.meters - position_.meters) > kMinimumLookDistanceMeters) {
+            return;
+        }
+        const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(position_);
+        if (!geodetic.has_value()) {
+            return;
+        }
+        geodesy::GeodeticPosition surface = *geodetic;
+        surface.ellipsoid_height_meters = 0.0;
+        target_ = geodesy::Wgs84Ellipsoid::ToEcef(surface);
+    }
+
+    void UpdateOrientationFromTarget() noexcept {
+        const renderer::EcefRenderFrame frame = CurrentRenderFrame();
+        const glm::dvec3 direction = NormalizedOr(frame.ToLocal(target_), glm::dvec3(0.0, 0.0, -1.0));
+        heading_degrees_ = NormalizeDegrees(RadiansToDegrees(std::atan2(direction.x, direction.y)));
+        pitch_degrees_ = RadiansToDegrees(std::asin(std::clamp(direction.z, -1.0, 1.0)));
+    }
+
+    void UpdateClippingPlanes() noexcept {
+        if (clipping_planes_explicit_) {
+            return;
+        }
+        const double look_distance = glm::length(position_.meters - target_.meters);
+        near_plane_ = static_cast<float>(std::max(0.1, look_distance * 0.001));
+        far_plane_ = static_cast<float>(std::max(30000000.0, look_distance * 4.0));
+    }
+
+    void UpdateViewMatrix() noexcept {
+        const renderer::EcefRenderFrame frame = CurrentRenderFrame();
+        glm::dvec3 local_target = frame.ToLocal(target_);
+        if (glm::length(local_target) < kMinimumLookDistanceMeters) {
+            local_target = glm::dvec3(0.0, 0.0, -kMinimumLookDistanceMeters);
+        }
+        glm::dvec3 local_up(0.0, 0.0, 1.0);
+        if (glm::length(glm::cross(NormalizedOr(local_target, -local_up), local_up)) < 1e-8) {
+            local_up = glm::dvec3(0.0, 1.0, 0.0);
+        }
+        view_matrix_ = glm::lookAt(glm::vec3(0.0f), glm::vec3(local_target), glm::vec3(local_up));
+    }
+
+    void StartGeographicAnimation(
+        const double longitude,
+        const double latitude,
+        const double altitude,
+        const float duration,
+        const bool target_surface) {
+        const auto current_camera = geodesy::Wgs84Ellipsoid::FromEcef(position_);
+        const auto current_target = geodesy::Wgs84Ellipsoid::FromEcef(target_);
+        if (!current_camera.has_value() || !current_target.has_value()) {
+            return;
+        }
+        animation_.Reset();
         animation_.active = true;
-        animation_.easing_function = Easing::EaseInOutCubic;
-    }
-
-    void LookAt(const glm::vec3& target) override {
-        // Calculate direction from position to target
-        glm::vec3 direction = glm::normalize(target - position_);
-
-        CameraState state = GetCurrentState();
-
-        // Calculate heading (yaw) from x,z components
-        state.heading = glm::degrees(std::atan2(direction.x, direction.z));
-
-        // Calculate pitch from y component
-        float clamped_y = std::clamp(direction.y, -1.0f, 1.0f);
-        state.pitch = glm::degrees(std::asin(clamped_y));
-
-        ApplyState(state);
-        SetFromState(state);
-
-        // In ORBIT mode, also set the target
-        if (movement_mode_ == MovementMode::ORBIT) {
-            target_ = target;
+        animation_.duration_seconds = std::max(duration, 0.0f);
+        animation_.start_camera = *current_camera;
+        animation_.start_target = *current_target;
+        animation_.target_camera = GeographicDegrees(longitude, latitude, ClampHeight(altitude));
+        animation_.target_target = animation_.target_camera;
+        animation_.target_target.ellipsoid_height_meters = target_surface ? 0.0 : current_target->ellipsoid_height_meters;
+        animation_.animate_position = true;
+        if (animation_.duration_seconds == 0.0f) {
+            UpdateAnimation(0.0f);
         }
-
-        UpdateViewMatrix();
     }
 
-    glm::vec3 GetForwardVector() const override {
-        // Calculate forward from orientation (consistent with UpdateViewMatrix)
-        float heading_rad = glm::radians(heading_);
-        float pitch_rad = glm::radians(pitch_);
-
-        glm::vec3 forward;
-        forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
-        forward.y = std::sin(pitch_rad);
-        forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
-
-        return glm::normalize(forward);
-    }
-    
-    glm::vec3 GetRightVector() const override {
-        glm::vec3 forward = GetForwardVector();
-        return glm::normalize(glm::cross(forward, up_));
-    }
-    
-    glm::vec3 GetUpVector() const override {
-        return up_;
-    }
-    
-    glm::vec3 ScreenToWorldRay(float screen_x, float screen_y, float aspect_ratio) const override {
-        // Convert screen coordinates to normalized device coordinates
-        glm::vec4 ndc(
-            2.0f * screen_x - 1.0f,
-            1.0f - 2.0f * screen_y, // Flip Y
-            -1.0f, // Near plane
-            1.0f
-        );
-        
-        // Convert to eye coordinates
-        glm::mat4 projection = GetProjectionMatrix(aspect_ratio);
-        glm::mat4 view = GetViewMatrix();
-        glm::mat4 inv_projection = glm::inverse(projection);
-        glm::mat4 inv_view = glm::inverse(view);
-        
-        glm::vec4 eye_ray = inv_projection * ndc;
-        eye_ray = glm::vec4(eye_ray.x, eye_ray.y, -1.0f, 0.0f);
-        
-        // Convert to world coordinates
-        glm::vec4 world_ray = inv_view * eye_ray;
-        
-        return glm::normalize(glm::vec3(world_ray));
+    [[nodiscard]] static geodesy::GeodeticPosition InterpolateGeodetic(
+        const geodesy::GeodeticPosition& start,
+        const geodesy::GeodeticPosition& end,
+        const double t) noexcept {
+        return {
+            .latitude_radians = glm::mix(start.latitude_radians, end.latitude_radians, t),
+            .longitude_radians = start.longitude_radians +
+                ShortestLongitudeDelta(start.longitude_radians, end.longitude_radians) * t,
+            .ellipsoid_height_meters = glm::mix(start.ellipsoid_height_meters,
+                                                 end.ellipsoid_height_meters, t),
+        };
     }
 
-protected:
-    Configuration config_;
-    bool initialized_ = false;
-
-    // Camera position and orientation
-    glm::vec3 position_{0.0f};
-    glm::vec3 target_{0.0f};
-    glm::vec3 up_{0.0f, 1.0f, 0.0f};
-    
-    // Orientation angles (degrees)
-    float heading_ = 0.0f;
-    float pitch_ = 0.0f;
-    float roll_ = 0.0f;
-    
-    // Projection parameters
-    float fov_y_ = constants::camera::DEFAULT_FOV;
-    float near_plane_ = constants::camera::DEFAULT_NEAR_PLANE_NORMALIZED;
-    float far_plane_ = constants::camera::DEFAULT_FAR_PLANE_NORMALIZED;
-    
-    // Camera settings
-    CameraProjectionType projection_type_ = CameraProjectionType::PERSPECTIVE;
-    MovementMode movement_mode_ = MovementMode::ORBIT;
-    CameraConstraints constraints_;
-    
-    // Movement state
-    float movement_forward_ = 0.0f;
-    float movement_right_ = 0.0f;
-    float movement_up_ = 0.0f;
-    float rotation_x_ = 0.0f;
-    float rotation_y_ = 0.0f;
-    float rotation_z_ = 0.0f;
-    
-    // Animation state
-    CameraAnimation animation_;
-    
-    // Mouse interaction state
-    bool mouse_dragging_ = false;
-    bool middle_mouse_dragging_ = false;
-    int active_mouse_button_ = -1;  // Track which button is active
-    glm::vec2 last_mouse_pos_{0.0f};
-    uint64_t last_mouse_time_ = 0;
-
-    // Key held state tracking for continuous WASD movement
-    std::set<int> held_keys_;
-    
-    // Matrices
-    glm::mat4 view_matrix_ = glm::mat4(1.0f);
-    
-    /**
-     * @brief Single enforcement point for all camera constraints.
-     *
-     * Validates and clamps the given state to respect:
-     * - Distance from origin: [MIN_DISTANCE_NORMALIZED, MAX_DISTANCE_NORMALIZED]
-     * - Pitch: [-89°, 89°]
-     * - Heading/roll: normalized to [0°, 360°)
-     *
-     * @param state Camera state to validate (modified in place)
-     * @return true if state was clamped (constraint was hit)
-     */
-    bool ApplyState(CameraState& state) {
-        bool clamped = false;
-
-        // Enforce distance constraints
-        const float min_distance = constants::camera_constraints::MIN_DISTANCE_NORMALIZED;
-        const float max_distance = constants::camera_constraints::MAX_DISTANCE_NORMALIZED;
-        const float distance = glm::length(state.position);
-
-        if (distance < min_distance) {
-            state.position = glm::normalize(state.position) * min_distance;
-            clamped = true;
-        } else if (distance > max_distance) {
-            state.position = glm::normalize(state.position) * max_distance;
-            clamped = true;
-        }
-
-        // Handle zero-length position (shouldn't happen, but defensive)
-        if (distance < 0.0001f) {
-            state.position = glm::vec3(0.0f, 0.0f, min_distance);
-            clamped = true;
-        }
-
-        // Enforce pitch constraints
-        const float min_pitch = constraints_.min_pitch;
-        const float max_pitch = constraints_.max_pitch;
-        if (state.pitch < min_pitch) {
-            state.pitch = min_pitch;
-            clamped = true;
-        } else if (state.pitch > max_pitch) {
-            state.pitch = max_pitch;
-            clamped = true;
-        }
-
-        // Normalize heading to [0°, 360°)
-        state.heading = std::fmod(state.heading, 360.0f);
-        if (state.heading < 0.0f) {
-            state.heading += 360.0f;
-        }
-
-        // Normalize roll to [0°, 360°)
-        state.roll = std::fmod(state.roll, 360.0f);
-        if (state.roll < 0.0f) {
-            state.roll += 360.0f;
-        }
-
-        return clamped;
-    }
-
-    /**
-     * @brief Get current state as CameraState struct
-     */
-    CameraState GetCurrentState() const {
-        return CameraState{position_, heading_, pitch_, roll_};
-    }
-
-    /**
-     * @brief Apply validated state to internal members
-     */
-    void SetFromState(const CameraState& state) {
-        position_ = state.position;
-        heading_ = state.heading;
-        pitch_ = state.pitch;
-        roll_ = state.roll;
-    }
-
-    /**
-     * @brief Update clipping planes based on altitude.
-     *
-     * Near plane must be smaller than distance-to-surface, otherwise
-     * the globe gets clipped. We use 10% of altitude as near plane.
-     */
-    void UpdateClippingPlanes() {
-        float altitude = glm::length(position_) - 1.0f;
-
-        // Near plane = 10% of altitude, with minimum to avoid precision issues
-        float adaptive_near = std::max(
-            altitude * 0.1f,
-            constants::camera::MIN_NEAR_PLANE_NORMALIZED
-        );
-
-        // Far plane stays large
-        near_plane_ = adaptive_near;
-        // far_plane_ unchanged
-    }
-
-    void UpdateViewMatrix() {
-        glm::vec3 computed_target;
-
-        if (movement_mode_ == MovementMode::ORBIT) {
-            // ORBIT mode: Use stored fixed target
-            computed_target = target_;
-        } else {
-            // FREE mode: Compute target from orientation
-            float heading_rad = glm::radians(heading_);
-            float pitch_rad = glm::radians(pitch_);
-
-            glm::vec3 forward;
-            forward.x = std::cos(pitch_rad) * std::sin(heading_rad);
-            forward.y = std::sin(pitch_rad);
-            forward.z = std::cos(pitch_rad) * std::cos(heading_rad);
-
-            computed_target = position_ + glm::normalize(forward);
-        }
-
-        view_matrix_ = glm::lookAt(position_, computed_target, up_);
-    }
-    
-    void UpdateAnimation(float delta_time) {
+    void UpdateAnimation(const float delta_time) {
         if (!animation_.active) {
             return;
         }
-
-        animation_.elapsed += delta_time;
-
-        CameraState state;
-
-        if (animation_.IsComplete()) {
-            // Apply final values
-            state.position = animation_.target_position;
-            state.heading = animation_.target_orientation.x;
-            state.pitch = animation_.target_orientation.y;
-            state.roll = animation_.target_orientation.z;
-            animation_.Reset();
-        } else {
-            // Apply interpolated values
-            float progress = animation_.GetProgress();
-            float eased_progress = animation_.easing_function(progress);
-
-            state.position = glm::mix(animation_.start_position, animation_.target_position, eased_progress);
-
-            glm::vec3 current_orientation = glm::mix(animation_.start_orientation,
-                                                   animation_.target_orientation,
-                                                   eased_progress);
-            state.heading = current_orientation.x;
-            state.pitch = current_orientation.y;
-            state.roll = current_orientation.z;
+        animation_.elapsed_seconds += delta_time;
+        const float linear = animation_.duration_seconds <= 0.0f
+            ? 1.0f
+            : std::clamp(animation_.elapsed_seconds / animation_.duration_seconds, 0.0f, 1.0f);
+        const double eased = EaseInOutCubic(linear);
+        if (animation_.animate_position) {
+            position_ = geodesy::Wgs84Ellipsoid::ToEcef(
+                InterpolateGeodetic(animation_.start_camera, animation_.target_camera, eased));
+            target_ = geodesy::Wgs84Ellipsoid::ToEcef(
+                InterpolateGeodetic(animation_.start_target, animation_.target_target, eased));
+            UpdateOrientationFromTarget();
         }
-
-        // Enforce constraints on every animation frame
-        ApplyState(state);
-        SetFromState(state);
+        if (animation_.animate_orientation) {
+            const glm::dvec3 orientation = glm::mix(animation_.start_orientation,
+                                                     animation_.target_orientation, eased);
+            SetOrientation(orientation.x, orientation.y, orientation.z);
+        }
+        if (linear >= 1.0f) {
+            animation_.Reset();
+        }
     }
-    
-    void UpdateMovement(float delta_time) {
-        if (movement_mode_ != MovementMode::FREE) {
+
+    void UpdateMovement(const float delta_time) {
+        if (movement_forward_ == 0.0f && movement_right_ == 0.0f && movement_up_ == 0.0f) {
             return;
         }
-
-        glm::vec3 forward = GetForwardVector();
-        glm::vec3 right = GetRightVector();
-        glm::vec3 up_vec = GetUpVector();
-
-        // Altitude-proportional speed (in normalized units directly).
-        // At altitude 1.0, move 2.0 units/sec (fast traversal)
-        // At altitude 0.01, move 0.02 units/sec (precise control near surface)
-        // Minimum speed ensures movement is always visible
-        float altitude = glm::length(position_) - 1.0f;
-        float speed = std::max(altitude, 0.001f) * 2.0f;
-
-        float rot_speed = constraints_.max_rotation_speed;
-
-        // Build new state from current + deltas
-        CameraState state = GetCurrentState();
-
-        // Update position
-        if (glm::abs(movement_forward_) > 0.01f) {
-            state.position += forward * movement_forward_ * speed * delta_time;
+        const auto camera_geodetic = geodesy::Wgs84Ellipsoid::FromEcef(position_);
+        const auto target_geodetic = geodesy::Wgs84Ellipsoid::FromEcef(target_);
+        if (!camera_geodetic.has_value() || !target_geodetic.has_value()) {
+            return;
         }
-        if (glm::abs(movement_right_) > 0.01f) {
-            state.position += right * movement_right_ * speed * delta_time;
-        }
-        if (glm::abs(movement_up_) > 0.01f) {
-            state.position += up_vec * movement_up_ * speed * delta_time;
-        }
-
-        // Update orientation
-        if (glm::abs(rotation_x_) > 0.01f) {
-            state.heading += rotation_x_ * rot_speed * delta_time;
-        }
-        if (glm::abs(rotation_y_) > 0.01f) {
-            state.pitch += rotation_y_ * rot_speed * delta_time;
-        }
-        if (glm::abs(rotation_z_) > 0.01f) {
-            state.roll += rotation_z_ * rot_speed * delta_time;
-        }
-
-        // Enforce all constraints via single enforcement point
-        ApplyState(state);
-        SetFromState(state);
-
-        // Apply decay to movement impulses only when keys are NOT held.
-        // This allows continuous movement while holding WASD, but smooth
-        // stopping with momentum when released.
-        float decay_rate = 10.0f;  // Higher = faster decay
-
-        // Check if forward/backward keys are held
-        bool forward_held = held_keys_.count('W') || held_keys_.count('S') ||
-                           held_keys_.count(265) || held_keys_.count(264);
-        if (!forward_held) {
-            movement_forward_ *= std::exp(-decay_rate * delta_time);
-            if (std::abs(movement_forward_) < 0.001f) movement_forward_ = 0.0f;
-        }
-
-        // Check if left/right keys are held
-        bool right_held = held_keys_.count('A') || held_keys_.count('D') ||
-                         held_keys_.count(263) || held_keys_.count(262);
-        if (!right_held) {
-            movement_right_ *= std::exp(-decay_rate * delta_time);
-            if (std::abs(movement_right_) < 0.001f) movement_right_ = 0.0f;
-        }
-
-        // Check if up/down keys are held
-        bool up_held = held_keys_.count('Q') || held_keys_.count('E');
-        if (!up_held) {
-            movement_up_ *= std::exp(-decay_rate * delta_time);
-            if (std::abs(movement_up_) < 0.001f) movement_up_ = 0.0f;
-        }
-
-        // Update target based on orientation
-        glm::quat q = glm::quat(glm::radians(glm::vec3(pitch_, heading_, roll_)));
-        glm::vec3 direction = q * glm::vec3(0.0f, 0.0f, -1.0f);
-        target_ = position_ + direction * 1000.0f; // 1km look distance
-    }
-    
-    bool HandleMouseMove(const InputEvent& event) {
-        if (!mouse_dragging_ && !middle_mouse_dragging_) {
-            return false;
-        }
-
-        glm::vec2 current_pos(event.x, event.y);
-        glm::vec2 delta = current_pos - last_mouse_pos_;
-
-        // Altitude-proportional sensitivity: precise at low altitude, responsive at high
-        float altitude = glm::length(position_) - 1.0f;
-        float altitude_factor = std::max(altitude, 0.001f);
-
-        CameraState state = GetCurrentState();
-
-        // Middle mouse button: Tilt and rotate camera (pitch and heading)
-        if (middle_mouse_dragging_ && active_mouse_button_ == 2) {
-            if (movement_mode_ == MovementMode::ORBIT) {
-                // Tilt mode: change pitch (up/down drag) and heading (left/right drag)
-                float sensitivity = altitude_factor * 0.3f;
-
-                state.heading -= delta.x * sensitivity;
-                state.pitch -= delta.y * sensitivity;
-
-                // Apply constraints
-                ApplyState(state);
-                SetFromState(state);
-
-                // Recalculate camera position based on new heading and pitch
-                glm::vec3 offset = position_ - target_;
-                float distance = glm::length(offset);
-
-                // Convert heading and pitch to spherical coordinates
-                float heading_rad = glm::radians(heading_);
-                float pitch_rad = glm::radians(pitch_);
-
-                // Calculate new camera position
-                offset.x = distance * std::cos(pitch_rad) * std::sin(heading_rad);
-                offset.y = distance * std::sin(pitch_rad);
-                offset.z = distance * std::cos(pitch_rad) * std::cos(heading_rad);
-
-                // Apply position with constraints
-                state = GetCurrentState();
-                state.position = target_ + offset;
-                ApplyState(state);
-                SetFromState(state);
-            } else {
-                // Free mode: adjust pitch and heading via Rotate
-                float sensitivity = altitude_factor * 0.2f;
-                Rotate(-delta.x * sensitivity, -delta.y * sensitivity);
-            }
-        }
-        // Left mouse button: Standard orbit/rotation
-        else if (mouse_dragging_ && active_mouse_button_ == 0) {
-            if (movement_mode_ == MovementMode::ORBIT) {
-                // Orbital camera controls
-                float sensitivity = altitude_factor * 0.1f;
-
-                // Rotate around target
-                glm::vec3 offset = position_ - target_;
-
-                // Horizontal rotation (around Y axis)
-                glm::quat horiz_rot = glm::angleAxis(-delta.x * sensitivity * 0.01f, glm::vec3(0.0f, 1.0f, 0.0f));
-                offset = horiz_rot * offset;
-
-                // Vertical rotation (around right vector)
-                glm::vec3 right = glm::normalize(glm::cross(glm::normalize(offset), glm::vec3(0.0f, 1.0f, 0.0f)));
-                glm::quat vert_rot = glm::angleAxis(delta.y * sensitivity * 0.01f, right);
-                offset = vert_rot * offset;
-
-                // Apply with constraints
-                state.position = target_ + offset;
-                ApplyState(state);
-                SetFromState(state);
-            } else {
-                // Free camera controls - use rotation impulses
-                float sensitivity = altitude_factor * 0.2f;
-                rotation_x_ = -delta.x * sensitivity;
-                rotation_y_ = -delta.y * sensitivity;
-            }
-        }
-
-        UpdateViewMatrix();
-        last_mouse_pos_ = current_pos;
-        last_mouse_time_ = event.timestamp;
-        return true;
-    }
-    
-    bool HandleMousePress(const InputEvent& event) {
-        if (event.button == 0) { // Left mouse button
-            mouse_dragging_ = true;
-            active_mouse_button_ = 0;
-            last_mouse_pos_ = glm::vec2(event.x, event.y);
-            last_mouse_time_ = event.timestamp;
-            return true;
-        } else if (event.button == 2) { // Middle mouse button (button 2 in GLFW)
-            middle_mouse_dragging_ = true;
-            active_mouse_button_ = 2;
-            last_mouse_pos_ = glm::vec2(event.x, event.y);
-            last_mouse_time_ = event.timestamp;
-            return true;
-        }
-        return false;
-    }
-    
-    bool HandleMouseRelease(const InputEvent& event) {
-        if (event.button == 0) { // Left mouse button
-            mouse_dragging_ = false;
-            if (active_mouse_button_ == 0) {
-                active_mouse_button_ = -1;
-            }
-            rotation_x_ = 0.0f;
-            rotation_y_ = 0.0f;
-            return true;
-        } else if (event.button == 2) { // Middle mouse button
-            middle_mouse_dragging_ = false;
-            if (active_mouse_button_ == 2) {
-                active_mouse_button_ = -1;
-            }
-            return true;
-        }
-        return false;
-    }
-    
-    bool HandleMouseScroll(const InputEvent& event) {
-        // Altitude-proportional zoom: step is a fraction of remaining altitude.
-        // This ensures smooth zoom at all altitudes without overshooting surface.
-        // At high altitude: large steps (responsive)
-        // At low altitude: small steps (precise, never overshoots)
-
-        float distance = glm::length(position_);
-        float altitude = distance - 1.0f;  // Height above surface (normalized units)
-
-        // Zoom step is 30% of remaining altitude
-        constexpr float kZoomFraction = 0.3f;
-        float zoom_step = altitude * kZoomFraction;
-
-        // Positive scroll = zoom in (reduce altitude)
-        float new_altitude = altitude - event.scroll_delta * zoom_step;
-
-        // Clamp to valid range
-        constexpr float kMinAltitude = constants::camera_constraints::MIN_DISTANCE_NORMALIZED - 1.0f;
-        constexpr float kMaxAltitude = constants::camera_constraints::MAX_DISTANCE_NORMALIZED - 1.0f;
-        new_altitude = std::clamp(new_altitude, kMinAltitude, kMaxAltitude);
-
-        float new_distance = 1.0f + new_altitude;
-
-        CameraState state = GetCurrentState();
-        state.position = glm::normalize(state.position) * new_distance;
-        SetFromState(state);
-        UpdateClippingPlanes();
-        UpdateViewMatrix();
-        return true;
+        const double speed = std::max(static_cast<double>(constraints_.max_movement_speed),
+                                      camera_geodetic->ellipsoid_height_meters * 0.25);
+        const double metres = speed * delta_time;
+        const double east = static_cast<double>(movement_right_) * metres;
+        const double north = static_cast<double>(movement_forward_) * metres;
+        position_ = ClampPositionHeight(geodesy::Wgs84Ellipsoid::ToEcef(
+            OffsetGeodetic(*camera_geodetic, east, north)));
+        geodesy::GeodeticPosition moved_target = OffsetGeodetic(*target_geodetic, east, north);
+        moved_target.ellipsoid_height_meters += static_cast<double>(movement_up_) * metres;
+        target_ = geodesy::Wgs84Ellipsoid::ToEcef(moved_target);
+        UpdateOrientationFromTarget();
     }
 
-    bool HandleKeyPress(const InputEvent& event) {
-        // Track held state for continuous movement
-        held_keys_.insert(event.key);
-
-        switch (event.key) {
-            case 'W':
-            case 265: // Up arrow
-                movement_forward_ = 1.0f;
-                return true;
-            case 'S':
-            case 264: // Down arrow
-                movement_forward_ = -1.0f;
-                return true;
-            case 'A':
-            case 263: // Left arrow
-                movement_right_ = -1.0f;
-                return true;
-            case 'D':
-            case 262: // Right arrow
-                movement_right_ = 1.0f;
-                return true;
-            case 'Q':
-                movement_up_ = 1.0f;
-                return true;
-            case 'E':
-                movement_up_ = -1.0f;
-                return true;
-            default:
-                return false;
+    bool SetMovementKey(const int key, const bool pressed) noexcept {
+        const float value = pressed ? 1.0f : 0.0f;
+        switch (key) {
+            case 'W': case 'w': movement_forward_ = value; return true;
+            case 'S': case 's': movement_forward_ = -value; return true;
+            case 'A': case 'a': movement_right_ = -value; return true;
+            case 'D': case 'd': movement_right_ = value; return true;
+            case 'Q': case 'q': movement_up_ = -value; return true;
+            case 'E': case 'e': movement_up_ = value; return true;
+            default: return false;
         }
     }
-    
-    bool HandleKeyRelease(const InputEvent& event) {
-        // Clear held state
-        held_keys_.erase(event.key);
 
-        switch (event.key) {
-            case 'W':
-            case 'S':
-            case 265: // Up arrow
-            case 264: // Down arrow
-                movement_forward_ = 0.0f;
-                return true;
-            case 'A':
-            case 'D':
-            case 263: // Left arrow
-            case 262: // Right arrow
-                movement_right_ = 0.0f;
-                return true;
-            case 'Q':
-            case 'E':
-                movement_up_ = 0.0f;
-                return true;
-            default:
-                return false;
-        }
-    }
-    
-    bool HandleDoubleClick(const InputEvent& event) {
-        // Perform ray casting to find click location on globe
-        // Convert mouse coordinates to ray in world space
-
-        // Use screen dimensions from config (this is approximate - ideally we'd get actual viewport)
-        int screen_width = config_.screen_width;
-        int screen_height = config_.screen_height;
-        glm::ivec4 viewport(0, 0, screen_width, screen_height);
-
-        // Get camera matrices
-        float aspect_ratio = static_cast<float>(screen_width) / screen_height;
-        glm::mat4 projection = GetProjectionMatrix(aspect_ratio);
-        glm::mat4 view = GetViewMatrix();
-
-        // Convert screen coordinates to NDC (-1 to 1)
-        // Note: GLFW Y=0 at top, OpenGL Y=0 at bottom
-        float ndc_x = (event.x / screen_width) * 2.0f - 1.0f;
-        float ndc_y = 1.0f - (event.y / screen_height) * 2.0f;
-
-        // Unproject to world space
-        glm::vec4 ray_clip(ndc_x, ndc_y, -1.0f, 1.0f);
-        glm::vec4 ray_eye = glm::inverse(projection) * ray_clip;
-        ray_eye = glm::vec4(ray_eye.x, ray_eye.y, -1.0f, 0.0f);
-        glm::vec3 ray_world = glm::vec3(glm::inverse(view) * ray_eye);
-        ray_world = glm::normalize(ray_world);
-
-        // Ray-sphere intersection with globe (sphere at origin with radius 1.0)
-        glm::vec3 ray_origin = position_;
-        glm::vec3 ray_dir = ray_world;
-        glm::vec3 sphere_center(0.0f, 0.0f, 0.0f);
-        float sphere_radius = 1.0f;  // Normalized globe radius
-
-        // Ray-sphere intersection
-        glm::vec3 oc = ray_origin - sphere_center;
-        float a = glm::dot(ray_dir, ray_dir);
-        float b = 2.0f * glm::dot(oc, ray_dir);
-        float c = glm::dot(oc, oc) - sphere_radius * sphere_radius;
-        float discriminant = b * b - 4.0f * a * c;
-
-        if (discriminant >= 0.0f) {
-            // Ray hits the globe
-            float t = (-b - std::sqrt(discriminant)) / (2.0f * a);
-            glm::vec3 hit_point = ray_origin + ray_dir * t;
-
-            // Google Earth style: fly camera to position ABOVE the clicked point
-            // while keeping target_ at origin (globe center) for consistent orbit behavior
-            if (movement_mode_ == MovementMode::ORBIT) {
-                // Convert hit point to spherical coordinates (lat/lon on normalized sphere)
-                // hit_point is on sphere with radius 1.0
-                float lat = std::asin(std::clamp(hit_point.y, -1.0f, 1.0f));  // -π/2 to π/2
-                float lon = std::atan2(hit_point.x, hit_point.z);  // -π to π
-
-                // Calculate new camera position ABOVE this point
-                float current_altitude = glm::length(position_) - 1.0f;  // Current altitude above surface
-                float target_altitude = std::max(current_altitude * 0.5f, 0.02f);  // Zoom in, min ~130km
-                float new_distance = 1.0f + target_altitude;
-
-                // Position camera directly above the clicked point (radially outward)
-                glm::vec3 new_position;
-                new_position.x = new_distance * std::cos(lat) * std::sin(lon);
-                new_position.y = new_distance * std::sin(lat);
-                new_position.z = new_distance * std::cos(lat) * std::cos(lon);
-
-                // IMPORTANT: target_ stays at origin for consistent constraint enforcement!
-                // Calculate new orientation to look at globe center
-                glm::vec3 direction = glm::normalize(-new_position);  // Look toward origin
-                float new_heading = glm::degrees(std::atan2(direction.x, direction.z));
-                float new_pitch = glm::degrees(std::asin(std::clamp(direction.y, -1.0f, 1.0f)));
-                new_pitch = std::clamp(new_pitch, constraints_.min_pitch, constraints_.max_pitch);
-
-                // Animate to new position and orientation
-                animation_.start_position = position_;
-                animation_.target_position = new_position;
-                animation_.start_orientation = glm::vec3(heading_, pitch_, roll_);
-                animation_.target_orientation = glm::vec3(new_heading, new_pitch, 0.0f);
-                animation_.duration = 0.8f;
-                animation_.elapsed = 0.0f;
-                animation_.active = true;
-                animation_.easing_function = Easing::EaseInOutCubic;
-
-                // target_ remains at origin - do NOT change it!
-
-                spdlog::info("Double-click: flying above ({:.2f}°, {:.2f}°) at altitude {:.4f}",
-                           glm::degrees(lat), glm::degrees(lon), target_altitude);
-            }
-        } else {
-            // Ray missed the globe - just zoom in toward globe center
-            if (movement_mode_ == MovementMode::ORBIT) {
-                float current_distance = glm::length(position_);
-                float new_distance = current_distance * 0.5f;
-
-                // Apply min distance constraint
-                new_distance = std::max(new_distance, constants::camera_constraints::MIN_DISTANCE_NORMALIZED);
-
-                glm::vec3 new_position = glm::normalize(position_) * new_distance;
-
-                AnimateToPosition(new_position, 0.5f);
-            }
-        }
-
-        return true;
-    }
-    
-    void AnimateToPosition(const glm::vec3& target_pos, float duration) {
-        animation_.start_position = position_;
-        animation_.target_position = target_pos;
-        animation_.start_orientation = glm::vec3(heading_, pitch_, roll_);
-        animation_.duration = duration;
-        animation_.elapsed = 0.0f;
-        animation_.active = true;
-        animation_.easing_function = Easing::EaseInOutCubic;
-    }
+    Configuration config_;
+    bool initialized_ = false;
+    geodesy::EcefPosition position_{};
+    geodesy::EcefPosition target_{};
+    double heading_degrees_ = 0.0;
+    double pitch_degrees_ = -90.0;
+    double roll_degrees_ = 0.0;
+    float fov_y_ = 45.0f;
+    float near_plane_ = 1000.0f;
+    float far_plane_ = 30000000.0f;
+    bool clipping_planes_explicit_ = false;
+    glm::mat4 view_matrix_{1.0f};
+    CameraProjectionType projection_type_ = CameraProjectionType::PERSPECTIVE;
+    MovementMode movement_mode_ = MovementMode::ORBIT;
+    CameraConstraints constraints_{};
+    CameraAnimation animation_{};
+    bool dragging_ = false;
+    float movement_forward_ = 0.0f;
+    float movement_right_ = 0.0f;
+    float movement_up_ = 0.0f;
 };
 
-/**
- * @brief Perspective camera implementation
- */
-class PerspectiveCamera : public CameraImpl {
+class PerspectiveCamera final : public CameraImpl {
 public:
-    explicit PerspectiveCamera(const Configuration& config) : CameraImpl(config) {
+    explicit PerspectiveCamera(const Configuration& config)
+        : CameraImpl(config) {
         SetProjectionType(CameraProjectionType::PERSPECTIVE);
     }
 };
 
-/**
- * @brief Orthographic camera implementation
- */
-class OrthographicCamera : public CameraImpl {
+class OrthographicCamera final : public CameraImpl {
 public:
-    explicit OrthographicCamera(const Configuration& config) : CameraImpl(config) {
+    explicit OrthographicCamera(const Configuration& config)
+        : CameraImpl(config) {
         SetProjectionType(CameraProjectionType::ORTHOGRAPHIC);
     }
 };
 
-// Factory functions
+}  // namespace
+
 std::unique_ptr<Camera> CreatePerspectiveCamera(const Configuration& config) {
     return std::make_unique<PerspectiveCamera>(config);
 }
@@ -1193,4 +688,4 @@ std::unique_ptr<Camera> CreateOrthographicCamera(const Configuration& config) {
     return std::make_unique<OrthographicCamera>(config);
 }
 
-} // namespace earth_map
+}  // namespace earth_map

@@ -28,6 +28,10 @@ public:
     [[nodiscard]] glm::dvec3 ToLocal(
         const geodesy::EcefPosition& ecef_position) const noexcept;
 
+    /** Converts an ECEF direction into this frame's ENU basis. */
+    [[nodiscard]] glm::dvec3 ToLocalDirection(
+        const glm::dvec3& ecef_direction) const noexcept;
+
     /** Converts local ENU metres back to global ECEF metres. */
     [[nodiscard]] geodesy::EcefPosition FromLocal(
         const glm::dvec3& local_meters) const noexcept;

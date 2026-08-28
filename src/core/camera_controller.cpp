@@ -63,24 +63,29 @@ public:
         camera_->SetGeographicPosition(longitude, latitude, altitude);
     }
     
-    void SetPosition(const glm::vec3& position) override {
-        camera_->SetPosition(position);
+    void SetEcefPosition(const geodesy::EcefPosition& position) override {
+        camera_->SetEcefPosition(position);
     }
     
-    glm::vec3 GetPosition() const override {
-        return camera_->GetPosition();
+    geodesy::EcefPosition GetEcefPosition() const override {
+        return camera_->GetEcefPosition();
     }
     
     void SetGeographicTarget(double longitude, double latitude, double altitude) override {
         camera_->SetGeographicTarget(longitude, latitude, altitude);
     }
     
-    void SetTarget(const glm::vec3& target) override {
-        camera_->SetTarget(target);
+    void SetEcefTarget(const geodesy::EcefPosition& target) override {
+        camera_->SetEcefTarget(target);
     }
     
-    glm::vec3 GetTarget() const override {
-        return camera_->GetTarget();
+    geodesy::EcefPosition GetEcefTarget() const override {
+        return camera_->GetEcefTarget();
+    }
+
+    std::pair<geodesy::EcefPosition, glm::dvec3> ScreenToEcefRay(
+        const float screen_x, const float screen_y, const float aspect_ratio) const override {
+        return camera_->ScreenToEcefRay(screen_x, screen_y, aspect_ratio);
     }
     
     void SetOrientation(double heading, double pitch, double roll) override {
@@ -119,15 +124,26 @@ public:
         return camera_->GetProjectionMatrix(aspect_ratio);
     }
 
-     glm::vec3 GetForwardVector() const override {
-         // Extract forward vector from view matrix (negative Z direction in view space)
-         glm::mat4 view = GetViewMatrix();
-         // The Z column of the view matrix gives the forward direction in world space
-         return glm::normalize(glm::vec3(-view[0][2], -view[1][2], -view[2][2]));
-     }
+    glm::vec3 GetForwardVector() const override {
+        return camera_->GetForwardVector();
+    }
 
-     void SetProjectionType(CameraProjectionType projection_type) override {
-        // Recreate camera with new projection type
+    void SetProjectionType(CameraProjectionType projection_type) override {
+        if (camera_->GetProjectionType() == projection_type) {
+            return;
+        }
+
+        // Projection choice does not change a physical camera state.  Preserve
+        // the ECEF pose and metre-based settings while replacing only the
+        // projection implementation.
+        const geodesy::EcefPosition position = camera_->GetEcefPosition();
+        const geodesy::EcefPosition target = camera_->GetEcefTarget();
+        const CameraConstraints constraints = camera_->GetConstraints();
+        const float field_of_view = camera_->GetFieldOfView();
+        const float near_plane = camera_->GetNearPlane();
+        const float far_plane = camera_->GetFarPlane();
+        const ::earth_map::MovementMode movement_mode = camera_->GetMovementMode();
+
         switch (projection_type) {
             case CameraProjectionType::PERSPECTIVE:
                 camera_ = CreatePerspectiveCamera(config_);
@@ -136,8 +152,12 @@ public:
                 camera_ = CreateOrthographicCamera(config_);
                 break;
         }
-        
-        // Restore current camera state
+        camera_->SetConstraints(constraints);
+        camera_->SetEcefPosition(position);
+        camera_->SetEcefTarget(target);
+        camera_->SetFieldOfView(field_of_view);
+        camera_->SetClippingPlanes(near_plane, far_plane);
+        camera_->SetMovementMode(movement_mode);
         if (initialized_) {
             camera_->Initialize();
         }
@@ -187,7 +207,7 @@ public:
         camera_->FlyTo(longitude, latitude, altitude_meters, duration_seconds);
     }
 
-    void LookAt(const glm::vec3& target) override {
+    void LookAt(const geodesy::EcefPosition& target) override {
         camera_->LookAt(target);
     }
 

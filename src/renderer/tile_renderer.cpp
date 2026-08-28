@@ -5,13 +5,12 @@
 
 #include <earth_map/renderer/tile_renderer.h>
 #include <earth_map/renderer/geographic_quadtree.h>
+#include "ecef_render_frame.h"
 #include <earth_map/imagery/tile_matrix_set.h>
-#include <earth_map/renderer/globe_mesh.h>
 #include <earth_map/renderer/shader_loader.h>
 #include <earth_map/math/projection.h>
 #include <earth_map/math/tile_mathematics.h>
 #include <earth_map/renderer/texture_atlas/tile_texture_coordinator.h>
-#include <earth_map/coordinates/coordinate_mapper.h>
 #include <earth_map/constants.h>
 #include <spdlog/spdlog.h>
 #ifdef __ANDROID__
@@ -75,13 +74,7 @@ const char* TileFragmentProbeName(TileFragmentShadingProbe probe) {
     return "full";
 }
 
-// Derived so that minimum camera altitude (100 m) maps to kMaxZoom.
-// K = (MIN_ALTITUDE_METERS / EARTH_MEAN_RADIUS) × 2^kMaxZoom ≈ 32.9
-// Every doubling of altitude decreases zoom by 1, matching the tile pyramid.
-constexpr float kZoomAltitudeScale =
-    (constants::camera_constraints::MIN_ALTITUDE_METERS
-     / static_cast<float>(constants::geodetic::EARTH_MEAN_RADIUS))
-    * static_cast<float>(1u << kMaxZoom);
+constexpr double kTargetImageryTileScreenPixels = 128.0;
 
 /**
  * Returns the ancestors sampled by the fragment shader when an exact imagery
@@ -129,6 +122,7 @@ struct TileRenderState {
 /** Vertex submitted by the CPU-selected geographic patch path. */
 struct GeographicPatchVertex {
     glm::vec3 position;
+    glm::vec3 normal;
     glm::vec2 local_uv;
 };
 
@@ -243,23 +237,9 @@ public:
         spdlog::info("Tile renderer: texture coordinator set");
     }
 
-    void SetGlobeMesh(GlobeMesh* globe_mesh) override {
-        if (!globe_mesh) {
-            spdlog::error("Tile renderer: cannot set null globe mesh");
-            return;
-        }
-
-        globe_mesh_ = globe_mesh;
-        mesh_uploaded_to_gpu_ = false;  // Mark for re-upload
-
-        spdlog::info("Tile renderer: globe mesh set ({} vertices, {} triangles)",
-                     globe_mesh_->GetVertices().size(),
-                     globe_mesh_->GetTriangles().size());
-    }
-
     void UpdateVisibleTiles(const glm::mat4& view_matrix,
-                        const glm::mat4& projection_matrix,
-                        const glm::vec3& /*camera_position*/) override {
+                            const glm::mat4& projection_matrix,
+                            const geodesy::EcefPosition& camera_position) override {
         if (!initialized_) {
             return;
         }
@@ -267,8 +247,12 @@ public:
         // Clear previous visible tiles
         visible_tiles_.clear();
 
-        glm::vec3 canonical_camera_position;
-        float camera_distance = 0.0f;
+        const auto camera_geodetic = geodesy::Wgs84Ellipsoid::FromEcef(camera_position);
+        if (!camera_geodetic.has_value()) {
+            spdlog::error("Tile renderer: refusing an invalid ECEF camera position");
+            return;
+        }
+        render_frame_ = renderer::EcefRenderFrame::FromCamera(*camera_geodetic);
         int zoom_level = kMinZoom;
         std::vector<TileCoordinates> visible_tile_coords;
 
@@ -278,13 +262,12 @@ public:
             // TileMathematics candidate path for like-for-like attribution.
             EARTH_MAP_ZONE_SCOPE(zone_collector_, select_zone, "tile.cull.select");
 
-            // The submitted view matrix defines the camera for both CPU
-            // selection and the shader. Do not accept a second camera transform.
-            canonical_camera_position = glm::vec3(glm::inverse(view_matrix)[3]);
-            camera_distance = glm::length(canonical_camera_position);
-
-            // Estimate optimal zoom level based on distance.
-            zoom_level = CalculateOptimalZoom(camera_distance);
+            // Camera-relative ray intersections define a geographic screen
+            // footprint. Tile level follows that footprint, rather than a
+            // normalized radius or a magic altitude-to-zoom constant.
+            const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
+                view_matrix, projection_matrix);
+            zoom_level = CalculateOptimalZoom(visible_bounds);
 
             // Every imagery path starts from the provider's declared source
             // matrix and refines the same geographic quadtree. Diagnostic
@@ -303,13 +286,11 @@ public:
                         matrix_set->maximum_latitude_radians,
                     };
                     if (zoom_level > 4) {
-                        const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
-                            canonical_camera_position, view_matrix, projection_matrix);
                         visible_region = {
-                            constants::conversion::DegreesToRadians(visible_bounds.min.x),
-                            constants::conversion::DegreesToRadians(visible_bounds.min.y),
-                            constants::conversion::DegreesToRadians(visible_bounds.max.x),
-                            constants::conversion::DegreesToRadians(visible_bounds.max.y),
+                            visible_bounds.min.x,
+                            visible_bounds.min.y,
+                            visible_bounds.max.x,
+                            visible_bounds.max.y,
                         };
                     }
 
@@ -358,12 +339,16 @@ public:
                         }
                     }
                 } else {
-                    // At higher zoom, use visibility bounds from ray-cast
-                    // geographic projection.
-                    const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
-                        canonical_camera_position, view_matrix, projection_matrix);
+                    // This startup-only legacy request API accepts degrees;
+                    // the ECEF ray path above owns radians, so make that
+                    // projection boundary explicit instead of mixing units.
+                    const BoundingBox2D legacy_degrees_bounds(
+                        glm::dvec2(constants::conversion::RadiansToDegrees(visible_bounds.min.x),
+                                   constants::conversion::RadiansToDegrees(visible_bounds.min.y)),
+                        glm::dvec2(constants::conversion::RadiansToDegrees(visible_bounds.max.x),
+                                   constants::conversion::RadiansToDegrees(visible_bounds.max.y)));
                     const std::vector<TileCoordinates> candidate_tiles =
-                        TileMathematics::GetTilesInBounds(visible_bounds, zoom_level);
+                        TileMathematics::GetTilesInBounds(legacy_degrees_bounds, zoom_level);
 
                     const std::size_t max_tiles_for_frame =
                         static_cast<std::size_t>(config_.max_visible_tiles);
@@ -410,10 +395,9 @@ public:
                 TileRenderState tile_state;
                 tile_state.coordinates = tile_coords;
                 tile_state.geographic_bounds = TileMathematics::GetTileBounds(tile_coords);
-                tile_state.lod_level = CalculateTileLOD(tile_coords, camera_distance);
+                tile_state.lod_level = CalculateTileLOD(tile_coords);
                 tile_state.last_used = static_cast<float>(frame_counter_);
-                tile_state.load_priority = CalculateLoadPriority(
-                    tile_coords, canonical_camera_position);
+                tile_state.load_priority = CalculateLoadPriority(tile_coords, camera_position);
                 tile_state.is_visible = true;
 
                 // Get UV coordinates and ready state from coordinator
@@ -456,6 +440,11 @@ public:
                 }
             }
 
+            // GPU vertices are camera-relative ENU floats.  A camera-frame
+            // change invalidates every local position; cache only topology
+            // and imagery residency, never an old frame's coordinates.
+            geographic_patch_geometry_cache_.clear();
+            geographic_patch_keys_.clear();
             UpdateGeographicPatchDraws(visible_tile_coords);
         }
 
@@ -470,20 +459,6 @@ public:
         }
 
         EARTH_MAP_ZONE_SCOPE(zone_collector_, draw_zone, "tile.draw");
-
-        // CRITICAL: Must have globe mesh to render on
-        if (!globe_mesh_) {
-            spdlog::warn("Tile renderer: no globe mesh set, cannot render tiles");
-            return;
-        }
-
-        // Upload mesh to GPU if not yet done or if mesh changed
-        if (!mesh_uploaded_to_gpu_) {
-            if (!UploadMeshToGPU()) {
-                spdlog::error("Tile renderer: failed to upload mesh to GPU");
-                return;
-            }
-        }
 
         GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
         GLboolean cull_face_enabled = glIsEnabled(GL_CULL_FACE);
@@ -557,19 +532,21 @@ public:
     }
 
 private:
-    static glm::vec3 NormalizedRenderPosition(
-        const geodesy::GeodeticPosition& geodetic) {
-        // The existing camera/view pipeline still uses a unit sphere. Keep
-        // that compatibility adapter at this boundary only: geographic patch
-        // construction itself is WGS84 radians/ECEF, and the later
-        // camera-relative ECEF migration can replace this conversion without
-        // changing imagery selection, residency, or UV math.
-        const double cos_latitude = std::cos(geodetic.latitude_radians);
-        return {
-            static_cast<float>(cos_latitude * std::sin(geodetic.longitude_radians)),
-            static_cast<float>(std::sin(geodetic.latitude_radians)),
-            static_cast<float>(cos_latitude * std::cos(geodetic.longitude_radians)),
-        };
+    [[nodiscard]] glm::vec3 CameraRelativeRenderPosition(
+        const geodesy::GeodeticPosition& geodetic) const {
+        if (!render_frame_.has_value()) {
+            return glm::vec3(0.0f);
+        }
+        const geodesy::EcefPosition ecef = geodesy::Wgs84Ellipsoid::ToEcef(geodetic);
+        return glm::vec3(render_frame_->ToLocal(ecef));
+    }
+
+    [[nodiscard]] glm::vec3 CameraRelativeRenderDirection(
+        const glm::dvec3& ecef_direction) const {
+        if (!render_frame_.has_value()) {
+            return glm::vec3(0.0f, 0.0f, 1.0f);
+        }
+        return glm::normalize(glm::vec3(render_frame_->ToLocalDirection(ecef_direction)));
     }
 
     const std::vector<GeographicPatchVertex>* GetOrCreateGeographicPatchGeometry(
@@ -590,7 +567,11 @@ private:
             if (!geodetic.has_value()) {
                 return nullptr;
             }
-            vertices.push_back({NormalizedRenderPosition(*geodetic), local_uv_float});
+            vertices.push_back({
+                CameraRelativeRenderPosition(*geodetic),
+                CameraRelativeRenderDirection(geodesy::Wgs84Ellipsoid::SurfaceNormal(*geodetic)),
+                local_uv_float,
+            });
         }
 
         const auto [inserted, was_inserted] = geographic_patch_geometry_cache_.emplace(
@@ -687,9 +668,8 @@ private:
 
     TileRenderConfig config_;
     TileTextureCoordinator* texture_coordinator_ = nullptr;
-    GlobeMesh* globe_mesh_ = nullptr;  // External globe mesh to render on
+    std::optional<renderer::EcefRenderFrame> render_frame_;
     bool initialized_ = false;
-    bool mesh_uploaded_to_gpu_ = false;  // Track if mesh data is on GPU
     std::uint64_t frame_counter_ = 0;
     std::vector<TileRenderState> visible_tiles_;
     std::optional<renderer::GeographicPatchGrid> geographic_patch_grid_;
@@ -708,14 +688,6 @@ private:
     std::vector<FrameZoneTiming> last_zone_timings_;
 
     std::vector<TileCoordinates> last_visible_tiles_;
-
-    struct BaseGlobeUniformLocations {
-        GLint view = -1;
-        GLint projection = -1;
-        GLint model = -1;
-        GLint light_direction = -1;
-        GLint light_color = -1;
-    };
 
     struct GeographicPatchUniformLocations {
         GLint view = -1;
@@ -737,71 +709,29 @@ private:
     // They never change tile selection, residency, or texture binding.
     std::array<GeographicPatchProgramState, kTileFragmentShadingProbes.size()>
         geographic_patch_programs_;
-    std::uint32_t base_globe_program_ = 0;
-    BaseGlobeUniformLocations base_globe_uniform_locs_;
-    std::uint32_t globe_vao_ = 0;
-    std::uint32_t globe_vbo_ = 0;
-    std::uint32_t globe_ebo_ = 0;
-    std::vector<unsigned int> globe_indices_;
     std::uint32_t geographic_patch_vao_ = 0;
     std::uint32_t geographic_patch_vbo_ = 0;
     std::uint32_t geographic_patch_ebo_ = 0;
 
     // Coarse base-globe vertex shader.
-    static constexpr const char* kTileVertexShader = EARTH_MAP_GLSL_PREAMBLE R"(
-layout (location = 0) in vec3 aPos;
-layout (location = 1) in vec3 aNormal;
-layout (location = 2) in vec2 aTexCoord;
-
-uniform mat4 uModel;
-uniform mat4 uView;
-uniform mat4 uProjection;
-
-out vec3 FragPos;
-out vec3 Normal;
-out vec2 TexCoord;
-
-void main() {
-    FragPos = vec3(uModel * vec4(aPos, 1.0));
-    Normal = mat3(transpose(inverse(uModel))) * aNormal;
-    TexCoord = aTexCoord;
-    gl_Position = uProjection * uView * vec4(FragPos, 1.0);
-}
-)";
-
-    // Cheap base globe used where no imagery patch is resident yet.
-    static constexpr const char* kBaseGlobeFragmentShader = EARTH_MAP_GLSL_PREAMBLE R"(
-in vec3 FragPos;
-in vec3 Normal;
-
-out vec4 FragColor;
-
-uniform vec3 uLightDirection;
-uniform vec3 uLightColor;
-
-void main() {
-    const vec3 baseColor = vec3(0.07, 0.13, 0.21);
-    const float ambientStrength = 0.25;
-    float diffuse = max(dot(normalize(Normal), uLightDirection), 0.0);
-    FragColor = vec4((ambientStrength + diffuse) * uLightColor * baseColor, 1.0);
-}
-)";
-
     // Geographic patches receive already projected CPU geometry and a direct
     // physical texture-array layer. No fragment ray construction, Mercator
     // conversion, GPU lookup, or parent fallback occurs here.
     static constexpr const char* kGeographicPatchVertexShader = EARTH_MAP_GLSL_PREAMBLE R"(
 layout (location = 0) in vec3 aPosition;
-layout (location = 1) in vec2 aLocalUv;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec2 aLocalUv;
 
 uniform mat4 uView;
 uniform mat4 uProjection;
 
 out vec3 WorldPosition;
+out vec3 WorldNormal;
 out vec2 LocalUv;
 
 void main() {
     WorldPosition = aPosition;
+    WorldNormal = aNormal;
     LocalUv = aLocalUv;
     gl_Position = uProjection * uView * vec4(aPosition, 1.0);
 }
@@ -813,6 +743,7 @@ void main() {
 #endif
 
 in vec3 WorldPosition;
+in vec3 WorldNormal;
 in vec2 LocalUv;
 
 out vec4 FragColor;
@@ -842,7 +773,7 @@ void main() {
     FragColor = texColor;
  #else
     const float ambientStrength = 0.25;
-    float diffuse = max(dot(normalize(WorldPosition), uLightDirection), 0.0);
+    float diffuse = max(dot(normalize(WorldNormal), uLightDirection), 0.0);
     FragColor = vec4((ambientStrength + diffuse) * uLightColor * texColor.rgb,
                      texColor.a);
  #endif
@@ -857,19 +788,6 @@ void main() {
         source += "\n";
         source += kGeographicPatchFragmentShaderBody;
         return source;
-    }
-
-    void CacheBaseGlobeUniformLocations() {
-        base_globe_uniform_locs_.view =
-            glGetUniformLocation(base_globe_program_, "uView");
-        base_globe_uniform_locs_.projection =
-            glGetUniformLocation(base_globe_program_, "uProjection");
-        base_globe_uniform_locs_.model =
-            glGetUniformLocation(base_globe_program_, "uModel");
-        base_globe_uniform_locs_.light_direction =
-            glGetUniformLocation(base_globe_program_, "uLightDirection");
-        base_globe_uniform_locs_.light_color =
-            glGetUniformLocation(base_globe_program_, "uLightColor");
     }
 
     void CacheGeographicPatchUniformLocations(GeographicPatchProgramState& state) {
@@ -892,11 +810,6 @@ void main() {
                 shader_state.program = 0;
             }
         }
-
-        if (base_globe_program_ != 0) {
-            glDeleteProgram(base_globe_program_);
-            base_globe_program_ = 0;
-        }
     }
 
     bool InitializeOpenGLState() {
@@ -916,15 +829,6 @@ void main() {
             CacheGeographicPatchUniformLocations(shader_state);
         }
 
-        base_globe_program_ = ShaderLoader::CreateProgram(
-            kTileVertexShader, kBaseGlobeFragmentShader, "geographic_base_globe");
-        if (base_globe_program_ == 0) {
-            spdlog::error("Failed to create geographic base globe shader program");
-            CleanupShaderPrograms();
-            return false;
-        }
-        CacheBaseGlobeUniformLocations();
-
         geographic_patch_grid_ = renderer::MakeGeographicPatchGrid(
             kGeographicPatchGridSubdivisions);
         if (!geographic_patch_grid_.has_value()) {
@@ -936,7 +840,7 @@ void main() {
 
         spdlog::info("Tile renderer OpenGL state initialized with a direct geographic "
                      "imagery patch path and {} fragment probes "
-                     "(mesh will be uploaded when provided)",
+                     "(camera-relative ECEF/ENU patch geometry)",
                      geographic_patch_programs_.size());
         return true;
     }
@@ -960,11 +864,16 @@ void main() {
                               reinterpret_cast<const void*>(offsetof(
                                   GeographicPatchVertex, position)));
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
+                              sizeof(GeographicPatchVertex),
+                              reinterpret_cast<const void*>(offsetof(
+                                  GeographicPatchVertex, normal)));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE,
                               sizeof(GeographicPatchVertex),
                               reinterpret_cast<const void*>(offsetof(
                                   GeographicPatchVertex, local_uv)));
-        glEnableVertexAttribArray(1);
+        glEnableVertexAttribArray(2);
         glBindVertexArray(0);
     }
 
@@ -983,25 +892,6 @@ void main() {
         geographic_patch_vertices_dirty_ = false;
     }
 
-    void RenderBaseGlobe(const glm::mat4& view_matrix,
-                         const glm::mat4& projection_matrix) {
-        glUseProgram(base_globe_program_);
-        glUniformMatrix4fv(base_globe_uniform_locs_.view, 1, GL_FALSE,
-                           glm::value_ptr(view_matrix));
-        glUniformMatrix4fv(base_globe_uniform_locs_.projection, 1, GL_FALSE,
-                           glm::value_ptr(projection_matrix));
-        glUniformMatrix4fv(base_globe_uniform_locs_.model, 1, GL_FALSE,
-                           glm::value_ptr(glm::mat4(1.0f)));
-        glUniform3f(base_globe_uniform_locs_.light_direction,
-                    kDefaultSunDirection.x, kDefaultSunDirection.y,
-                    kDefaultSunDirection.z);
-        glUniform3f(base_globe_uniform_locs_.light_color, 1.0f, 1.0f, 1.0f);
-
-        glBindVertexArray(globe_vao_);
-        glDrawElements(GL_TRIANGLES, globe_indices_.size(), GL_UNSIGNED_INT, nullptr);
-        glBindVertexArray(0);
-    }
-
     void RenderGeographicPatches(const glm::mat4& view_matrix,
                                  const glm::mat4& projection_matrix,
                                  FrameZoneScope& draw_zone) {
@@ -1018,9 +908,11 @@ void main() {
                            glm::value_ptr(view_matrix));
         glUniformMatrix4fv(uniform_locs.projection, 1, GL_FALSE,
                            glm::value_ptr(projection_matrix));
+        const glm::vec3 local_light_direction = CameraRelativeRenderDirection(
+            glm::dvec3(kDefaultSunDirection));
         glUniform3f(uniform_locs.light_direction,
-                    kDefaultSunDirection.x, kDefaultSunDirection.y,
-                    kDefaultSunDirection.z);
+                    local_light_direction.x, local_light_direction.y,
+                    local_light_direction.z);
         glUniform3f(uniform_locs.light_color,
                     1.0f, 1.0f, 1.0f);
 
@@ -1030,10 +922,8 @@ void main() {
         glUniform1i(uniform_locs.tile_pool, 0);
 
         glBindVertexArray(geographic_patch_vao_);
-        // glVertexAttribPointer captures the currently bound array buffer in
-        // this VAO. RenderBaseGlobe may have left a different VBO bound on a
-        // previous frame, so bind the patch VBO explicitly before rebasing
-        // the attributes for each cached patch range.
+        // Each patch range has a different vertex base in the shared dynamic
+        // VBO, so rebase its attributes before drawing.
         glBindBuffer(GL_ARRAY_BUFFER, geographic_patch_vbo_);
         for (const GeographicPatchDraw& draw : geographic_patch_draws_) {
             glUniform1f(uniform_locs.texture_layer,
@@ -1051,7 +941,11 @@ void main() {
                                   sizeof(GeographicPatchVertex),
                                   reinterpret_cast<const void*>(
                                       byte_offset + offsetof(GeographicPatchVertex, position)));
-            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
+                                  sizeof(GeographicPatchVertex),
+                                  reinterpret_cast<const void*>(
+                                      byte_offset + offsetof(GeographicPatchVertex, normal)));
+            glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE,
                                   sizeof(GeographicPatchVertex),
                                   reinterpret_cast<const void*>(
                                       byte_offset + offsetof(GeographicPatchVertex, local_uv)));
@@ -1067,14 +961,9 @@ void main() {
     void RenderDirectGeographicImagery(const glm::mat4& view_matrix,
                                         const glm::mat4& projection_matrix,
                                         FrameZoneScope& draw_zone) {
-        RenderBaseGlobe(view_matrix, projection_matrix);
-
-        // Patches are an imagery overlay over the legacy icosphere. The two
-        // independently tessellated surfaces do not share vertices, so depth
-        // testing would create false holes where the coarse patch chord falls
-        // microscopically inside the finer base mesh. Front/back culling still
-        // rejects the far hemisphere. Terrain will replace this temporary
-        // overlay relationship with one shared patch surface and depth.
+        // The geographic patch is the globe surface.  The former normalized
+        // icosphere was an incompatible second surface; it must not be drawn
+        // beneath this ECEF/ENU path.
         const GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
         glDisable(GL_DEPTH_TEST);
         RenderGeographicPatches(view_matrix, projection_matrix, draw_zone);
@@ -1085,121 +974,7 @@ void main() {
         stats_.rendered_tiles = geographic_patch_draws_.size();
     }
 
-    bool UploadMeshToGPU() {
-        // Upload the provided icosahedron mesh to GPU
-        // This replaces the old sphere generation - we now use the actual displaced globe mesh
-
-        if (!globe_mesh_) {
-            spdlog::error("UploadMeshToGPU: no globe mesh available");
-            return false;
-        }
-
-        const auto& mesh_vertices = globe_mesh_->GetVertices();
-        const auto& mesh_indices = globe_mesh_->GetVertexIndices();
-
-        if (mesh_vertices.empty() || mesh_indices.empty()) {
-            spdlog::error("UploadMeshToGPU: globe mesh has no geometry");
-            return false;
-        }
-
-        spdlog::info("Uploading globe mesh to GPU: {} vertices, {} indices",
-                     mesh_vertices.size(), mesh_indices.size());
-
-        // Convert GlobeVertex to flat array for OpenGL
-        // Format: position(3) + normal(3) + texcoord(2) = 8 floats per vertex
-        std::vector<float> vertices;
-        vertices.reserve(mesh_vertices.size() * 8);
-
-        for (const auto& vertex : mesh_vertices) {
-            // Position
-            vertices.push_back(vertex.position.x);
-            vertices.push_back(vertex.position.y);
-            vertices.push_back(vertex.position.z);
-            // Normal
-            vertices.push_back(vertex.normal.x);
-            vertices.push_back(vertex.normal.y);
-            vertices.push_back(vertex.normal.z);
-            // Texture coordinates
-            vertices.push_back(vertex.texcoord.x);
-            vertices.push_back(vertex.texcoord.y);
-        }
-
-        // Store indices for rendering
-        globe_indices_.clear();
-        globe_indices_.reserve(mesh_indices.size());
-        for (const auto& index : mesh_indices) {
-            globe_indices_.push_back(static_cast<unsigned int>(index));
-        }
-
-        // Clean up old GPU resources if they exist
-        if (globe_vao_ != 0) {
-            glDeleteVertexArrays(1, &globe_vao_);
-            globe_vao_ = 0;
-        }
-        if (globe_vbo_ != 0) {
-            glDeleteBuffers(1, &globe_vbo_);
-            globe_vbo_ = 0;
-        }
-        if (globe_ebo_ != 0) {
-            glDeleteBuffers(1, &globe_ebo_);
-            globe_ebo_ = 0;
-        }
-
-        // Create OpenGL objects
-        glGenVertexArrays(1, &globe_vao_);
-        glGenBuffers(1, &globe_vbo_);
-        glGenBuffers(1, &globe_ebo_);
-
-        // Bind VAO
-        glBindVertexArray(globe_vao_);
-
-        // Bind and fill VBO
-        glBindBuffer(GL_ARRAY_BUFFER, globe_vbo_);
-        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float),
-                    vertices.data(), GL_STATIC_DRAW);
-
-        // Bind and fill EBO
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, globe_ebo_);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, globe_indices_.size() * sizeof(unsigned int),
-                    globe_indices_.data(), GL_STATIC_DRAW);
-
-        // Set vertex attributes
-        // Position (location = 0)
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-
-        // Normal (location = 1)
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
-        glEnableVertexAttribArray(1);
-
-        // Texture coordinates (location = 2)
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-        glEnableVertexAttribArray(2);
-
-        // Unbind VAO
-        glBindVertexArray(0);
-
-        mesh_uploaded_to_gpu_ = true;
-
-        spdlog::info("Globe mesh uploaded to GPU: {} vertices, {} indices",
-                    vertices.size() / 8, globe_indices_.size());
-
-        return true;
-    }
-
     void Cleanup() {
-        if (globe_vao_) {
-            glDeleteVertexArrays(1, &globe_vao_);
-            globe_vao_ = 0;
-        }
-        if (globe_vbo_) {
-            glDeleteBuffers(1, &globe_vbo_);
-            globe_vbo_ = 0;
-        }
-        if (globe_ebo_) {
-            glDeleteBuffers(1, &globe_ebo_);
-            globe_ebo_ = 0;
-        }
         if (geographic_patch_vao_) {
             glDeleteVertexArrays(1, &geographic_patch_vao_);
             geographic_patch_vao_ = 0;
@@ -1214,63 +989,108 @@ void main() {
         }
         CleanupShaderPrograms();
     }
-    int CalculateOptimalZoom(float camera_distance) const {
-        const float altitude = camera_distance - 1.0f;
-
-        if (altitude <= 0.0f) {
-            return kMaxZoom;
-        }
-
-        // Single logarithmic mapping: zoom = log2(K / altitude).
-        // K (kZoomAltitudeScale) is calibrated so that min camera altitude
-        // maps to kMaxZoom. Each doubling of altitude drops zoom by 1,
-        // matching the tile pyramid where each level doubles tile count.
-        const float zoom = std::log2(kZoomAltitudeScale / altitude);
+    int CalculateOptimalZoom(const BoundingBox2D& visible_bounds) const {
+        GLint viewport[4] = {0, 0, 1280, 720};
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        const double visible_longitude_radians = std::clamp(
+            visible_bounds.max.x - visible_bounds.min.x, 1e-6, glm::two_pi<double>());
+        const double desired_tiles_across = std::max(
+            static_cast<double>(viewport[2]) / kTargetImageryTileScreenPixels, 1.0);
+        const double zoom = std::log2(glm::two_pi<double>() /
+            visible_longitude_radians * desired_tiles_across);
 
         return std::clamp(static_cast<int>(zoom), kMinZoom, kMaxZoom);
     }
 
-    BoundingBox2D CalculateVisibleGeographicBounds(const glm::vec3& camera_position,
-                                               const glm::mat4& view_matrix,
-                                               const glm::mat4& projection_matrix) const {
-        // Convert camera position to World coordinate type
-        using namespace coordinates;
-        World camera_world(camera_position);
+    BoundingBox2D CalculateVisibleGeographicBounds(
+        const glm::mat4& view_matrix,
+        const glm::mat4& projection_matrix) const {
+        if (!render_frame_.has_value()) {
+            return BoundingBox2D(glm::dvec2(-constants::math::PI, -glm::half_pi<double>()),
+                                 glm::dvec2(constants::math::PI, glm::half_pi<double>()));
+        }
 
-        // Use centralized CoordinateMapper for visibility calculation
-        GeographicBounds geo_bounds = CoordinateMapper::CalculateVisibleGeographicBounds(
-            camera_world, view_matrix, projection_matrix, 1.0f);
+        const glm::mat4 inverse_view_projection = glm::inverse(projection_matrix * view_matrix);
+        constexpr std::array<glm::vec2, 9> kSamplePoints = {{
+            {0.5f, 0.5f}, {0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f},
+            {0.5f, 0.0f}, {0.5f, 1.0f}, {0.0f, 0.5f}, {1.0f, 0.5f},
+        }};
 
-        // Convert GeographicBounds to legacy BoundingBox2D format
-        // BoundingBox2D uses (longitude, latitude) in x, y components
-        // Original min/max
-        glm::dvec2 min(geo_bounds.min.longitude, geo_bounds.min.latitude);
-        glm::dvec2 max(geo_bounds.max.longitude, geo_bounds.max.latitude);
+        double minimum_longitude = std::numeric_limits<double>::infinity();
+        double maximum_longitude = -std::numeric_limits<double>::infinity();
+        double minimum_latitude = std::numeric_limits<double>::infinity();
+        double maximum_latitude = -std::numeric_limits<double>::infinity();
+        for (const glm::vec2 sample : kSamplePoints) {
+            const float ndc_x = sample.x * 2.0f - 1.0f;
+            const float ndc_y = sample.y * 2.0f - 1.0f;
+            glm::vec4 near_point = inverse_view_projection * glm::vec4(ndc_x, ndc_y, -1.0f, 1.0f);
+            glm::vec4 far_point = inverse_view_projection * glm::vec4(ndc_x, ndc_y, 1.0f, 1.0f);
+            near_point /= near_point.w;
+            far_point /= far_point.w;
+            const geodesy::EcefPosition near_ecef = render_frame_->FromLocal(glm::dvec3(near_point));
+            const geodesy::EcefPosition far_ecef = render_frame_->FromLocal(glm::dvec3(far_point));
+            const glm::dvec3 direction = glm::normalize(far_ecef.meters - near_ecef.meters);
+            const auto intersection = IntersectWgs84Ellipsoid(
+                render_frame_->CameraOrigin(), direction);
+            if (!intersection.has_value()) {
+                continue;
+            }
+            const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(*intersection);
+            if (!geodetic.has_value()) {
+                continue;
+            }
+            minimum_longitude = std::min(minimum_longitude, geodetic->longitude_radians);
+            maximum_longitude = std::max(maximum_longitude, geodetic->longitude_radians);
+            minimum_latitude = std::min(minimum_latitude, geodetic->latitude_radians);
+            maximum_latitude = std::max(maximum_latitude, geodetic->latitude_radians);
+        }
 
-        // // Center of the bounds
-        // glm::dvec2 center = (min + max) * 0.5;
-
-        // // Half extents
-        // glm::dvec2 half_extents = (max - min) * 0.5;
-
-        // // Scale factor: keep 20% (reduce by 80%)
-        // constexpr double scale = 0.2;
-
-        // half_extents *= scale;
-
-        // // New reduced bounds
-        // glm::dvec2 reduced_min = center - half_extents;
-        // glm::dvec2 reduced_max = center + half_extents;
-
-        // return BoundingBox2D(reduced_min, reduced_max);
-        return BoundingBox2D(min, max);
+        if (!std::isfinite(minimum_longitude) ||
+            maximum_longitude - minimum_longitude > glm::pi<double>()) {
+            minimum_longitude = -constants::math::PI;
+            maximum_longitude = constants::math::PI;
+        }
+        if (!std::isfinite(minimum_latitude)) {
+            minimum_latitude = -glm::half_pi<double>();
+            maximum_latitude = glm::half_pi<double>();
+        }
+        return BoundingBox2D({minimum_longitude, minimum_latitude},
+                             {maximum_longitude, maximum_latitude});
     }
 
-    float CalculateTileLOD(const TileCoordinates& tile, float /*camera_distance*/) const {
+    [[nodiscard]] static std::optional<geodesy::EcefPosition> IntersectWgs84Ellipsoid(
+        const geodesy::EcefPosition& origin,
+        const glm::dvec3& direction) noexcept {
+        const double semi_major = geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters;
+        const double semi_minor = geodesy::Wgs84Ellipsoid::kSemiMinorAxisMeters;
+        const double semi_major_squared = semi_major * semi_major;
+        const double semi_minor_squared = semi_minor * semi_minor;
+        const double a = (direction.x * direction.x + direction.y * direction.y) /
+                semi_major_squared + direction.z * direction.z / semi_minor_squared;
+        const double b = 2.0 * ((origin.meters.x * direction.x + origin.meters.y * direction.y) /
+                semi_major_squared + origin.meters.z * direction.z / semi_minor_squared);
+        const double c = (origin.meters.x * origin.meters.x + origin.meters.y * origin.meters.y) /
+                semi_major_squared + origin.meters.z * origin.meters.z / semi_minor_squared - 1.0;
+        const double discriminant = b * b - 4.0 * a * c;
+        if (a <= 0.0 || discriminant < 0.0) {
+            return std::nullopt;
+        }
+        const double root = std::sqrt(discriminant);
+        const double near_distance = (-b - root) / (2.0 * a);
+        const double far_distance = (-b + root) / (2.0 * a);
+        const double distance = near_distance > 0.0 ? near_distance : far_distance;
+        if (distance <= 0.0) {
+            return std::nullopt;
+        }
+        return geodesy::EcefPosition{origin.meters + direction * distance};
+    }
+
+    float CalculateTileLOD(const TileCoordinates& tile) const {
         return static_cast<float>(tile.zoom);
     }
 
-    float CalculateLoadPriority(const TileCoordinates& tile, const glm::vec3& /*camera_position*/) const {
+    float CalculateLoadPriority(const TileCoordinates& tile,
+                                const geodesy::EcefPosition& /*camera_position*/) const {
         // For now, use zoom as priority (higher zoom = higher priority)
         return static_cast<float>(30 - tile.zoom); // Invert so higher zoom = lower number = higher priority
     }

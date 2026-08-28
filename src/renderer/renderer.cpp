@@ -6,7 +6,6 @@
 #include <earth_map/constants.h>
 #include <earth_map/platform/opengl_context.h>
 #include <earth_map/renderer/tile_renderer.h>
-#include <earth_map/renderer/globe_mesh.h>
 #include <earth_map/renderer/mini_map_renderer.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -195,40 +194,7 @@ public:
                 spdlog::info("Elevation rendering disabled");
             }
 
-            // Create icosahedron globe mesh with normalized radius
-            GlobeMeshParams params;
-            params.radius = static_cast<double>(constants::rendering::NORMALIZED_GLOBE_RADIUS);
-            params.max_subdivision_level = constants::rendering::DEFAULT_GLOBE_SUBDIVISION;
-            params.enable_adaptive = false;  // Start simple, can enable later
-            params.quality = MeshQuality::HIGH;
-            params.enable_crack_prevention = true;
-
-            globe_mesh_ = GlobeMesh::Create(params);
-
-            // Set elevation manager on globe mesh before generation
-            if (elevation_manager_) {
-                auto icosahedron_mesh = dynamic_cast<IcosahedronGlobeMesh*>(globe_mesh_.get());
-                if (icosahedron_mesh) {
-                    icosahedron_mesh->SetElevationManager(elevation_manager_);
-                }
-            }
-
-            if (!globe_mesh_->Generate()) {
-                spdlog::error("Failed to generate globe mesh");
-                return false;
-            }
-
-            spdlog::info("Globe mesh generated with {} vertices and {} triangles",
-                globe_mesh_->GetVertices().size(),
-                globe_mesh_->GetTriangles().size());
-
             SetupOpenGLState();
-
-            // Store expected counts for corruption detection
-            expected_globe_vertex_count_ = globe_mesh_->GetVertices().size();
-            expected_globe_index_count_ = globe_mesh_->GetVertexIndices().size();
-            spdlog::info("BASELINE: Stored expected mesh counts - vertices: {}, indices: {} (triangles: {})",
-                expected_globe_vertex_count_, expected_globe_index_count_, expected_globe_index_count_ / 3);
 
         // Set initial viewport
         glViewport(0, 0, config_.screen_width, config_.screen_height);
@@ -240,11 +206,6 @@ public:
             spdlog::error("Failed to create or initialize tile renderer");
             return false;
         }
-
-        // CRITICAL: Set the icosahedron mesh on tile renderer
-        // Tile renderer MUST use this mesh, not generate its own
-        tile_renderer_->SetGlobeMesh(globe_mesh_.get());
-        spdlog::info("Icosahedron mesh provided to tile renderer");
 
         // Initialize mini-map renderer with valid shader program
         MiniMapRenderer::Config mini_map_config;
@@ -280,18 +241,17 @@ public:
             return;
         }
 
-        // SINGLE RENDERING PATH: Always use tile renderer
-        // Tile renderer now uses the icosahedron mesh (with elevation displacement)
-        // Missing tiles are handled by base color in shader (no fallback mesh needed)
-        if (tile_renderer_) {
+        // The only globe path is camera-relative WGS84 geographic patches.
+        if (tile_renderer_ && camera_controller_) {
             tile_renderer_->BeginFrame();
             tile_renderer_->UpdateVisibleTiles(view_matrix, projection_matrix,
-                                                 camera_controller_->GetPosition());
+                                                 camera_controller_->GetEcefPosition());
             tile_renderer_->RenderTiles(view_matrix, projection_matrix);
             tile_renderer_->EndFrame();
-        } else {
-            // Only if tile renderer completely unavailable (should never happen)
+        } else if (!tile_renderer_) {
             spdlog::error("Tile renderer not available - nothing to render");
+        } else {
+            spdlog::error("Cannot render globe patches without an ECEF camera controller");
         }
 
         // OLD: Fallback rendering removed - tile renderer handles everything now
@@ -668,13 +628,6 @@ private:
     std::uint32_t vbo_ = 0;
     std::uint32_t ebo_ = 0;
     
-    // Globe mesh (icosahedron-based)
-    std::unique_ptr<GlobeMesh> globe_mesh_;
-
-    // Expected mesh counts for corruption detection
-    std::size_t expected_globe_vertex_count_ = 0;
-    std::size_t expected_globe_index_count_ = 0;
-
     std::unique_ptr<TileRenderer> tile_renderer_;
     std::shared_ptr<MiniMapRenderer> mini_map_renderer_;
     std::shared_ptr<ElevationManager> elevation_manager_;
@@ -705,80 +658,14 @@ private:
 
 
     void SetupOpenGLState() {
-        if (!globe_mesh_) {
-            spdlog::error("Globe mesh not initialized");
-            return;
-        }
-
-        // Convert GlobeVertex data to OpenGL format
-        const auto& vertices = globe_mesh_->GetVertices();
-        const auto& indices = globe_mesh_->GetVertexIndices();
-
-        // Flatten vertex data: position(3) + normal(3) + texcoord(2) = 8 floats per vertex
-        std::vector<float> vertex_data;
-        vertex_data.reserve(vertices.size() * 8);
-
-        for (const auto& vertex : vertices) {
-            // Position
-            vertex_data.push_back(vertex.position.x);
-            vertex_data.push_back(vertex.position.y);
-            vertex_data.push_back(vertex.position.z);
-            // Normal
-            vertex_data.push_back(vertex.normal.x);
-            vertex_data.push_back(vertex.normal.y);
-            vertex_data.push_back(vertex.normal.z);
-            // Texcoord
-            vertex_data.push_back(vertex.texcoord.x);
-            vertex_data.push_back(vertex.texcoord.y);
-        }
-
-        // Create VAO, VBO, EBO
-        glGenVertexArrays(1, &vao_);
-        glGenBuffers(1, &vbo_);
-        glGenBuffers(1, &ebo_);
-
-        // Bind VAO
-        glBindVertexArray(vao_);
-
-        // Bind and fill VBO
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-        glBufferData(GL_ARRAY_BUFFER, vertex_data.size() * sizeof(float),
-                    vertex_data.data(), GL_STATIC_DRAW);
-
-        // Bind and fill EBO
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo_);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(std::uint32_t),
-                    indices.data(), GL_STATIC_DRAW);
-
-        // Set vertex attributes
-        // Position (location = 0)
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-
-        // Normal (location = 1)
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
-        glEnableVertexAttribArray(1);
-
-        // Texture coordinates (location = 2)
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-        glEnableVertexAttribArray(2);
-
-        // Unbind VAO
-        glBindVertexArray(0);
-
-        spdlog::info("Globe mesh uploaded to GPU: {} vertices, {} indices",
-            vertices.size(), indices.size());
-
         // Enable depth testing
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
 
         // Enable backface culling for better performance
-        // Icosahedron topology is now correct with consistent CCW winding
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
-        glFrontFace(GL_CCW);  // Counter-clockwise winding is front face
-        spdlog::info("Backface culling enabled (CCW winding)");
+        glFrontFace(GL_CCW);
 
 #ifndef __ANDROID__
         // glPolygonMode doesn't exist in GLES; GL_FILL is already GLES's
