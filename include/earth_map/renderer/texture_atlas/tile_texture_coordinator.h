@@ -263,10 +263,11 @@ public:
     /**
      * Sets the exact and ancestor pages useful for the current camera view.
      *
-     * Exact pages receive priority over fallbacks. Queued worker and decoded
-     * work outside this set is cancelled or discarded before it can consume a
-     * physical texture-array upload. Loaded pages remain resident and are
-     * still governed by the physical-pool LRU.
+     * Exact pages receive priority over fallbacks. Worker requests that have
+     * not started outside this set are cancelled. In-flight and decoded pages
+     * remain as lower-priority cache-warm work, so their pixel buffers are
+     * never destructed by the render thread. Loaded pages remain resident and
+     * are still governed by the physical-pool LRU.
      *
      * Render thread only.
      */

@@ -4,7 +4,6 @@
  */
 
 #include <earth_map/renderer/texture_atlas/gl_upload_queue.h>
-#include <algorithm>
 #include <utility>
 
 namespace earth_map {
@@ -18,10 +17,9 @@ void GLUploadQueue::Push(std::unique_ptr<GLUploadCommand> cmd) {
     int priority = 0;
     if (active_filter_enabled_) {
         const auto active = active_priorities_.find(cmd->coords);
-        if (active == active_priorities_.end()) {
-            return;
-        }
-        priority = active->second;
+        priority = active == active_priorities_.end()
+            ? kInactivePriority
+            : active->second;
     }
 
     cmd->enqueued_at = std::chrono::steady_clock::now();
@@ -54,16 +52,12 @@ void GLUploadQueue::SetActivePriorities(
     active_priorities_ = std::move(priorities);
     active_filter_enabled_ = true;
 
-    queue_.erase(
-        std::remove_if(queue_.begin(), queue_.end(), [this](QueuedCommand& queued) {
-            const auto active = active_priorities_.find(queued.command->coords);
-            if (active == active_priorities_.end()) {
-                return true;
-            }
-            queued.priority = active->second;
-            return false;
-        }),
-        queue_.end());
+    for (QueuedCommand& queued : queue_) {
+        const auto active = active_priorities_.find(queued.command->coords);
+        queued.priority = active == active_priorities_.end()
+            ? kInactivePriority
+            : active->second;
+    }
 }
 
 std::size_t GLUploadQueue::Size() const {

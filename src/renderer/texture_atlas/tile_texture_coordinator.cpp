@@ -412,26 +412,45 @@ void TileTextureCoordinator::UpdateActiveRequests(
         upload_priorities.try_emplace(tile, 1);
     }
 
+    const auto refresh_start = std::chrono::steady_clock::now();
     upload_queue_->SetActivePriorities(std::move(upload_priorities));
-    worker_pool_->CancelQueuedRequestsExcept(active_tiles);
+    const double upload_queue_cpu_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - refresh_start).count();
+
+    const auto worker_queue_start = std::chrono::steady_clock::now();
+    const std::vector<TileCoordinates> cancelled_requests =
+        worker_pool_->CancelQueuedRequestsExcept(active_tiles);
+    const double worker_queue_cpu_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - worker_queue_start).count();
 
     std::size_t cancelled = 0;
+    const auto state_start = std::chrono::steady_clock::now();
     {
         std::unique_lock<std::shared_mutex> lock(state_mutex_);
-        for (auto it = tile_states_.begin(); it != tile_states_.end();) {
-            if (it->second.status == TileStatus::Loading &&
-                !active_tiles.contains(it->first)) {
-                it = tile_states_.erase(it);
+        for (const TileCoordinates& tile : cancelled_requests) {
+            const auto state = tile_states_.find(tile);
+            if (state != tile_states_.end() && state->second.status == TileStatus::Loading) {
+                tile_states_.erase(state);
                 pending_load_count_.fetch_sub(1);
                 ++cancelled;
-            } else {
-                ++it;
             }
         }
     }
+    const double state_cpu_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - state_start).count();
+    const double total_cpu_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - refresh_start).count();
 
-    if (cancelled != 0) {
-        spdlog::debug("Cancelled {} stale tile requests", cancelled);
+    if (total_cpu_ms >= 5.0) {
+        spdlog::info(
+            "Active tile request refresh: total={:.3f} ms, upload-queue={:.3f} ms, "
+            "worker-queue={:.3f} ms, state={:.3f} ms, active={}, cancelled={}",
+            total_cpu_ms,
+            upload_queue_cpu_ms,
+            worker_queue_cpu_ms,
+            state_cpu_ms,
+            active_tiles.size(),
+            cancelled);
     }
 }
 

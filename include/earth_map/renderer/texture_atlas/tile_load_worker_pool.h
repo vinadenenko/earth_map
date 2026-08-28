@@ -142,7 +142,7 @@ public:
      * camera request set. Requests already executing are allowed to finish;
      * their decoded result is filtered by GLUploadQueue.
      */
-    void CancelQueuedRequestsExcept(
+    std::vector<TileCoordinates> CancelQueuedRequestsExcept(
         const std::unordered_set<TileCoordinates, TileCoordinatesHash>& active_tiles);
 
     /**

@@ -84,7 +84,7 @@ struct GLUploadCommand {
  * - Size() is thread-safe (approximate)
  *
  * Design Rationale:
- * - The current camera request set is admitted ahead of stale decoded work
+ * - The current camera request set is admitted ahead of cache-warm decoded work
  * - Equal-priority uploads retain FIFO ordering for deterministic behavior
  * - Non-blocking TryPop() lets the GL thread impose a per-frame transfer budget
  */
@@ -135,14 +135,15 @@ public:
     std::unique_ptr<GLUploadCommand> TryPop();
 
     /**
-     * Replaces the set of decoded pages that are still useful for the current
-     * camera view. Commands outside that set are discarded immediately, and
-     * retained commands receive the supplied priority (lower is sooner).
+     * Replaces the decoded pages useful for the current camera view. Commands
+     * outside that set remain queued as low-priority cache-warm work; they
+     * are not destroyed by the GL thread. Retained commands receive the
+     * supplied priority (lower is sooner).
      *
-     * Subsequent Push calls also discard commands outside this set. This is
-     * intentionally a render-thread scheduling policy: it cannot cancel a
-     * network request already executing on a worker, but it prevents that
-     * completed stale request from consuming GL upload time.
+     * Subsequent Push calls receive the same active or low-priority class.
+     * This is intentionally a render-thread scheduling policy: cancellation
+     * belongs to work that has not begun decoding, while completed payloads
+     * must never be destructed on the render thread.
      */
     void SetActivePriorities(
         std::unordered_map<TileCoordinates, int, TileCoordinatesHash> priorities);
@@ -183,7 +184,9 @@ private:
     /// Internal queue storage. Selection is priority-first and FIFO on ties.
     std::deque<QueuedCommand> queue_;
 
-    /// Current render-view admission filter. Empty means no filter has been set.
+    static constexpr int kInactivePriority = 2;
+
+    /// Current render-view priorities. Empty means no filter has been set.
     std::unordered_map<TileCoordinates, int, TileCoordinatesHash> active_priorities_;
     bool active_filter_enabled_ = false;
     std::uint64_t next_sequence_ = 0;

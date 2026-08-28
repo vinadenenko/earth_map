@@ -88,11 +88,12 @@ void TileLoadWorkerPool::SubmitRequest(
     queue_cv_.notify_one();
 }
 
-void TileLoadWorkerPool::CancelQueuedRequestsExcept(
+std::vector<TileCoordinates> TileLoadWorkerPool::CancelQueuedRequestsExcept(
     const std::unordered_set<TileCoordinates, TileCoordinatesHash>& active_tiles) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
 
     std::priority_queue<TileLoadRequest> retained;
+    std::vector<TileCoordinates> cancelled;
     while (!request_queue_.empty()) {
         TileLoadRequest request = request_queue_.top();
         request_queue_.pop();
@@ -100,9 +101,11 @@ void TileLoadWorkerPool::CancelQueuedRequestsExcept(
             retained.push(std::move(request));
         } else {
             in_flight_.erase(request.coords);
+            cancelled.push_back(request.coords);
         }
     }
     request_queue_ = std::move(retained);
+    return cancelled;
 }
 
 std::size_t TileLoadWorkerPool::GetPendingCount() const {

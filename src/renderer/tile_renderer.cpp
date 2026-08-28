@@ -380,21 +380,34 @@ public:
         // this makes a direct high-zoom jump converge through real imagery,
         // rather than leaving an avoidable gray interval while exact children
         // download.  Both calls are idempotent.
-        {
-            EARTH_MAP_ZONE_SCOPE(zone_collector_, request_zone, "tile.cull.requests");
+        if (texture_coordinator_ && !visible_tile_coords.empty()) {
+            std::vector<TileCoordinates> ancestor_tiles;
+            {
+                EARTH_MAP_ZONE_SCOPE(
+                    zone_collector_, ancestor_zone, "tile.cull.requests.ancestors");
+                ancestor_tiles = BuildAncestorFallbackRequests(visible_tile_coords);
+            }
 
-            if (texture_coordinator_ && !visible_tile_coords.empty()) {
-                const std::vector<TileCoordinates> ancestor_tiles =
-                    BuildAncestorFallbackRequests(visible_tile_coords);
-
+            {
+                EARTH_MAP_ZONE_SCOPE(
+                    zone_collector_, active_zone, "tile.cull.requests.active");
                 texture_coordinator_->UpdateActiveRequests(
                     visible_tile_coords, ancestor_tiles);
+            }
+
+            {
+                EARTH_MAP_ZONE_SCOPE(
+                    zone_collector_, submit_zone, "tile.cull.requests.submit");
                 texture_coordinator_->RequestTiles(ancestor_tiles, 1);
                 texture_coordinator_->RequestTiles(visible_tile_coords, 0);
+            }
 
-                // Keep both exact and fallback pages selected for this frame at
-                // the front of the physical-layer LRU. This is render-thread
-                // ownership, not a worker/cache mutation.
+            // Keep both exact and fallback pages selected for this frame at
+            // the front of the physical-layer LRU. This is render-thread
+            // ownership, not a worker/cache mutation.
+            {
+                EARTH_MAP_ZONE_SCOPE(
+                    zone_collector_, touch_zone, "tile.cull.requests.touch");
                 texture_coordinator_->TouchTiles(ancestor_tiles);
                 texture_coordinator_->TouchTiles(visible_tile_coords);
             }
