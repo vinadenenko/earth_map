@@ -100,6 +100,10 @@ enum class TileFragmentShadingProbe : std::uint8_t {
  */
 struct TileRenderConfig {
     std::uint32_t max_visible_tiles = 1000;     ///< Maximum tiles to render simultaneously
+    /// Maximum logical imagery uploads processed in one render frame. Hosts
+    /// should choose this for their GPU class: 8 is the desktop baseline;
+    /// constrained mobile hosts commonly use 1.
+    std::uint32_t max_tile_uploads_per_frame = 8;
     float tile_fade_distance = 2.0f;           ///< Distance for tile fade in/out
     bool enable_lod_transitions = true;           ///< Enable smooth LOD transitions
     float min_lod_distance = 100.0f;          ///< Minimum distance for LOD switching

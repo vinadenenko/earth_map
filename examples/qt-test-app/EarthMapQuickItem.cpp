@@ -765,10 +765,17 @@ public slots:
         config.screen_width = static_cast<std::uint32_t>(std::max(1, viewport_rect_.width()));
         config.screen_height = static_cast<std::uint32_t>(std::max(1, viewport_rect_.height()));
 #ifdef __ANDROID__
+        // Adreno and Mali drivers can block for an entire frame on a burst of
+        // texture-array uploads. Keep the mobile baseline conservative; hosts
+        // can override the public renderer configuration when appropriate.
+        config.tile_render_config.max_tile_uploads_per_frame = 1;
         // Android's native trust store is not automatically visible to the
         // packaged OpenSSL/libcurl backend. Keep strict TLS verification and
         // point libcurl at the current Mozilla CA bundle embedded above.
         config.tile_loader_config.ca_cert_path = InstallCaBundle();
+#else
+        // Desktop drivers have ample measured headroom for a small burst.
+        config.tile_render_config.max_tile_uploads_per_frame = 8;
 #endif
 
         // Matches examples/basic_example.cpp's googleProvider exactly,

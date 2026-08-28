@@ -192,7 +192,8 @@ public:
             // zone so scenario timing measures the upload work itself.
             EARTH_MAP_CPU_ZONE_SCOPE(zone_collector_, upload_zone, "tile.upload");
             const TileTextureCoordinator::UploadProcessStats upload_stats =
-                texture_coordinator_->ProcessUploads();
+                texture_coordinator_->ProcessUploads(
+                    static_cast<int>(config_.max_tile_uploads_per_frame));
             stats_.upload_queue_depth_before = upload_stats.queue_depth_before;
             stats_.upload_queue_depth_after = upload_stats.queue_depth_after;
             stats_.upload_commands_processed = upload_stats.commands_processed;
@@ -521,8 +522,9 @@ public:
 
     void SetConfig(const TileRenderConfig& config) override {
         config_ = config;
-        spdlog::info("Tile renderer config updated: max_tiles={}, fragment_probe={}",
+        spdlog::info("Tile renderer config updated: max_tiles={}, max_uploads={}, fragment_probe={}",
                      config_.max_visible_tiles,
+                     config_.max_tile_uploads_per_frame,
                      TileFragmentProbeName(config_.fragment_shading_probe));
     }
 

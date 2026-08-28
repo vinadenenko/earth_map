@@ -235,7 +235,7 @@ public:
         spdlog::info("Viewport set to {}x{}", config_.screen_width, config_.screen_height);
 
     // Initialize tile renderer
-        tile_renderer_ = TileRenderer::Create();
+        tile_renderer_ = TileRenderer::Create(config_.tile_render_config);
         if (!tile_renderer_ || !tile_renderer_->Initialize()) {
             spdlog::error("Failed to create or initialize tile renderer");
             return false;

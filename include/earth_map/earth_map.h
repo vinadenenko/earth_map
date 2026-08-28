@@ -19,6 +19,7 @@
 #include <earth_map/data/tile_loader.h>
 #include <earth_map/data/srtm_loader.h>
 #include <earth_map/renderer/elevation_manager.h>
+#include <earth_map/renderer/tile_renderer.h>
 
 namespace earth_map {
 
@@ -52,6 +53,9 @@ struct Configuration {
 
     /** SRTM data loader configuration */
     SRTMLoaderConfig srtm_loader_config;
+
+    /** Imagery selection and per-frame upload budget configuration. */
+    TileRenderConfig tile_render_config;
 };
 
 /**
