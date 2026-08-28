@@ -53,7 +53,7 @@ public:
     std::vector<FrameZoneTiming> EndFrame();
 
     // Used by FrameZoneScope; not for direct use.
-    void BeginZone(const std::string& name);
+    void BeginZone(const std::string& name, bool measure_gpu = true);
     void EndZone(const std::string& name);
     void AddDrawCall(const std::string& name, std::uint64_t triangle_count);
 
@@ -77,9 +77,9 @@ private:
 
 class FrameZoneScope final {
 public:
-    FrameZoneScope(FrameZoneTimingCollector& collector, std::string name)
+    FrameZoneScope(FrameZoneTimingCollector& collector, std::string name, bool measure_gpu = true)
         : collector_(collector), name_(std::move(name)) {
-        collector_.BeginZone(name_);
+        collector_.BeginZone(name_, measure_gpu);
     }
     ~FrameZoneScope() { collector_.EndZone(name_); }
 
@@ -100,6 +100,9 @@ private:
 #define EARTH_MAP_ZONE_SCOPE(collector, var, name) \
     ::earth_map::FrameZoneScope var((collector), (name))
 
+#define EARTH_MAP_CPU_ZONE_SCOPE(collector, var, name) \
+    ::earth_map::FrameZoneScope var((collector), (name), false)
+
 #else  // !EARTH_MAP_ENABLE_PERFORMANCE_MONITORING
 
 #include <cstdint>
@@ -116,7 +119,7 @@ public:
 
 class FrameZoneScope final {
 public:
-    FrameZoneScope(FrameZoneTimingCollector&, const std::string&) {}
+    FrameZoneScope(FrameZoneTimingCollector&, const std::string&, bool = true) {}
     void AddDrawCall(std::uint64_t) {}
 };
 
@@ -124,5 +127,8 @@ public:
 
 #define EARTH_MAP_ZONE_SCOPE(collector, var, name) \
     ::earth_map::FrameZoneScope var((collector), (name))
+
+#define EARTH_MAP_CPU_ZONE_SCOPE(collector, var, name) \
+    ::earth_map::FrameZoneScope var((collector), (name), false)
 
 #endif  // EARTH_MAP_ENABLE_PERFORMANCE_MONITORING

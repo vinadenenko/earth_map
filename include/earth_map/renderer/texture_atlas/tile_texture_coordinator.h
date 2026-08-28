@@ -327,6 +327,9 @@ private:
      */
     void OnTileLoadComplete(const TileCoordinates& coords);
 
+    /// Clears a Loading state when its worker releases an obsolete result.
+    void OnTileLoadDiscarded(const TileCoordinates& coords);
+
     /// Tile state map (coordinates → state)
     std::unordered_map<TileCoordinates, TileState, TileCoordinatesHash> tile_states_;
 

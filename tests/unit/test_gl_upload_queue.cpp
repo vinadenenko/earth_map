@@ -100,7 +100,7 @@ TEST_F(GLUploadQueueTest, FIFOOrdering) {
     EXPECT_EQ(queue_->Size(), 0u);
 }
 
-TEST_F(GLUploadQueueTest, ActiveViewCommandsPreemptCacheWarmCommands) {
+TEST_F(GLUploadQueueTest, ActiveViewCommandsPreemptAndRetireStaleCommands) {
     const TileCoordinates stale(1, 1, 5);
     const TileCoordinates fallback(2, 2, 5);
     const TileCoordinates exact(3, 3, 5);
@@ -109,8 +109,11 @@ TEST_F(GLUploadQueueTest, ActiveViewCommandsPreemptCacheWarmCommands) {
     queue_->Push(CreateTestCommand(fallback.x, fallback.y, fallback.zoom));
     queue_->Push(CreateTestCommand(exact.x, exact.y, exact.zoom));
 
-    queue_->SetActivePriorities({{fallback, 1}, {exact, 0}});
-    EXPECT_EQ(queue_->Size(), 3U);
+    auto retired = queue_->SetActivePriorities({{fallback, 1}, {exact, 0}});
+    ASSERT_EQ(retired.size(), 1U);
+    ASSERT_NE(retired.front(), nullptr);
+    EXPECT_EQ(retired.front()->coords, stale);
+    EXPECT_EQ(queue_->Size(), 2U);
 
     const auto first = queue_->TryPop();
     ASSERT_NE(first, nullptr);
@@ -120,9 +123,6 @@ TEST_F(GLUploadQueueTest, ActiveViewCommandsPreemptCacheWarmCommands) {
     ASSERT_NE(second, nullptr);
     EXPECT_EQ(second->coords, fallback);
 
-    const auto third = queue_->TryPop();
-    ASSERT_NE(third, nullptr);
-    EXPECT_EQ(third->coords, stale);
 }
 
 TEST_F(GLUploadQueueTest, DataIntegrity) {

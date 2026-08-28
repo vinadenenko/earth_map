@@ -107,6 +107,9 @@ void TileTextureCoordinator::RequestTiles(
                 worker_pool_->SubmitRequest(coords, priority,
                     [this](const TileCoordinates& loaded_coords) {
                         this->OnTileLoadComplete(loaded_coords);
+                    },
+                    [this](const TileCoordinates& discarded_coords) {
+                        this->OnTileLoadDiscarded(discarded_coords);
                     });
 
                 spdlog::trace("Requested tile {}", coords.GetKey());
@@ -412,45 +415,33 @@ void TileTextureCoordinator::UpdateActiveRequests(
         upload_priorities.try_emplace(tile, 1);
     }
 
-    const auto refresh_start = std::chrono::steady_clock::now();
-    upload_queue_->SetActivePriorities(std::move(upload_priorities));
-    const double upload_queue_cpu_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - refresh_start).count();
+    std::vector<std::unique_ptr<GLUploadCommand>> retired_commands =
+        upload_queue_->SetActivePriorities(std::move(upload_priorities));
+    std::vector<TileCoordinates> obsolete_requests;
+    obsolete_requests.reserve(retired_commands.size());
+    for (const auto& command : retired_commands) {
+        if (command) {
+            obsolete_requests.push_back(command->coords);
+        }
+    }
+    worker_pool_->ReclaimUploadCommands(std::move(retired_commands));
 
-    const auto worker_queue_start = std::chrono::steady_clock::now();
     const std::vector<TileCoordinates> cancelled_requests =
         worker_pool_->CancelQueuedRequestsExcept(active_tiles);
-    const double worker_queue_cpu_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - worker_queue_start).count();
+    obsolete_requests.insert(
+        obsolete_requests.end(), cancelled_requests.begin(), cancelled_requests.end());
 
-    std::size_t cancelled = 0;
-    const auto state_start = std::chrono::steady_clock::now();
     {
         std::unique_lock<std::shared_mutex> lock(state_mutex_);
-        for (const TileCoordinates& tile : cancelled_requests) {
+        std::unordered_set<TileCoordinates, TileCoordinatesHash> unique_obsolete_requests(
+            obsolete_requests.begin(), obsolete_requests.end());
+        for (const TileCoordinates& tile : unique_obsolete_requests) {
             const auto state = tile_states_.find(tile);
             if (state != tile_states_.end() && state->second.status == TileStatus::Loading) {
                 tile_states_.erase(state);
                 pending_load_count_.fetch_sub(1);
-                ++cancelled;
             }
         }
-    }
-    const double state_cpu_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - state_start).count();
-    const double total_cpu_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - refresh_start).count();
-
-    if (total_cpu_ms >= 5.0) {
-        spdlog::info(
-            "Active tile request refresh: total={:.3f} ms, upload-queue={:.3f} ms, "
-            "worker-queue={:.3f} ms, state={:.3f} ms, active={}, cancelled={}",
-            total_cpu_ms,
-            upload_queue_cpu_ms,
-            worker_queue_cpu_ms,
-            state_cpu_ms,
-            active_tiles.size(),
-            cancelled);
     }
 }
 
@@ -533,6 +524,15 @@ TileTextureCoordinator::GetTileStatus(const TileCoordinates& coords) const {
 
 void TileTextureCoordinator::OnTileLoadComplete(const TileCoordinates& coords) {
     spdlog::trace("Tile {} load complete, queued for upload", coords.GetKey());
+}
+
+void TileTextureCoordinator::OnTileLoadDiscarded(const TileCoordinates& coords) {
+    std::unique_lock<std::shared_mutex> lock(state_mutex_);
+    const auto state = tile_states_.find(coords);
+    if (state != tile_states_.end() && state->second.status == TileStatus::Loading) {
+        tile_states_.erase(state);
+        pending_load_count_.fetch_sub(1);
+    }
 }
 
 } // namespace earth_map

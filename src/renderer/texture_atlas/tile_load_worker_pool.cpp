@@ -66,7 +66,8 @@ void TileLoadWorkerPool::Shutdown() {
 void TileLoadWorkerPool::SubmitRequest(
     const TileCoordinates& coords,
     int priority,
-    std::function<void(const TileCoordinates&)> on_complete) {
+    std::function<void(const TileCoordinates&)> on_complete,
+    std::function<void(const TileCoordinates&)> on_discarded) {
 
     std::lock_guard<std::mutex> lock(queue_mutex_);
 
@@ -80,12 +81,30 @@ void TileLoadWorkerPool::SubmitRequest(
     in_flight_.insert(coords);
 
     // Add to priority queue
-    request_queue_.emplace(coords, priority, std::move(on_complete));
+    request_queue_.emplace(
+        coords, priority, std::move(on_complete), std::move(on_discarded));
 
     spdlog::trace("Submitted tile {} with priority {}", coords.GetKey(), priority);
 
     // Notify one worker
     queue_cv_.notify_one();
+}
+
+void TileLoadWorkerPool::ReclaimUploadCommands(
+    std::vector<std::unique_ptr<GLUploadCommand>> commands) {
+    if (commands.empty()) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        for (auto& command : commands) {
+            if (command) {
+                reclamation_queue_.push_back(std::move(command));
+            }
+        }
+    }
+    queue_cv_.notify_all();
 }
 
 std::vector<TileCoordinates> TileLoadWorkerPool::CancelQueuedRequestsExcept(
@@ -116,8 +135,10 @@ std::size_t TileLoadWorkerPool::GetPendingCount() const {
 void TileLoadWorkerPool::WorkerThreadMain() {
     spdlog::debug("Worker thread started");
 
+    bool reclaim_after_request = false;
     while (true) {
         TileLoadRequest request;
+        std::unique_ptr<GLUploadCommand> reclaimed_command;
         bool have_request = false;
 
         // Wait for request or shutdown
@@ -125,18 +146,32 @@ void TileLoadWorkerPool::WorkerThreadMain() {
             std::unique_lock<std::mutex> lock(queue_mutex_);
 
             queue_cv_.wait(lock, [this]() {
-                return !request_queue_.empty() || shutdown_flag_.load();
+                return !request_queue_.empty() || !reclamation_queue_.empty() ||
+                    shutdown_flag_.load();
             });
 
-            // Get request from queue
-            if (!request_queue_.empty()) {
+            // Service current imagery first, but release one retired payload
+            // after each request so reclamation remains bounded under motion.
+            if (!reclamation_queue_.empty() &&
+                (request_queue_.empty() || reclaim_after_request)) {
+                reclaimed_command = std::move(reclamation_queue_.front());
+                reclamation_queue_.pop_front();
+                reclaim_after_request = false;
+            } else if (!request_queue_.empty()) {
                 request = request_queue_.top();
                 request_queue_.pop();
                 have_request = true;
+                reclaim_after_request = true;
             } else if (shutdown_flag_.load()) {
-                // Queue is empty and shutdown requested - exit
                 break;
             }
+        }
+
+        // Let the local unique_ptr release outside every queue mutex and off
+        // the render thread.
+        if (reclaimed_command) {
+            reclaimed_command.reset();
+            continue;
         }
 
         // Process request outside of lock
@@ -169,20 +204,29 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
         // Enqueue an empty command so ProcessUploads sees the failure and
         // resets the tile from Loading back to NotLoaded (via its existing
         // upload-failed path). Without this the tile stays Loading forever.
-        upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
+        if (!upload_queue_->Push(std::make_unique<GLUploadCommand>(coords)) &&
+            request.on_discarded) {
+            request.on_discarded(coords);
+        }
         return;
     }
 
     if (!load_result.tile_data) {
         spdlog::warn("Loaded tile {} but data is null", coords.GetKey());
-        upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
+        if (!upload_queue_->Push(std::make_unique<GLUploadCommand>(coords)) &&
+            request.on_discarded) {
+            request.on_discarded(coords);
+        }
         return;
     }
 
     if (!load_result.imagery_key.has_value() || !load_result.imagery_key->IsValid() ||
         load_result.tile_data->metadata.imagery_key != *load_result.imagery_key) {
         spdlog::error("Loaded tile {} without a consistent canonical imagery key", coords.GetKey());
-        upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
+        if (!upload_queue_->Push(std::make_unique<GLUploadCommand>(coords)) &&
+            request.on_discarded) {
+            request.on_discarded(coords);
+        }
         return;
     }
 
@@ -193,7 +237,10 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
     if (!DecodeImage(tile_data)) {
         spdlog::warn("Failed to decode image for tile {}", coords.GetKey());
         // Enqueue an empty command so ProcessUploads resets the tile state.
-        upload_queue_->Push(std::make_unique<GLUploadCommand>(coords));
+        if (!upload_queue_->Push(std::make_unique<GLUploadCommand>(coords)) &&
+            request.on_discarded) {
+            request.on_discarded(coords);
+        }
         return;
     }
 
@@ -207,7 +254,12 @@ void TileLoadWorkerPool::ProcessRequest(const TileLoadRequest& request) {
     upload_cmd->channels = tile_data.channels;
 
     // Step 5: Push to GL upload queue
-    upload_queue_->Push(std::move(upload_cmd));
+    if (!upload_queue_->Push(std::move(upload_cmd))) {
+        if (request.on_discarded) {
+            request.on_discarded(coords);
+        }
+        return;
+    }
 
     // Step 6: Execute callback if provided
     if (request.on_complete) {

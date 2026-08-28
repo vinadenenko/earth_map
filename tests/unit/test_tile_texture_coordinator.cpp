@@ -265,6 +265,20 @@ TEST_F(TileTextureCoordinatorTest, UploadMakesCanonicalPagePhysicallyResident) {
               static_cast<std::uint16_t>(pool_layer));
 }
 
+TEST_F(TileTextureCoordinatorTest, RetiringDecodedStalePageClearsLoadingState) {
+    const TileCoordinates stale(40, 40, 8);
+    const TileCoordinates current(41, 41, 8);
+
+    coordinator_->RequestTiles({stale}, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    ASSERT_EQ(coordinator_->GetTileStatus(stale), TileTextureCoordinator::TileStatus::Loading);
+
+    coordinator_->UpdateActiveRequests({current}, {});
+
+    EXPECT_EQ(coordinator_->GetTileStatus(stale), TileTextureCoordinator::TileStatus::NotLoaded);
+    EXPECT_EQ(coordinator_->GetPendingLoadCount(), 0U);
+}
+
 // ============================================================================
 // UV Coordinate Tests
 // ============================================================================

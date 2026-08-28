@@ -16,14 +16,14 @@ void FrameZoneTimingCollector::BeginFrame() {
     current_frame_zones_.clear();
 }
 
-void FrameZoneTimingCollector::BeginZone(const std::string& name) {
+void FrameZoneTimingCollector::BeginZone(const std::string& name, bool measure_gpu) {
     active_cpu_starts_[name] = std::chrono::steady_clock::now();
 
     auto it = zone_state_.find(name);
     if (it == zone_state_.end()) {
         zone_order_.push_back(name);
         ZoneState state;
-        if (GpuElapsedTimeQuery::IsSupported()) {
+        if (measure_gpu && GpuElapsedTimeQuery::IsSupported()) {
             state.gpu_query = std::make_unique<GpuElapsedTimeQuery>();
         }
         it = zone_state_.emplace(name, std::move(state)).first;

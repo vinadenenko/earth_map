@@ -187,7 +187,10 @@ public:
 
         // Process GL uploads from worker threads (must be on GL thread)
         if (texture_coordinator_) {
-            EARTH_MAP_ZONE_SCOPE(zone_collector_, upload_zone, "tile.upload");
+            // Several mobile drivers synchronously stall around an elapsed
+            // timer query that brackets texture uploads. Keep this as a CPU
+            // zone so scenario timing measures the upload work itself.
+            EARTH_MAP_CPU_ZONE_SCOPE(zone_collector_, upload_zone, "tile.upload");
             const TileTextureCoordinator::UploadProcessStats upload_stats =
                 texture_coordinator_->ProcessUploads();
             stats_.upload_queue_depth_before = upload_stats.queue_depth_before;
@@ -380,34 +383,19 @@ public:
         // this makes a direct high-zoom jump converge through real imagery,
         // rather than leaving an avoidable gray interval while exact children
         // download.  Both calls are idempotent.
-        if (texture_coordinator_ && !visible_tile_coords.empty()) {
-            std::vector<TileCoordinates> ancestor_tiles;
-            {
-                EARTH_MAP_ZONE_SCOPE(
-                    zone_collector_, ancestor_zone, "tile.cull.requests.ancestors");
-                ancestor_tiles = BuildAncestorFallbackRequests(visible_tile_coords);
-            }
-
-            {
-                EARTH_MAP_ZONE_SCOPE(
-                    zone_collector_, active_zone, "tile.cull.requests.active");
+        {
+            EARTH_MAP_CPU_ZONE_SCOPE(zone_collector_, request_zone, "tile.cull.requests");
+            if (texture_coordinator_ && !visible_tile_coords.empty()) {
+                const std::vector<TileCoordinates> ancestor_tiles =
+                    BuildAncestorFallbackRequests(visible_tile_coords);
                 texture_coordinator_->UpdateActiveRequests(
                     visible_tile_coords, ancestor_tiles);
-            }
-
-            {
-                EARTH_MAP_ZONE_SCOPE(
-                    zone_collector_, submit_zone, "tile.cull.requests.submit");
                 texture_coordinator_->RequestTiles(ancestor_tiles, 1);
                 texture_coordinator_->RequestTiles(visible_tile_coords, 0);
-            }
 
-            // Keep both exact and fallback pages selected for this frame at
-            // the front of the physical-layer LRU. This is render-thread
-            // ownership, not a worker/cache mutation.
-            {
-                EARTH_MAP_ZONE_SCOPE(
-                    zone_collector_, touch_zone, "tile.cull.requests.touch");
+                // Keep both exact and fallback pages selected for this frame at
+                // the front of the physical-layer LRU. This is render-thread
+                // ownership, not a worker/cache mutation.
                 texture_coordinator_->TouchTiles(ancestor_tiles);
                 texture_coordinator_->TouchTiles(visible_tile_coords);
             }

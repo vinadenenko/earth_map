@@ -27,6 +27,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <deque>
 #include <queue>
 #include <unordered_set>
 #include <atomic>
@@ -47,6 +48,9 @@ struct TileLoadRequest {
     /// Completion callback (optional, called after upload command created)
     std::function<void(const TileCoordinates&)> on_complete;
 
+    /// Called when a decoded result became obsolete before it reached GL.
+    std::function<void(const TileCoordinates&)> on_discarded;
+
     /**
      * @brief Default constructor
      */
@@ -58,8 +62,10 @@ struct TileLoadRequest {
     TileLoadRequest(
         const TileCoordinates& tile_coords,
         int prio,
-        std::function<void(const TileCoordinates&)> callback = nullptr)
-        : coords(tile_coords), priority(prio), on_complete(std::move(callback)) {}
+        std::function<void(const TileCoordinates&)> callback = nullptr,
+        std::function<void(const TileCoordinates&)> discarded_callback = nullptr)
+        : coords(tile_coords), priority(prio), on_complete(std::move(callback)),
+          on_discarded(std::move(discarded_callback)) {}
 
     /**
      * @brief Comparison for priority queue (higher priority = lower number)
@@ -135,15 +141,22 @@ public:
     void SubmitRequest(
         const TileCoordinates& coords,
         int priority = 0,
-        std::function<void(const TileCoordinates&)> on_complete = nullptr);
+        std::function<void(const TileCoordinates&)> on_complete = nullptr,
+        std::function<void(const TileCoordinates&)> on_discarded = nullptr);
 
     /**
      * Drops requests that have not started and no longer belong to the active
      * camera request set. Requests already executing are allowed to finish;
-     * their decoded result is filtered by GLUploadQueue.
+     * their decoded result is reclaimed by a CPU worker if it becomes stale.
      */
     std::vector<TileCoordinates> CancelQueuedRequestsExcept(
         const std::unordered_set<TileCoordinates, TileCoordinatesHash>& active_tiles);
+
+    /**
+     * Transfers stale decoded payload ownership from the render thread to the
+     * worker pool. A worker releases these buffers outside the GL queue mutex.
+     */
+    void ReclaimUploadCommands(std::vector<std::unique_ptr<GLUploadCommand>> commands);
 
     /**
      * @brief Shutdown worker pool
@@ -216,6 +229,9 @@ private:
 
     /// Priority queue of tile load requests
     std::priority_queue<TileLoadRequest> request_queue_;
+
+    /// Decoded payloads retired by a camera change and released by workers.
+    std::deque<std::unique_ptr<GLUploadCommand>> reclamation_queue_;
 
     /// Set of tiles currently being processed (deduplication)
     std::unordered_set<TileCoordinates, TileCoordinatesHash> in_flight_;

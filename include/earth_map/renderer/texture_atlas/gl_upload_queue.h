@@ -84,7 +84,7 @@ struct GLUploadCommand {
  * - Size() is thread-safe (approximate)
  *
  * Design Rationale:
- * - The current camera request set is admitted ahead of cache-warm decoded work
+ * - The current camera request set is admitted ahead of stale decoded work
  * - Equal-priority uploads retain FIFO ordering for deterministic behavior
  * - Non-blocking TryPop() lets the GL thread impose a per-frame transfer budget
  */
@@ -118,7 +118,7 @@ public:
      *
      * Thread Safety: Safe to call from multiple threads concurrently
      */
-    void Push(std::unique_ptr<GLUploadCommand> cmd);
+    bool Push(std::unique_ptr<GLUploadCommand> cmd);
 
     /**
      * @brief Try to pop an upload command from the queue (thread-safe, non-blocking)
@@ -136,16 +136,17 @@ public:
 
     /**
      * Replaces the decoded pages useful for the current camera view. Commands
-     * outside that set remain queued as low-priority cache-warm work; they
-     * are not destroyed by the GL thread. Retained commands receive the
-     * supplied priority (lower is sooner).
+     * outside that set are moved to the caller for asynchronous reclamation;
+     * they are never destroyed by the GL thread. Retained commands receive
+     * the supplied priority (lower is sooner).
      *
-     * Subsequent Push calls receive the same active or low-priority class.
-     * This is intentionally a render-thread scheduling policy: cancellation
-     * belongs to work that has not begun decoding, while completed payloads
-     * must never be destructed on the render thread.
+     * Subsequent Push calls reject an obsolete command so its worker can
+     * release the payload on the CPU side. This is intentionally a
+     * render-thread scheduling policy: cancellation belongs to work that has
+     * not begun decoding, while completed payloads must never be destructed
+     * on the render thread.
      */
-    void SetActivePriorities(
+    std::vector<std::unique_ptr<GLUploadCommand>> SetActivePriorities(
         std::unordered_map<TileCoordinates, int, TileCoordinatesHash> priorities);
 
     /**
@@ -183,8 +184,6 @@ private:
 
     /// Internal queue storage. Selection is priority-first and FIFO on ties.
     std::deque<QueuedCommand> queue_;
-
-    static constexpr int kInactivePriority = 2;
 
     /// Current render-view priorities. Empty means no filter has been set.
     std::unordered_map<TileCoordinates, int, TileCoordinatesHash> active_priorities_;
