@@ -37,6 +37,7 @@ static bool mouse_dragging = false;
 static earth_map::EarthMap* g_earth_map_instance = nullptr;
 static bool show_help = true;
 static bool show_overlay = true;
+static bool wireframe_enabled = false;
 
 // Double-click detection
 static double last_click_time = 0.0;
@@ -119,6 +120,7 @@ void print_help() {
     std::cout << "║   1                 : Jump to Himalayas (SRTM data region) ║\n";
     std::cout << "║   Ctrl + 2          : Jump to Yerevan zoom-13 test view    ║\n";
     std::cout << "║   O                 : Toggle debug overlay                 ║\n";
+    std::cout << "║   T                 : Toggle wireframe (globe triangles)   ║\n";
     std::cout << "║   P                 : Run/stop scripted perf-test flight    ║\n";
     std::cout << "║                       (logs PerformanceStats to             ║\n";
     std::cout << "║                       perf_flight.log; locks out input)     ║\n";
@@ -311,6 +313,12 @@ void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int
                 bool enabled = g_earth_map_instance->IsMiniMapEnabled();
                 g_earth_map_instance->EnableMiniMap(!enabled);
                 std::cout << "→ Mini-map: " << (!enabled ? "ON" : "OFF") << "\n";
+                break;
+            }
+            case GLFW_KEY_T: {
+                wireframe_enabled = !wireframe_enabled;
+                g_earth_map_instance->GetRenderer()->SetWireframeEnabled(wireframe_enabled);
+                std::cout << "→ Wireframe: " << (wireframe_enabled ? "ON" : "OFF") << "\n";
                 break;
             }
             case GLFW_KEY_H:

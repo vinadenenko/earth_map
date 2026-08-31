@@ -241,10 +241,21 @@ public:
     
     /**
      * @brief Get globe texture for rendering
-     * 
+     *
      * @return std::uint32_t OpenGL texture ID for globe (0 if none)
      */
     virtual std::uint32_t GetGlobeTexture() const = 0;
+
+    /**
+     * @brief Enable or disable wireframe rendering of geographic patches
+     *
+     * Debug visualization: draws each visible patch's triangle mesh as
+     * lines instead of filled triangles, using the same geometry and draw
+     * calls as normal rendering.
+     *
+     * @param enabled true to draw wireframe, false for filled triangles
+     */
+    virtual void SetWireframeEnabled(bool enabled) = 0;
 
 protected:
     /**

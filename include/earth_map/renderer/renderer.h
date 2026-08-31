@@ -206,6 +206,14 @@ public:
      */
     virtual void SetElevationEnabled(bool enabled) = 0;
 
+    /**
+     * @brief Enable or disable wireframe rendering of the globe's geographic
+     * imagery patches (debug visualization of the current tile mesh)
+     *
+     * @param enabled true to draw patch triangles as wireframe, false for filled
+     */
+    virtual void SetWireframeEnabled(bool enabled) = 0;
+
 protected:
     /**
      * @brief Protected constructor to enforce factory pattern

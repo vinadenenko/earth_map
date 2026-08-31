@@ -543,6 +543,10 @@ public:
         return 0;
     }
 
+    void SetWireframeEnabled(bool enabled) override {
+        wireframe_enabled_ = enabled;
+    }
+
 private:
     [[nodiscard]] glm::vec3 CameraRelativeRenderPosition(
         const geodesy::GeodeticPosition& geodetic) const {
@@ -682,6 +686,7 @@ private:
     TileTextureCoordinator* texture_coordinator_ = nullptr;
     std::optional<renderer::EcefRenderFrame> render_frame_;
     bool initialized_ = false;
+    bool wireframe_enabled_ = false;
     std::uint64_t frame_counter_ = 0;
     std::vector<TileRenderState> visible_tiles_;
     std::optional<renderer::GeographicPatchGrid> geographic_patch_grid_;
@@ -933,6 +938,9 @@ void main() {
                       texture_coordinator_->GetTilePoolTextureID());
         glUniform1i(uniform_locs.tile_pool, 0);
 
+        if (wireframe_enabled_) {
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        }
         glBindVertexArray(geographic_patch_vao_);
         // Each patch range has a different vertex base in the shared dynamic
         // VBO, so rebase its attributes before drawing.
@@ -966,6 +974,9 @@ void main() {
                            GL_UNSIGNED_INT,
                            nullptr);
             draw_zone.AddDrawCall(geographic_patch_grid_->indices.size() / 3U);
+        }
+        if (wireframe_enabled_) {
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         }
         glBindVertexArray(0);
     }

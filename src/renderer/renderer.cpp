@@ -504,6 +504,14 @@ public:
         }
     }
 
+    void SetWireframeEnabled(bool enabled) override {
+        if (tile_renderer_) {
+            tile_renderer_->SetWireframeEnabled(enabled);
+        } else if (enabled) {
+            spdlog::warn("Cannot enable wireframe: tile renderer not initialized");
+        }
+    }
+
     PlacemarkRenderer* GetPlacemarkRenderer() override {
         return nullptr;
     }
