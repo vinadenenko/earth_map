@@ -22,6 +22,9 @@ EarthMapImpl::EarthMapImpl(const Configuration& config)
     if (!config_.placemark_layer) {
         config_.placemark_layer = placemarks::PlacemarkLayer::Create();
     }
+    if (!config_.icon_registry) {
+        config_.icon_registry = placemarks::PlacemarkIconRegistry::Create();
+    }
 }
 
 EarthMapImpl::~EarthMapImpl() {
@@ -91,6 +94,10 @@ CameraController* EarthMapImpl::GetCameraController() {
 
 std::shared_ptr<placemarks::PlacemarkLayer> EarthMapImpl::GetPlacemarkLayer() {
     return config_.placemark_layer;
+}
+
+std::shared_ptr<placemarks::PlacemarkIconRegistry> EarthMapImpl::GetPlacemarkIconRegistry() {
+    return config_.icon_registry;
 }
 
 bool EarthMapImpl::LoadData(const std::string& file_path) {

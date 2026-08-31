@@ -298,5 +298,45 @@ Window {
             }
         }
     }
+
+        Rectangle {
+        width: 200
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: 12
+        color: "#d0202020"
+        radius: 6
+        border.color: "#808080"
+        border.width: 1
+        implicitHeight: placemarkControls.implicitHeight + 16
+
+        Column {
+            id: placemarkControls
+            anchors.fill: parent
+            anchors.margins: 8
+            spacing: 6
+
+            Text {
+                text: "Placemarks"
+                color: "white"
+                font.bold: true
+                font.pixelSize: 14
+            }
+            Button {
+                text: "Create 100k placemarks"
+                onClicked: map.createStressTestPlacemarks(100000)
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                color: "white"
+                text: map.placemarkStressTestCount > 0
+                      ? "Apply(): " + map.placemarkStressTestCount + " points in "
+                        + map.placemarkStressTestElapsedMs.toFixed(2) + " ms"
+                      : "Registers one procedural icon and upserts a full batch in one Apply() call."
+                font.pixelSize: 12
+            }
+        }
+    }
     }
 }

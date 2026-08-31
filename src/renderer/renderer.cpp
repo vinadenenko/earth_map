@@ -4,9 +4,11 @@
 #include <earth_map/data/elevation_provider.h>
 #include <earth_map/earth_map.h>
 #include <earth_map/constants.h>
+#include <earth_map/geodesy/wgs84_ellipsoid.h>
 #include <earth_map/platform/opengl_context.h>
 #include <earth_map/renderer/tile_renderer.h>
 #include <earth_map/renderer/mini_map_renderer.h>
+#include "placemarks/point_placemark_renderer.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
@@ -207,6 +209,12 @@ public:
             return false;
         }
 
+        // GL resources for this are created lazily on first Render() call
+        // with at least one visible placemark, not here -- nothing to fail
+        // on at this point.
+        point_placemark_renderer_ =
+            std::make_unique<renderer::placemarks::PointPlacemarkRenderer>();
+
         // Initialize mini-map renderer with valid shader program
         MiniMapRenderer::Config mini_map_config;
         mini_map_config.width = 256;
@@ -252,6 +260,19 @@ public:
             spdlog::error("Tile renderer not available - nothing to render");
         } else {
             spdlog::error("Cannot render globe patches without an ECEF camera controller");
+        }
+
+        if (point_placemark_renderer_ && camera_controller_ && config_.placemark_layer &&
+            config_.icon_registry) {
+            const auto camera_geodetic =
+                geodesy::Wgs84Ellipsoid::FromEcef(camera_controller_->GetEcefPosition());
+            if (camera_geodetic.has_value()) {
+                point_placemark_renderer_->Render(
+                    config_.placemark_layer->Snapshot(), config_.icon_registry->Snapshot(),
+                    *camera_geodetic, view_matrix, projection_matrix,
+                    glm::vec2(static_cast<float>(config_.screen_width),
+                             static_cast<float>(config_.screen_height)));
+            }
         }
 
         // OLD: Fallback rendering removed - tile renderer handles everything now
@@ -637,6 +658,7 @@ private:
     std::uint32_t ebo_ = 0;
     
     std::unique_ptr<TileRenderer> tile_renderer_;
+    std::unique_ptr<renderer::placemarks::PointPlacemarkRenderer> point_placemark_renderer_;
     std::shared_ptr<MiniMapRenderer> mini_map_renderer_;
     std::shared_ptr<ElevationManager> elevation_manager_;
     CameraController* camera_controller_ = nullptr;

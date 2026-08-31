@@ -101,6 +101,15 @@ class EarthMapQuickItem : public QQuickItem {
     Q_PROPERTY(QString performanceScenarioReportPath READ performanceScenarioReportPath
                NOTIFY performanceScenarioChanged FINAL)
 
+    // Result of the last createStressTestPlacemarks() run. Reflects only
+    // the single Apply() call's own cost -- not tile loading, not the
+    // render-thread's per-frame placemark selection/draw, which the
+    // existing tile/frame stats above already cover.
+    Q_PROPERTY(int placemarkStressTestCount READ placemarkStressTestCount
+               NOTIFY placemarkStressTestResultChanged FINAL)
+    Q_PROPERTY(double placemarkStressTestElapsedMs READ placemarkStressTestElapsedMs
+               NOTIFY placemarkStressTestResultChanged FINAL)
+
 public:
     explicit EarthMapQuickItem(QQuickItem* parent = nullptr);
 
@@ -133,10 +142,23 @@ public:
     Q_INVOKABLE void startPerformanceScenario(const QString& name);
     Q_INVOKABLE void stopPerformanceScenario();
 
+    int placemarkStressTestCount() const { return placemark_stress_test_count_; }
+    double placemarkStressTestElapsedMs() const { return placemark_stress_test_elapsed_ms_; }
+
+    // Registers one procedurally-generated icon (if not already registered)
+    // and creates `count` point placemarks in a single PlacemarkChangeSet,
+    // distributed across the globe on a deterministic lat/lon grid. Received
+    // on the GUI thread and forwarded at the next Qt Quick synchronization
+    // point -- the actual PlacemarkLayer::Apply() call runs on the render
+    // thread, alongside where EarthMap itself lives, even though the layer
+    // API is itself thread-safe.
+    Q_INVOKABLE void createStressTestPlacemarks(int count);
+
 signals:
     void performanceStatsChanged();
     void tileRenderStatsChanged();
     void performanceScenarioChanged();
+    void placemarkStressTestResultChanged();
 public slots:
     void sync();
     void cleanup();
@@ -162,6 +184,12 @@ public slots:
 
     void setPerformanceScenarioState(bool active, const QString& status,
                                      const QString& reportPath);
+
+    // Invoked (queued, cross-thread) from
+    // earth_map_qt_detail::EarthMapRenderer::placemarkStressTestReady,
+    // emitted from paint() on the render thread once the requested
+    // PlacemarkLayer::Apply() call has completed.
+    void setPlacemarkStressTestResult(int count, double elapsedMs);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -205,6 +233,10 @@ private:
     QString performance_scenario_report_path_;
     QString pending_performance_scenario_name_;
     bool performance_scenario_stop_requested_ = false;
+
+    int placemark_stress_test_count_ = 0;
+    double placemark_stress_test_elapsed_ms_ = 0.0;
+    int pending_placemark_stress_test_count_ = 0;
 
     friend class earth_map_qt_detail::EarthMapRenderer;
 

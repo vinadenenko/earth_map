@@ -32,8 +32,12 @@
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/constants.h>
 #include <earth_map/earth_map.h>
+#include <earth_map/placemarks/placemark_icon_registry.h>
+#include <earth_map/placemarks/placemark_layer.h>
 #include <earth_map/renderer/renderer.h>
 #include <earth_map/renderer/tile_renderer.h>
+
+#include <glm/glm.hpp>
 
 #include <algorithm>
 #include <array>
@@ -460,6 +464,16 @@ void EarthMapQuickItem::stopPerformanceScenario() {
     }
 }
 
+void EarthMapQuickItem::createStressTestPlacemarks(int count) {
+    if (count <= 0) {
+        return;
+    }
+    pending_placemark_stress_test_count_ = count;
+    if (window()) {
+        window()->update();
+    }
+}
+
 void EarthMapQuickItem::mousePressEvent(QMouseEvent* event) {
     earth_map::InputEvent input_event;
     input_event.type = earth_map::InputEvent::Type::MOUSE_BUTTON_PRESS;
@@ -706,6 +720,10 @@ public:
         pending_scenario_stop_ = true;
     }
 
+    void RequestStressTestPlacemarks(int count) {
+        pending_stress_test_count_ = count;
+    }
+
 signals:
     // Mirrors earth_map::PerformanceStats (see EarthMapQuickItem.h's
     // Q_PROPERTYs), pre-converted to QML-friendly types here on the render
@@ -731,6 +749,10 @@ signals:
     // never once per frame. That keeps the QML performance overlay out of
     // the benchmarked frame loop.
     void performanceScenarioStateReady(bool active, QString status, QString reportPath);
+
+    // Emitted once the requested PlacemarkLayer::Apply() call completes --
+    // elapsedMs is that single call's own cost, timed on the render thread.
+    void placemarkStressTestReady(int count, double elapsedMs);
 
 public slots:
     void init() {
@@ -808,6 +830,8 @@ public slots:
             pending_events_.clear();
             return;
         }
+
+        RunStressTestPlacemarksIfRequested();
 
         // Squircle's own pattern for interleaving raw GL with Qt Quick's
         // RHI-recorded command stream (see squircle.cpp).
@@ -911,6 +935,92 @@ public slots:
     }
 
 private:
+    // Small filled circle, synthesized in C++ so the demo needs no bundled
+    // PNG asset. Every icon registered through PlacemarkIconRegistry must be
+    // exactly kIconCellSize x kIconCellSize RGBA8 pixels.
+    static std::vector<std::uint8_t> MakeStressTestIconPixels() {
+        constexpr std::uint32_t size = earth_map::placemarks::PlacemarkIconRegistry::kIconCellSize;
+        std::vector<std::uint8_t> pixels(static_cast<std::size_t>(size) * size * 4, 0);
+        const float center = static_cast<float>(size) / 2.0f;
+        const float radius = center * 0.8f;
+        for (std::uint32_t y = 0; y < size; ++y) {
+            for (std::uint32_t x = 0; x < size; ++x) {
+                const float dx = static_cast<float>(x) + 0.5f - center;
+                const float dy = static_cast<float>(y) + 0.5f - center;
+                const std::size_t index = (static_cast<std::size_t>(y) * size + x) * 4;
+                const bool inside_circle = dx * dx + dy * dy <= radius * radius;
+                pixels[index + 0] = 235;
+                pixels[index + 1] = 64;
+                pixels[index + 2] = 52;
+                pixels[index + 3] = inside_circle ? 255 : 0;
+            }
+        }
+        return pixels;
+    }
+
+    // Registers the stress-test icon (once) and creates `count` point
+    // placemarks in a single PlacemarkChangeSet, on a deterministic lat/lon
+    // grid covering the whole globe. Times only the Apply() call itself --
+    // that is the one operation this demo exists to measure (see the
+    // 8s->5s framing in the original design plan): a single upsert batch,
+    // never one Apply() per point.
+    void RunStressTestPlacemarksIfRequested() {
+        if (pending_stress_test_count_ <= 0 || !earth_map_) {
+            return;
+        }
+        const int count = std::exchange(pending_stress_test_count_, 0);
+
+        const auto icon_registry = earth_map_->GetPlacemarkIconRegistry();
+        const auto placemark_layer = earth_map_->GetPlacemarkLayer();
+        if (!icon_registry || !placemark_layer) {
+            return;
+        }
+
+        static const QString kStressTestIconKey = QStringLiteral("stress_test_dot");
+        const std::string icon_key = kStressTestIconKey.toStdString();
+        if (!icon_registry->Snapshot().Find(icon_key).has_value()) {
+            icon_registry->Register(icon_key,
+                                    earth_map::placemarks::PlacemarkIconRegistry::kIconCellSize,
+                                    earth_map::placemarks::PlacemarkIconRegistry::kIconCellSize,
+                                    MakeStressTestIconPixels());
+        }
+
+        earth_map::placemarks::PlacemarkChangeSet changes;
+        changes.upserts.reserve(static_cast<std::size_t>(count));
+        // Roughly-square lat/lon grid, evenly spread across the globe --
+        // simplest possible procedural distribution; not meant to look like
+        // real-world data, just to exercise Apply() and rendering at scale.
+        const int columns =
+            std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count) * 2.0))));
+        const int rows = std::max(1, static_cast<int>(std::ceil(
+            static_cast<double>(count) / static_cast<double>(columns))));
+        int placed = 0;
+        for (int row = 0; row < rows && placed < count; ++row) {
+            for (int column = 0; column < columns && placed < count; ++column) {
+                earth_map::placemarks::PointPlacemark point;
+                point.metadata.id = static_cast<earth_map::placemarks::PlacemarkId>(placed + 1);
+                point.position.latitude_radians =
+                    glm::radians(-90.0 + 180.0 * (static_cast<double>(row) + 0.5) / rows);
+                point.position.longitude_radians =
+                    glm::radians(-180.0 + 360.0 * (static_cast<double>(column) + 0.5) / columns);
+                point.icon.icon_key = icon_key;
+                changes.upserts.push_back(std::move(point));
+                ++placed;
+            }
+        }
+
+        const auto start_time = std::chrono::steady_clock::now();
+        const earth_map::placemarks::PlacemarkApplyResult result =
+            placemark_layer->Apply(changes);
+        const double elapsed_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start_time).count();
+
+        if (!result.applied) {
+            qWarning() << "Placemark stress test: Apply() rejected the change set";
+        }
+        emit placemarkStressTestReady(placed, elapsed_ms);
+    }
+
     void ProcessPerformanceScenarioCommands(earth_map::CameraController* camera) {
         if (!pending_scenario_start_.isEmpty()) {
             const QString requested_name = std::exchange(pending_scenario_start_, QString{});
@@ -1464,6 +1574,8 @@ private:
     QString pending_scenario_start_;
     bool pending_scenario_stop_ = false;
     PerformanceScenarioState performance_scenario_;
+
+    int pending_stress_test_count_ = 0;
 };
 
 // Deletes the renderer on the render thread with a current GL context --
@@ -1489,6 +1601,8 @@ void EarthMapQuickItem::sync() {
                 &earth_map_qt_detail::EarthMapRenderer::paint, Qt::DirectConnection);
         connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::performanceScenarioStateReady, this,
                 &EarthMapQuickItem::setPerformanceScenarioState);
+        connect(renderer_, &earth_map_qt_detail::EarthMapRenderer::placemarkStressTestReady, this,
+                &EarthMapQuickItem::setPlacemarkStressTestResult);
     }
 
     renderer_->SetWindow(window());
@@ -1497,6 +1611,10 @@ void EarthMapQuickItem::sync() {
     if (!pending_performance_scenario_name_.isEmpty()) {
         renderer_->RequestPerformanceScenarioStart(
             std::exchange(pending_performance_scenario_name_, QString{}));
+    }
+    if (pending_placemark_stress_test_count_ > 0) {
+        renderer_->RequestStressTestPlacemarks(
+            std::exchange(pending_placemark_stress_test_count_, 0));
     }
     if (performance_scenario_stop_requested_) {
         renderer_->RequestPerformanceScenarioStop();
@@ -1541,6 +1659,12 @@ void EarthMapQuickItem::setPerformanceScenarioState(bool active, const QString& 
     performance_scenario_status_ = status;
     performance_scenario_report_path_ = reportPath;
     emit performanceScenarioChanged();
+}
+
+void EarthMapQuickItem::setPlacemarkStressTestResult(int count, double elapsedMs) {
+    placemark_stress_test_count_ = count;
+    placemark_stress_test_elapsed_ms_ = elapsedMs;
+    emit placemarkStressTestResultChanged();
 }
 
 void EarthMapQuickItem::cleanup() {

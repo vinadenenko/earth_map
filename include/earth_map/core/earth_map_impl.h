@@ -45,6 +45,7 @@ public:
     SceneManager* GetSceneManager() override;
     CameraController* GetCameraController() override;
     std::shared_ptr<placemarks::PlacemarkLayer> GetPlacemarkLayer() override;
+    std::shared_ptr<placemarks::PlacemarkIconRegistry> GetPlacemarkIconRegistry() override;
     bool LoadData(const std::string& file_path) override;
 
     void EnableMiniMap(bool enabled) override;

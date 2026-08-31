@@ -21,6 +21,7 @@
 #include <earth_map/renderer/elevation_manager.h>
 #include <earth_map/renderer/tile_renderer.h>
 #include <earth_map/placemarks/placemark_layer.h>
+#include <earth_map/placemarks/placemark_icon_registry.h>
 
 namespace earth_map {
 
@@ -63,6 +64,12 @@ struct Configuration {
      * default layer owned by EarthMap.
      */
     std::shared_ptr<placemarks::PlacemarkLayer> placemark_layer;
+
+    /**
+     * Optional application-owned placemark icon registry. A null value
+     * creates the default registry owned by EarthMap.
+     */
+    std::shared_ptr<placemarks::PlacemarkIconRegistry> icon_registry;
 };
 
 /**
@@ -147,7 +154,14 @@ public:
      * resources, terrain anchoring, and picking remain internal subsystems.
      */
     virtual std::shared_ptr<placemarks::PlacemarkLayer> GetPlacemarkLayer() = 0;
-    
+
+    /**
+     * Gets the map's placemark icon registry, which resolves the icon keys
+     * referenced by IconStyle::icon_key into decoded pixels the renderer
+     * builds a GPU atlas from.
+     */
+    virtual std::shared_ptr<placemarks::PlacemarkIconRegistry> GetPlacemarkIconRegistry() = 0;
+
     /**
      * @brief Load data from a file
      * 
