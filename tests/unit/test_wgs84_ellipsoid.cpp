@@ -75,5 +75,38 @@ TEST(Wgs84EllipsoidTest, EarthCentreHasNoGeodeticRepresentation) {
     EXPECT_FALSE(Wgs84Ellipsoid::FromEcef(EcefPosition{}).has_value());
 }
 
+TEST(Wgs84EllipsoidTest, IntersectRayHitsNearSurfaceAlongEquatorPrimeMeridian) {
+    const EcefPosition origin{glm::dvec3(10'000'000.0, 0.0, 0.0)};
+    const glm::dvec3 direction(-1.0, 0.0, 0.0);
+
+    const std::optional<EcefPosition> hit = Wgs84Ellipsoid::IntersectRay(origin, direction);
+
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_NEAR(hit->meters.x, Wgs84Ellipsoid::kSemiMajorAxisMeters, 1e-3);
+    EXPECT_NEAR(hit->meters.y, 0.0, 1e-6);
+    EXPECT_NEAR(hit->meters.z, 0.0, 1e-6);
+}
+
+TEST(Wgs84EllipsoidTest, IntersectRayMissesWhenAimedAwayFromEllipsoid) {
+    const EcefPosition origin{glm::dvec3(10'000'000.0, 0.0, 0.0)};
+    const glm::dvec3 direction(0.0, 1.0, 0.0);
+
+    EXPECT_FALSE(Wgs84Ellipsoid::IntersectRay(origin, direction).has_value());
+}
+
+TEST(Wgs84EllipsoidTest, IntersectRayIgnoresIntersectionsBehindOrigin) {
+    // Origin already inside/behind the surface along the ray direction: both
+    // roots of the pointing-away ray are non-positive.
+    const EcefPosition origin{glm::dvec3(10'000'000.0, 0.0, 0.0)};
+    const glm::dvec3 direction(1.0, 0.0, 0.0);  // Points away from Earth entirely.
+
+    EXPECT_FALSE(Wgs84Ellipsoid::IntersectRay(origin, direction).has_value());
+}
+
+TEST(Wgs84EllipsoidTest, IntersectRayRejectsDegenerateDirection) {
+    const EcefPosition origin{glm::dvec3(10'000'000.0, 0.0, 0.0)};
+    EXPECT_FALSE(Wgs84Ellipsoid::IntersectRay(origin, glm::dvec3(0.0, 0.0, 0.0)).has_value());
+}
+
 }  // namespace earth_map::geodesy
 

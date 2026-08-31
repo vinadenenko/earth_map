@@ -47,6 +47,15 @@ constexpr int kMinZoom = 0;
 constexpr int kMaxZoom = 21;
 constexpr std::uint32_t kGeographicPatchGridSubdivisions = 16;
 
+// Derived so that minimum camera altitude (MIN_ALTITUDE_METERS) maps to
+// kMaxZoom. Every doubling of altitude decreases zoom by 1, matching the
+// tile pyramid where each level doubles tile count. This is the real-metres
+// port of main's original normalized-unit formula: the EARTH_MEAN_RADIUS
+// normalization term cancels exactly once altitude is already in metres.
+constexpr double kZoomAltitudeScale =
+    static_cast<double>(constants::camera_constraints::MIN_ALTITUDE_METERS) *
+    static_cast<double>(std::uint64_t{1} << kMaxZoom);
+
 constexpr std::array<TileFragmentShadingProbe, 4> kTileFragmentShadingProbes = {
     TileFragmentShadingProbe::FullImagery,
     TileFragmentShadingProbe::FlatFill,
@@ -73,8 +82,6 @@ const char* TileFragmentProbeName(TileFragmentShadingProbe probe) {
     }
     return "full";
 }
-
-constexpr double kTargetImageryTileScreenPixels = 128.0;
 
 /**
  * Returns the ancestors sampled by the fragment shader when an exact imagery
@@ -262,12 +269,17 @@ public:
             // TileMathematics candidate path for like-for-like attribution.
             EARTH_MAP_ZONE_SCOPE(zone_collector_, select_zone, "tile.cull.select");
 
-            // Camera-relative ray intersections define a geographic screen
-            // footprint. Tile level follows that footprint, rather than a
-            // normalized radius or a magic altitude-to-zoom constant.
+            // Zoom follows camera altitude directly (always well-defined,
+            // monotonic) rather than the screen-footprint estimate below --
+            // that estimate is a spatial sample that can legitimately miss
+            // the globe for ordinary camera geometries (e.g. wide FOV with
+            // the globe filling most but not all of the screen), which
+            // would otherwise make the requested zoom level swing wildly.
+            // Visible bounds still decide which quadtree region to select,
+            // just not how much detail to request.
+            zoom_level = CalculateOptimalZoom(camera_geodetic->ellipsoid_height_meters);
             const BoundingBox2D visible_bounds = CalculateVisibleGeographicBounds(
                 view_matrix, projection_matrix);
-            zoom_level = CalculateOptimalZoom(visible_bounds);
 
             // Every imagery path starts from the provider's declared source
             // matrix and refines the same geographic quadtree. Diagnostic
@@ -961,15 +973,12 @@ void main() {
     void RenderDirectGeographicImagery(const glm::mat4& view_matrix,
                                         const glm::mat4& projection_matrix,
                                         FrameZoneScope& draw_zone) {
-        // The geographic patch is the globe surface.  The former normalized
-        // icosphere was an incompatible second surface; it must not be drawn
-        // beneath this ECEF/ENU path.
-        const GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
-        glDisable(GL_DEPTH_TEST);
+        // The geographic patch is the globe surface -- and, unlike the old
+        // normalized icosphere this replaced, it is not one continuous mesh
+        // but many independent per-patch draws. Depth testing must stay on
+        // so overlapping/near-side patches (and anything else sharing this
+        // depth buffer, e.g. elevation or placemarks) resolve correctly.
         RenderGeographicPatches(view_matrix, projection_matrix, draw_zone);
-        if (depth_test_enabled) {
-            glEnable(GL_DEPTH_TEST);
-        }
 
         stats_.rendered_tiles = geographic_patch_draws_.size();
     }
@@ -989,16 +998,11 @@ void main() {
         }
         CleanupShaderPrograms();
     }
-    int CalculateOptimalZoom(const BoundingBox2D& visible_bounds) const {
-        GLint viewport[4] = {0, 0, 1280, 720};
-        glGetIntegerv(GL_VIEWPORT, viewport);
-        const double visible_longitude_radians = std::clamp(
-            visible_bounds.max.x - visible_bounds.min.x, 1e-6, glm::two_pi<double>());
-        const double desired_tiles_across = std::max(
-            static_cast<double>(viewport[2]) / kTargetImageryTileScreenPixels, 1.0);
-        const double zoom = std::log2(glm::two_pi<double>() /
-            visible_longitude_radians * desired_tiles_across);
-
+    int CalculateOptimalZoom(double altitude_meters) const {
+        if (altitude_meters <= 0.0) {
+            return kMaxZoom;
+        }
+        const double zoom = std::log2(kZoomAltitudeScale / altitude_meters);
         return std::clamp(static_cast<int>(zoom), kMinZoom, kMaxZoom);
     }
 
@@ -1020,6 +1024,7 @@ void main() {
         double maximum_longitude = -std::numeric_limits<double>::infinity();
         double minimum_latitude = std::numeric_limits<double>::infinity();
         double maximum_latitude = -std::numeric_limits<double>::infinity();
+        int hit_count = 0;
         for (const glm::vec2 sample : kSamplePoints) {
             const float ndc_x = sample.x * 2.0f - 1.0f;
             const float ndc_y = sample.y * 2.0f - 1.0f;
@@ -1030,7 +1035,7 @@ void main() {
             const geodesy::EcefPosition near_ecef = render_frame_->FromLocal(glm::dvec3(near_point));
             const geodesy::EcefPosition far_ecef = render_frame_->FromLocal(glm::dvec3(far_point));
             const glm::dvec3 direction = glm::normalize(far_ecef.meters - near_ecef.meters);
-            const auto intersection = IntersectWgs84Ellipsoid(
+            const auto intersection = geodesy::Wgs84Ellipsoid::IntersectRay(
                 render_frame_->CameraOrigin(), direction);
             if (!intersection.has_value()) {
                 continue;
@@ -1039,13 +1044,62 @@ void main() {
             if (!geodetic.has_value()) {
                 continue;
             }
+            ++hit_count;
             minimum_longitude = std::min(minimum_longitude, geodetic->longitude_radians);
             maximum_longitude = std::max(maximum_longitude, geodetic->longitude_radians);
             minimum_latitude = std::min(minimum_latitude, geodetic->latitude_radians);
             maximum_latitude = std::max(maximum_latitude, geodetic->latitude_radians);
         }
 
+        // The ray-cast box above is only exact when every sample hits the
+        // ellipsoid -- i.e. the globe fills the entire viewport. The moment
+        // even one sample ray misses, the horizon lies inside the viewport
+        // somewhere, and the hits we *did* get no longer bound the true
+        // visible region: they just describe whichever arbitrary subset of
+        // the 9 probes happened to land on the globe. Trusting that partial
+        // subset yields a plausible-looking but wrong (too small, off-centre)
+        // box -- this was the "isolated floating tile" failure. When that
+        // happens, fall back to a closed-form estimate: the geocentric
+        // visible cap centred on the camera's own sub-point.
+        //
+        // Geometry: for an observer at distance d from Earth's centre, the
+        // horizon is where the line of sight is tangent to the sphere of
+        // radius R. The tangent line, the radius to the tangent point, and
+        // the line from observer to centre form a right triangle with the
+        // right angle at the tangent point, so cos(half_angle) = R / d --
+        // NOT asin(R / d), which gives the sphere's apparent angular size as
+        // seen by the eye, a different quantity. Sanity check: at d == R the
+        // observer is on the surface and half_angle -> 0 (a point); as
+        // d -> infinity, half_angle -> 90 degrees (a full hemisphere).
+        if (hit_count < static_cast<int>(kSamplePoints.size())) {
+            const geodesy::EcefPosition camera_origin = render_frame_->CameraOrigin();
+            const double distance_from_center = glm::length(camera_origin.meters);
+            const auto camera_geodetic = geodesy::Wgs84Ellipsoid::FromEcef(camera_origin);
+            if (distance_from_center > geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters &&
+                camera_geodetic.has_value()) {
+                const double half_angle = std::acos(std::clamp(
+                    geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters / distance_from_center,
+                    -1.0, 1.0));
+                minimum_longitude = camera_geodetic->longitude_radians - half_angle;
+                maximum_longitude = camera_geodetic->longitude_radians + half_angle;
+                minimum_latitude = std::max(camera_geodetic->latitude_radians - half_angle,
+                                            -glm::half_pi<double>());
+                maximum_latitude = std::min(camera_geodetic->latitude_radians + half_angle,
+                                            glm::half_pi<double>());
+            } else {
+                // Camera at/below the surface, or the geodetic conversion
+                // failed -- there is no well-defined horizon cap. Treat the
+                // whole globe as potentially visible rather than guess.
+                minimum_longitude = -constants::math::PI;
+                maximum_longitude = constants::math::PI;
+                minimum_latitude = -glm::half_pi<double>();
+                maximum_latitude = glm::half_pi<double>();
+            }
+        }
+
         if (!std::isfinite(minimum_longitude) ||
+            minimum_longitude < -constants::math::PI ||
+            maximum_longitude > constants::math::PI ||
             maximum_longitude - minimum_longitude > glm::pi<double>()) {
             minimum_longitude = -constants::math::PI;
             maximum_longitude = constants::math::PI;
@@ -1056,33 +1110,6 @@ void main() {
         }
         return BoundingBox2D({minimum_longitude, minimum_latitude},
                              {maximum_longitude, maximum_latitude});
-    }
-
-    [[nodiscard]] static std::optional<geodesy::EcefPosition> IntersectWgs84Ellipsoid(
-        const geodesy::EcefPosition& origin,
-        const glm::dvec3& direction) noexcept {
-        const double semi_major = geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters;
-        const double semi_minor = geodesy::Wgs84Ellipsoid::kSemiMinorAxisMeters;
-        const double semi_major_squared = semi_major * semi_major;
-        const double semi_minor_squared = semi_minor * semi_minor;
-        const double a = (direction.x * direction.x + direction.y * direction.y) /
-                semi_major_squared + direction.z * direction.z / semi_minor_squared;
-        const double b = 2.0 * ((origin.meters.x * direction.x + origin.meters.y * direction.y) /
-                semi_major_squared + origin.meters.z * direction.z / semi_minor_squared);
-        const double c = (origin.meters.x * origin.meters.x + origin.meters.y * origin.meters.y) /
-                semi_major_squared + origin.meters.z * origin.meters.z / semi_minor_squared - 1.0;
-        const double discriminant = b * b - 4.0 * a * c;
-        if (a <= 0.0 || discriminant < 0.0) {
-            return std::nullopt;
-        }
-        const double root = std::sqrt(discriminant);
-        const double near_distance = (-b - root) / (2.0 * a);
-        const double far_distance = (-b + root) / (2.0 * a);
-        const double distance = near_distance > 0.0 ? near_distance : far_distance;
-        if (distance <= 0.0) {
-            return std::nullopt;
-        }
-        return geodesy::EcefPosition{origin.meters + direction * distance};
     }
 
     float CalculateTileLOD(const TileCoordinates& tile) const {

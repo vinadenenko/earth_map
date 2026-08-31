@@ -86,6 +86,16 @@ public:
     [[nodiscard]] static EcefPosition FromEnu(
         const glm::dvec3& enu_meters,
         const EnuFrame& frame) noexcept;
+
+    /**
+     * Intersects a ray (ECEF metres origin, arbitrary-length direction) with
+     * the WGS84 ellipsoid, returning the nearest intersection in front of the
+     * origin, or `nullopt` if the ray misses the ellipsoid entirely or both
+     * roots are behind the origin.
+     */
+    [[nodiscard]] static std::optional<EcefPosition> IntersectRay(
+        const EcefPosition& origin,
+        const glm::dvec3& direction) noexcept;
 };
 
 }  // namespace earth_map::geodesy

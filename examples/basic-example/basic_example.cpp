@@ -639,18 +639,21 @@ int main() {
         // Display initial camera state
         auto camera = earth_map_instance->GetCameraController();
         if (camera) {
-            auto pos = camera->GetPosition();
+            const earth_map::geodesy::EcefPosition pos = camera->GetEcefPosition();
+            const earth_map::geodesy::EcefPosition target = camera->GetEcefTarget();
             auto orient = camera->GetOrientation();
-            auto target = camera->GetTarget();
             auto mode = camera->GetMovementMode();
             float fov = camera->GetFieldOfView();
 
             std::cout << "\n╔════════════════════════════════════════════════════════════╗\n";
             std::cout << "║          INITIAL CAMERA STATE                              ║\n";
             std::cout << "╠════════════════════════════════════════════════════════════╣\n";
-            std::cout << "║ Position:  (" << pos.x << ", " << pos.y << ", " << pos.z << ")\n";
-            std::cout << "║ Target:    (" << target.x << ", " << target.y << ", " << target.z << ")\n";
-            std::cout << "║ Distance from origin: " << glm::length(pos) / 1000.0 << " km\n";
+            std::cout << "║ Position (ECEF m): (" << pos.meters.x << ", " << pos.meters.y << ", "
+                      << pos.meters.z << ")\n";
+            std::cout << "║ Target   (ECEF m): (" << target.meters.x << ", " << target.meters.y
+                      << ", " << target.meters.z << ")\n";
+            std::cout << "║ Distance from Earth's centre: " << glm::length(pos.meters) / 1000.0
+                      << " km\n";
             std::cout << "║ Heading:   " << orient.x << "°\n";
             std::cout << "║ Pitch:     " << orient.y << "°\n";
             std::cout << "║ Roll:      " << orient.z << "°\n";
@@ -658,14 +661,15 @@ int main() {
             std::cout << "║ Mode:      " << (mode == earth_map::CameraController::MovementMode::FREE ? "FREE" : "ORBIT") << "\n";
 
             // Calculate view direction
-            glm::vec3 view_dir = glm::normalize(target - pos);
-            std::cout << "║ View direction: (" << view_dir.x << ", " << view_dir.y << ", " << view_dir.z << ")\n";
+            const glm::dvec3 view_dir = glm::normalize(target.meters - pos.meters);
+            std::cout << "║ View direction: (" << view_dir.x << ", " << view_dir.y << ", "
+                      << view_dir.z << ")\n";
 
             // Check if globe should be visible
-            float globe_radius = static_cast<float>(earth_map::constants::geodetic::EARTH_SEMI_MAJOR_AXIS);  // meters
-            float distance_to_origin = glm::length(pos);
-            float nearest_globe_point = distance_to_origin - globe_radius;
-            float farthest_globe_point = distance_to_origin + globe_radius;
+            const double globe_radius = earth_map::constants::geodetic::EARTH_SEMI_MAJOR_AXIS;  // meters
+            const double distance_to_origin = glm::length(pos.meters);
+            const double nearest_globe_point = distance_to_origin - globe_radius;
+            const double farthest_globe_point = distance_to_origin + globe_radius;
 
             std::cout << "║\n";
             std::cout << "║ Globe radius: " << globe_radius / 1000.0 << " km\n";
@@ -713,27 +717,27 @@ int main() {
             auto elapsed = std::chrono::duration<float>(current_time - last_overlay_time).count();
             if (show_overlay && elapsed >= 1.0f) {
                 if (camera) {
-                    auto pos = camera->GetPosition();
+                    const earth_map::geodesy::EcefPosition pos = camera->GetEcefPosition();
                     auto orient = camera->GetOrientation();
-                    auto target = camera->GetTarget();
+                    const earth_map::geodesy::EcefPosition target = camera->GetEcefTarget();
                     auto mode = camera->GetMovementMode();
                     float fps = frame_count / elapsed;
 
-                    float distance_from_origin = glm::length(pos);
-                    float globe_radius = static_cast<float>(earth_map::constants::geodetic::EARTH_SEMI_MAJOR_AXIS);
-                    float distance_from_surface = distance_from_origin - globe_radius;
+                    const double distance_from_origin = glm::length(pos.meters);
+                    const double globe_radius = earth_map::constants::geodetic::EARTH_SEMI_MAJOR_AXIS;
+                    const double distance_from_surface = distance_from_origin - globe_radius;
 
                     // Calculate view direction
-                    glm::vec3 view_dir = glm::normalize(target - pos);
+                    const glm::dvec3 view_dir = glm::normalize(target.meters - pos.meters);
 
                     // Clear a few lines and print overlay
                     std::cout << "\r\033[K";  // Clear line
                     std::cout << "╔═══════════════════════════════════ DEBUG OVERLAY ═══════════════════════════════════╗\n";
                     std::cout << "║ FPS: " << static_cast<int>(fps) << " fps                                                                         ║\n";
-                    std::cout << "║ Camera Position: ("
-                              << static_cast<int>(pos.x/1000) << ", "
-                              << static_cast<int>(pos.y/1000) << ", "
-                              << static_cast<int>(pos.z/1000) << ") km                    ║\n";
+                    std::cout << "║ Camera Position (ECEF): ("
+                              << static_cast<int>(pos.meters.x/1000) << ", "
+                              << static_cast<int>(pos.meters.y/1000) << ", "
+                              << static_cast<int>(pos.meters.z/1000) << ") km                    ║\n";
                     std::cout << "║ Globe Center: (0, 0, 0) km                                                         ║\n";
                     std::cout << "║ Distance from origin: " << static_cast<int>(distance_from_origin/1000) << " km                                             ║\n";
                     std::cout << "║ Distance from surface: " << static_cast<int>(distance_from_surface/1000) << " km                                            ║\n";

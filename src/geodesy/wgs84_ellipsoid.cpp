@@ -138,5 +138,36 @@ EcefPosition Wgs84Ellipsoid::FromEnu(
         enu_meters.z * frame.up};
 }
 
+std::optional<EcefPosition> Wgs84Ellipsoid::IntersectRay(
+    const EcefPosition& origin,
+    const glm::dvec3& direction) noexcept {
+    if (!IsFinite(origin.meters) || !IsFinite(direction) ||
+        glm::length(direction) < kEcefCenterEpsilonMeters) {
+        return std::nullopt;
+    }
+
+    const double semi_major_squared = kSemiMajorAxisMeters * kSemiMajorAxisMeters;
+    const double semi_minor_squared = kSemiMinorAxisMeters * kSemiMinorAxisMeters;
+    const double a = (direction.x * direction.x + direction.y * direction.y) /
+            semi_major_squared + direction.z * direction.z / semi_minor_squared;
+    const double b = 2.0 * ((origin.meters.x * direction.x + origin.meters.y * direction.y) /
+            semi_major_squared + origin.meters.z * direction.z / semi_minor_squared);
+    const double c = (origin.meters.x * origin.meters.x + origin.meters.y * origin.meters.y) /
+            semi_major_squared + origin.meters.z * origin.meters.z / semi_minor_squared - 1.0;
+    const double discriminant = b * b - 4.0 * a * c;
+    if (a <= 0.0 || discriminant < 0.0) {
+        return std::nullopt;
+    }
+
+    const double root = std::sqrt(discriminant);
+    const double near_distance = (-b - root) / (2.0 * a);
+    const double far_distance = (-b + root) / (2.0 * a);
+    const double distance = near_distance > 0.0 ? near_distance : far_distance;
+    if (distance <= 0.0) {
+        return std::nullopt;
+    }
+    return EcefPosition{origin.meters + direction * distance};
+}
+
 }  // namespace earth_map::geodesy
 

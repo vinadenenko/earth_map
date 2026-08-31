@@ -4,6 +4,9 @@
 
 #include <earth_map/earth_map.h>
 
+// glm::gtx is an experimental GLM module; this define is GLM's own required
+// opt-in, not a project convention -- must precede any glm/gtx include.
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -255,22 +258,44 @@ public:
             case InputEvent::Type::MOUSE_BUTTON_PRESS:
             case InputEvent::Type::TOUCH_START:
                 dragging_ = true;
+                last_pointer_position_ = glm::vec2(event.x, event.y);
                 return true;
             case InputEvent::Type::MOUSE_BUTTON_RELEASE:
             case InputEvent::Type::TOUCH_END:
                 dragging_ = false;
                 return true;
             case InputEvent::Type::MOUSE_MOVE:
-            case InputEvent::Type::TOUCH_MOVE:
+            case InputEvent::Type::TOUCH_MOVE: {
                 if (!dragging_) {
                     return false;
                 }
-                if (event.button == 2) {
-                    Pan(event.dx, event.dy);
+                // GLFW's cursor-position callback and Qt's mouseMoveEvent
+                // both report absolute position, not deltas -- compute the
+                // drag delta here rather than requiring every caller to
+                // track it (event.dx/dy stay available for genuine
+                // relative-input sources, e.g. a locked pointer or a
+                // gamepad, which don't report absolute position at all).
+                const glm::vec2 current_position(event.x, event.y);
+                const glm::vec2 delta = current_position - last_pointer_position_;
+                last_pointer_position_ = current_position;
+                if (movement_mode_ == MovementMode::FREE) {
+                    // FREE is a first-person fly camera: dragging looks
+                    // around by rotating the camera's own orientation in
+                    // place. Rotate()/Pan() both pivot around `target_`,
+                    // which is the correct model for ORBIT but is not a
+                    // meaningful pivot in FREE -- WASD there drags `target_`
+                    // along rigidly behind the camera, so orbiting around it
+                    // does not produce a look-around effect.
+                    SetOrientation(heading_degrees_ + static_cast<double>(delta.x) * 0.25,
+                                   pitch_degrees_ - static_cast<double>(delta.y) * 0.25,
+                                   roll_degrees_);
+                } else if (event.button == 2) {
+                    Pan(delta.x, delta.y);
                 } else {
-                    Rotate(event.dx * 0.25f, -event.dy * 0.25f);
+                    Rotate(delta.x * 0.25f, -delta.y * 0.25f);
                 }
                 return true;
+            }
             case InputEvent::Type::MOUSE_SCROLL:
                 Zoom(std::exp(-event.scroll_delta * 0.1f));
                 return true;
@@ -414,7 +439,10 @@ public:
         const glm::dquat yaw = glm::angleAxis(DegreesToRadians(-delta_heading), glm::dvec3(0.0, 0.0, 1.0));
         local_camera = yaw * local_camera;
         const glm::dvec3 local_forward = NormalizedOr(-local_camera, glm::dvec3(0.0, 0.0, -1.0));
-        const glm::dvec3 local_right = NormalizedOr(glm::cross(local_forward, glm::dvec3(0.0, 0.0, 1.0)),
+        // See GetRightVector(): must be the fixed ECEF polar axis in this
+        // frame's basis, not this frame's own local Up.
+        const glm::dvec3 world_north_axis = frame.ToLocalDirection(glm::dvec3(0.0, 0.0, 1.0));
+        const glm::dvec3 local_right = NormalizedOr(glm::cross(local_forward, world_north_axis),
                                                     glm::dvec3(1.0, 0.0, 0.0));
         const glm::dquat pitch = glm::angleAxis(DegreesToRadians(delta_pitch), local_right);
         position_ = ClampPositionHeight(frame.FromLocal(pitch * local_camera));
@@ -437,7 +465,16 @@ public:
     }
 
     [[nodiscard]] glm::vec3 GetRightVector() const override {
-        return glm::vec3(NormalizedOr(glm::cross(glm::dvec3(GetForwardVector()), glm::dvec3(0.0, 0.0, 1.0)),
+        const renderer::EcefRenderFrame frame = CurrentRenderFrame();
+        // (0,0,1) here must be the fixed ECEF polar axis expressed in this
+        // frame's local basis, not the frame's own local Up (which is the
+        // camera's radial "up" and is nearly antiparallel to forward for
+        // any orbit-at-centre camera at every latitude, not just the
+        // poles -- using it directly made the degenerate branch below
+        // trigger almost everywhere, with the tie-break sign flipping
+        // discontinuously across the equator).
+        const glm::dvec3 world_north_axis = frame.ToLocalDirection(glm::dvec3(0.0, 0.0, 1.0));
+        return glm::vec3(NormalizedOr(glm::cross(glm::dvec3(GetForwardVector()), world_north_axis),
                                       glm::dvec3(1.0, 0.0, 0.0)));
     }
 
@@ -460,6 +497,20 @@ public:
         const geodesy::EcefPosition origin = frame.FromLocal(glm::dvec3(near_point));
         const geodesy::EcefPosition end = frame.FromLocal(glm::dvec3(far_point));
         return {origin, NormalizedOr(end.meters - origin.meters, glm::dvec3(0.0, 0.0, -1.0))};
+    }
+
+    [[nodiscard]] std::optional<glm::vec2> EcefToScreen(
+        const geodesy::EcefPosition& position,
+        const float aspect_ratio) const override {
+        const renderer::EcefRenderFrame frame = CurrentRenderFrame();
+        const glm::vec3 local_position(frame.ToLocal(position));
+        const glm::vec4 clip =
+            GetViewProjectionMatrix(aspect_ratio) * glm::vec4(local_position, 1.0f);
+        if (clip.w <= 0.0f) {
+            return std::nullopt;
+        }
+        const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        return glm::vec2(ndc.x * 0.5f + 0.5f, 0.5f - ndc.y * 0.5f);
     }
 
 private:
@@ -534,7 +585,18 @@ private:
         if (glm::length(local_target) < kMinimumLookDistanceMeters) {
             local_target = glm::dvec3(0.0, 0.0, -kMinimumLookDistanceMeters);
         }
-        glm::dvec3 local_up(0.0, 0.0, 1.0);
+        // The lookAt "up" hint must be a globally-fixed reference (the ECEF
+        // polar axis, expressed in this frame's basis) so it stays
+        // continuous as the camera moves. Using this frame's own local Up
+        // (radial "up" at the camera) instead would make it nearly
+        // antiparallel to `local_target` for any orbit-at-centre camera at
+        // *every* latitude, not just near the poles, since the target is
+        // always roughly straight down -- the degenerate branch below would
+        // fire almost everywhere, and the tie-break sign would flip
+        // discontinuously exactly at the equator (the one place the
+        // near-zero residual crosses sign), producing the reported
+        // upside-down flip on equator crossing.
+        glm::dvec3 local_up = frame.ToLocalDirection(glm::dvec3(0.0, 0.0, 1.0));
         if (glm::length(glm::cross(NormalizedOr(local_target, -local_up), local_up)) < 1e-8) {
             local_up = glm::dvec3(0.0, 1.0, 0.0);
         }
@@ -606,24 +668,43 @@ private:
     }
 
     void UpdateMovement(const float delta_time) {
+        // WASD is a FREE-mode fly-camera control, not an orbit control --
+        // ORBIT's mouse drag already owns translation there (Pan/Rotate).
+        // This also sidesteps the landmine below: ORBIT's target sits at
+        // the exact ECEF origin (Earth's centre), which has no geodetic
+        // latitude/longitude by definition, so any movement implementation
+        // that needs `target_`'s geodetic form -- as the previous version
+        // did -- silently no-ops for the entire default configuration.
+        if (movement_mode_ != MovementMode::FREE) {
+            return;
+        }
         if (movement_forward_ == 0.0f && movement_right_ == 0.0f && movement_up_ == 0.0f) {
             return;
         }
         const auto camera_geodetic = geodesy::Wgs84Ellipsoid::FromEcef(position_);
-        const auto target_geodetic = geodesy::Wgs84Ellipsoid::FromEcef(target_);
-        if (!camera_geodetic.has_value() || !target_geodetic.has_value()) {
+        if (!camera_geodetic.has_value()) {
             return;
         }
         const double speed = std::max(static_cast<double>(constraints_.max_movement_speed),
                                       camera_geodetic->ellipsoid_height_meters * 0.25);
         const double metres = speed * delta_time;
-        const double east = static_cast<double>(movement_right_) * metres;
-        const double north = static_cast<double>(movement_forward_) * metres;
-        position_ = ClampPositionHeight(geodesy::Wgs84Ellipsoid::ToEcef(
-            OffsetGeodetic(*camera_geodetic, east, north)));
-        geodesy::GeodeticPosition moved_target = OffsetGeodetic(*target_geodetic, east, north);
-        moved_target.ellipsoid_height_meters += static_cast<double>(movement_up_) * metres;
-        target_ = geodesy::Wgs84Ellipsoid::ToEcef(moved_target);
+
+        // Translate directly along the camera's own local frame -- forward
+        // (W/S), right (A/D) and local radial up (Q/E, ascend/descend) --
+        // instead of routing through `target_`'s geodetic form. This works
+        // regardless of where `target_` happens to be.
+        const renderer::EcefRenderFrame frame = CurrentRenderFrame();
+        const glm::dvec3 local_delta =
+            glm::dvec3(GetForwardVector()) * static_cast<double>(movement_forward_) * metres +
+            glm::dvec3(GetRightVector()) * static_cast<double>(movement_right_) * metres +
+            glm::dvec3(0.0, 0.0, 1.0) * static_cast<double>(movement_up_) * metres;
+
+        const geodesy::EcefPosition old_position = position_;
+        position_ = ClampPositionHeight(frame.FromLocal(local_delta));
+        // Carry the target along by the same (possibly clamped) delta so a
+        // pure fly-through translation doesn't change where the camera is
+        // looking -- heading/pitch fall out of this unchanged.
+        target_.meters += position_.meters - old_position.meters;
         UpdateOrientationFromTarget();
     }
 
@@ -657,6 +738,11 @@ private:
     CameraConstraints constraints_{};
     CameraAnimation animation_{};
     bool dragging_ = false;
+    // Anchors the current drag gesture. GLFW's cursor-position callback and
+    // Qt's mouseMoveEvent both report absolute position, not deltas -- every
+    // real caller needs this tracked somewhere, so it belongs here once
+    // rather than duplicated (and, historically, forgotten) in each embedder.
+    glm::vec2 last_pointer_position_{0.0f};
     float movement_forward_ = 0.0f;
     float movement_right_ = 0.0f;
     float movement_up_ = 0.0f;

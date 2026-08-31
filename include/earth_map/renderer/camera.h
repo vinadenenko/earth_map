@@ -16,6 +16,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <memory>
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 namespace earth_map {
@@ -457,6 +458,18 @@ public:
      */
     virtual std::pair<geodesy::EcefPosition, glm::dvec3> ScreenToEcefRay(
         float screen_x, float screen_y, float aspect_ratio) const = 0;
+
+    /**
+     * @brief Inverse of ScreenToEcefRay for a single point
+     *
+     * Projects a physical WGS84/ECEF position to normalized [0, 1] screen
+     * coordinates using the current view/projection.
+     *
+     * @return Normalized screen coordinates, or nullopt if the position is
+     *   behind the camera.
+     */
+    virtual std::optional<glm::vec2> EcefToScreen(
+        const geodesy::EcefPosition& position, float aspect_ratio) const = 0;
 
 protected:
     /**

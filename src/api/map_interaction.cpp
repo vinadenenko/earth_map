@@ -4,9 +4,14 @@
  */
 
 #include "../../include/earth_map/api/map_interaction.h"
-#include "../../include/earth_map/coordinates/coordinate_mapper.h"
+#include "../../include/earth_map/constants.h"
+#include "../../include/earth_map/geodesy/wgs84_ellipsoid.h"
 #include "../../include/earth_map/renderer/renderer.h"
 #include "../../include/earth_map/renderer/camera.h"
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
 #include <optional>
 #include <spdlog/spdlog.h>
 
@@ -14,6 +19,25 @@ namespace earth_map {
 namespace api {
 
 using namespace coordinates;
+
+namespace {
+
+std::optional<geodesy::GeodeticPosition> ToGeodetic(const Geographic& location) {
+    const geodesy::GeodeticPosition geodetic{
+        constants::conversion::DegreesToRadians(location.latitude),
+        constants::conversion::DegreesToRadians(location.longitude),
+        location.altitude};
+    return geodetic.IsValid() ? std::optional<geodesy::GeodeticPosition>(geodetic) : std::nullopt;
+}
+
+Geographic ToGeographic(const geodesy::GeodeticPosition& geodetic) {
+    return Geographic{
+        constants::conversion::RadiansToDegrees(geodetic.latitude_radians),
+        constants::conversion::RadiansToDegrees(geodetic.longitude_radians),
+        geodetic.ellipsoid_height_meters};
+}
+
+}  // namespace
 
 // ============================================================================
 // Pimpl Implementation
@@ -56,28 +80,30 @@ std::optional<Geographic> MapInteraction::GetLocationAtScreenPoint(
         return std::nullopt;
     }
 
-    // Get camera controller from renderer
     auto camera_controller = impl_->renderer_->GetCameraController();
     if (!camera_controller) {
         return std::nullopt;
     }
 
-    // Get matrices from camera controller
-    glm::mat4 view_matrix = camera_controller->GetViewMatrix();
     auto [width, height] = GetViewportSize();
-    float aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
-    glm::mat4 proj_matrix = camera_controller->GetProjectionMatrix(aspect_ratio);
+    if (width <= 0 || height <= 0) {
+        return std::nullopt;
+    }
+    const float aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
+    const float normalized_x = static_cast<float>(screen_x) / static_cast<float>(width);
+    const float normalized_y = static_cast<float>(screen_y) / static_cast<float>(height);
 
-    // Get viewport dimensions
-    glm::ivec4 viewport(0, 0, width, height);
-
-    // Convert screen coordinates
-    Screen screen(static_cast<double>(screen_x), static_cast<double>(screen_y));
-
-    // Use CoordinateMapper for conversion
-    return CoordinateMapper::ScreenToGeographic(
-        screen, view_matrix, proj_matrix, viewport, 1.0f  // Globe radius = 1.0
-    );
+    const auto [origin, direction] =
+        camera_controller->ScreenToEcefRay(normalized_x, normalized_y, aspect_ratio);
+    const auto intersection = geodesy::Wgs84Ellipsoid::IntersectRay(origin, direction);
+    if (!intersection.has_value()) {
+        return std::nullopt;
+    }
+    const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(*intersection);
+    if (!geodetic.has_value()) {
+        return std::nullopt;
+    }
+    return ToGeographic(*geodetic);
 }
 
 std::optional<Screen> MapInteraction::GetScreenPointForLocation(
@@ -92,16 +118,25 @@ std::optional<Screen> MapInteraction::GetScreenPointForLocation(
         return std::nullopt;
     }
 
-    glm::mat4 view_matrix = camera_controller->GetViewMatrix();
+    const auto geodetic = ToGeodetic(location);
+    if (!geodetic.has_value()) {
+        return std::nullopt;
+    }
+
     auto [width, height] = GetViewportSize();
-    float aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
-    glm::mat4 proj_matrix = camera_controller->GetProjectionMatrix(aspect_ratio);
+    if (width <= 0 || height <= 0) {
+        return std::nullopt;
+    }
+    const float aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
 
-    glm::ivec4 viewport(0, 0, width, height);
+    const auto normalized = camera_controller->EcefToScreen(
+        geodesy::Wgs84Ellipsoid::ToEcef(*geodetic), aspect_ratio);
+    if (!normalized.has_value()) {
+        return std::nullopt;
+    }
 
-    return CoordinateMapper::GeographicToScreen(
-        location, view_matrix, proj_matrix, viewport
-    );
+    return Screen{static_cast<double>(normalized->x) * width,
+                 static_cast<double>(normalized->y) * height};
 }
 
 // ============================================================================
@@ -118,18 +153,50 @@ GeographicBounds MapInteraction::GetVisibleBounds() const {
         return GeographicBounds();
     }
 
-    // Get camera position in world space
-    glm::vec3 camera_pos = camera_controller->GetPosition();
-    World camera_world(camera_pos);
-
-    glm::mat4 view_matrix = camera_controller->GetViewMatrix();
     auto [width, height] = GetViewportSize();
-    float aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
-    glm::mat4 proj_matrix = camera_controller->GetProjectionMatrix(aspect_ratio);
+    if (width <= 0 || height <= 0) {
+        return GeographicBounds();
+    }
+    const float aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
 
-    return CoordinateMapper::CalculateVisibleGeographicBounds(
-        camera_world, view_matrix, proj_matrix, 1.0f
-    );
+    // Sample screen-space corners/edges/centre and intersect each ray with
+    // the WGS84 ellipsoid, matching the ECEF/ENU render contract instead of
+    // the legacy normalized-sphere CoordinateMapper path.
+    constexpr std::array<glm::vec2, 9> kSamplePoints = {{
+        {0.5f, 0.5f}, {0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f},
+        {0.5f, 0.0f}, {0.5f, 1.0f}, {0.0f, 0.5f}, {1.0f, 0.5f},
+    }};
+
+    double min_latitude = std::numeric_limits<double>::infinity();
+    double max_latitude = -std::numeric_limits<double>::infinity();
+    double min_longitude = std::numeric_limits<double>::infinity();
+    double max_longitude = -std::numeric_limits<double>::infinity();
+
+    for (const glm::vec2& sample : kSamplePoints) {
+        const auto [origin, direction] =
+            camera_controller->ScreenToEcefRay(sample.x, sample.y, aspect_ratio);
+        const auto intersection = geodesy::Wgs84Ellipsoid::IntersectRay(origin, direction);
+        if (!intersection.has_value()) {
+            continue;
+        }
+        const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(*intersection);
+        if (!geodetic.has_value()) {
+            continue;
+        }
+        const Geographic point = ToGeographic(*geodetic);
+        min_latitude = std::min(min_latitude, point.latitude);
+        max_latitude = std::max(max_latitude, point.latitude);
+        min_longitude = std::min(min_longitude, point.longitude);
+        max_longitude = std::max(max_longitude, point.longitude);
+    }
+
+    if (!std::isfinite(min_latitude) || !std::isfinite(max_latitude) ||
+        !std::isfinite(min_longitude) || !std::isfinite(max_longitude)) {
+        // No sample hit the globe (camera looking entirely at space).
+        return GeographicBounds();
+    }
+
+    return GeographicBounds({min_latitude, min_longitude}, {max_latitude, max_longitude});
 }
 
 bool MapInteraction::IsLocationVisible(const Geographic& location) const {
@@ -181,11 +248,8 @@ Geographic MapInteraction::GetCameraLocation() const {
         return Geographic();
     }
 
-    // Convert camera position to geographic
-    glm::vec3 camera_pos = camera_controller->GetPosition();
-    World camera_world(camera_pos);
-
-    return CoordinateMapper::WorldToGeographic(camera_world, 1.0f);
+    const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(camera_controller->GetEcefPosition());
+    return geodetic.has_value() ? ToGeographic(*geodetic) : Geographic();
 }
 
 Geographic MapInteraction::GetCameraTarget() const {
@@ -198,13 +262,8 @@ Geographic MapInteraction::GetCameraTarget() const {
         return Geographic();
     }
 
-    // For orbital camera: target is where camera is looking (toward origin)
-    glm::vec3 camera_pos = camera_controller->GetPosition();
-    glm::vec3 look_direction = -glm::normalize(camera_pos);
-
-    // Convert look direction to geographic
-    World target_world(look_direction);
-    return CoordinateMapper::WorldToGeographic(target_world, 1.0f);
+    const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(camera_controller->GetEcefTarget());
+    return geodetic.has_value() ? ToGeographic(*geodetic) : Geographic();
 }
 
 double MapInteraction::GetCameraAltitude() const {
@@ -217,15 +276,8 @@ double MapInteraction::GetCameraAltitude() const {
         return 0.0;
     }
 
-    // Distance from camera to globe surface
-    glm::vec3 camera_pos = camera_controller->GetPosition();
-    float distance = glm::length(camera_pos);
-
-    // Altitude = distance - globe_radius
-    // Globe radius = 1.0 in normalized units
-    // Convert to meters (approximate)
-    constexpr double EARTH_RADIUS_METERS = 6371000.0;
-    return static_cast<double>(distance - 1.0f) * EARTH_RADIUS_METERS;
+    const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(camera_controller->GetEcefPosition());
+    return geodetic.has_value() ? geodetic->ellipsoid_height_meters : 0.0;
 }
 
 // ============================================================================
@@ -246,23 +298,10 @@ void MapInteraction::FlyToLocation(
         return;
     }
 
-    // Convert geographic location to world position
-    World target_world = CoordinateMapper::GeographicToWorld(location, 1.0f);
-
-    // Calculate camera position at specified altitude
-    // Camera should be at target_direction * (1.0 + normalized_altitude)
-    glm::vec3 direction = target_world.Direction();
-
-    // Normalize altitude to globe radius units
-    constexpr double EARTH_RADIUS_METERS = 6371000.0;
-    float normalized_altitude = static_cast<float>(altitude / EARTH_RADIUS_METERS);
-
-    glm::vec3 new_camera_pos = direction * (1.0f + normalized_altitude);
-
-    // Set camera to new position (animation not yet implemented in CameraController)
-    // TODO: Implement smooth animation when CameraController supports it
-    (void)duration;  // Suppress unused parameter warning
-    camera_controller->SetPosition(new_camera_pos);
+    // CameraController::FlyTo already animates in real WGS84 geodetic units;
+    // no normalized-sphere conversion is needed here.
+    camera_controller->FlyTo(location.longitude, location.latitude, altitude,
+                             static_cast<float>(duration));
 
     spdlog::info("Flying to location: lat={:.4f}, lon={:.4f}, altitude={:.0f}m",
                  location.latitude, location.longitude, altitude);
@@ -281,17 +320,7 @@ void MapInteraction::SetCameraView(
         return;
     }
 
-    // Convert geographic location to world position
-    World target_world = CoordinateMapper::GeographicToWorld(location, 1.0f);
-    glm::vec3 direction = target_world.Direction();
-
-    // Calculate camera position
-    constexpr double EARTH_RADIUS_METERS = 6371000.0;
-    float normalized_altitude = static_cast<float>(altitude / EARTH_RADIUS_METERS);
-    glm::vec3 new_camera_pos = direction * (1.0f + normalized_altitude);
-
-    // Set camera position immediately
-    camera_controller->SetPosition(new_camera_pos);
+    camera_controller->SetGeographicPosition(location.longitude, location.latitude, altitude);
 
     spdlog::debug("Camera view set to: lat={:.4f}, lon={:.4f}, altitude={:.0f}m",
                   location.latitude, location.longitude, altitude);

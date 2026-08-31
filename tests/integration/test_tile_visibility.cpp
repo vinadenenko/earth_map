@@ -2,6 +2,7 @@
 #include <earth_map/renderer/tile_renderer.h>
 #include <earth_map/core/camera_controller.h>
 #include <earth_map/constants.h>
+#include <earth_map/geodesy/wgs84_ellipsoid.h>
 #include <gtest/gtest.h>
 #include <glm/glm.hpp>
 #include <cmath>
@@ -14,6 +15,10 @@ using namespace earth_map;
  * Tests that tiles are correctly selected based on camera position and orientation.
  * This is critical for ensuring tiles appear where the camera is LOOKING, not
  * on the opposite side of the globe.
+ *
+ * Geographic conversions here use the real WGS84/ECEF axis convention
+ * (X toward lon=0/lat=0, Y toward lon=90E/lat=0, Z toward the North Pole),
+ * via geodesy::Wgs84Ellipsoid -- not a hand-rolled sphere approximation.
  */
 class TileVisibilityTest : public ::testing::Test {
 protected:
@@ -32,22 +37,34 @@ protected:
     }
 
     /**
-     * @brief Helper to convert 3D position to geographic coordinates
+     * @brief Helper to convert a direction (any nonzero magnitude) to
+     * geographic coordinates, via the real WGS84/ECEF conversion. Only the
+     * direction matters here -- the vector is rescaled to a realistic ECEF
+     * radius before conversion so it stays in Wgs84Ellipsoid::FromEcef's
+     * well-conditioned range.
      */
     glm::vec2 PositionToGeographic(const glm::vec3& pos) const {
-        glm::vec3 normalized = glm::normalize(pos);
-        float lat = glm::degrees(std::asin(std::clamp(normalized.y, -1.0f, 1.0f)));
-        float lon = glm::degrees(std::atan2(normalized.x, normalized.z));
-        return glm::vec2(lon, lat);
+        const glm::dvec3 direction = glm::normalize(glm::dvec3(pos));
+        const geodesy::EcefPosition scaled{
+            direction * geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters};
+        const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(scaled);
+        if (!geodetic.has_value()) {
+            return glm::vec2(0.0f, 0.0f);
+        }
+        return glm::vec2(
+            static_cast<float>(constants::conversion::RadiansToDegrees(
+                geodetic->longitude_radians)),
+            static_cast<float>(constants::conversion::RadiansToDegrees(
+                geodetic->latitude_radians)));
     }
 
     /**
      * @brief Helper to get what direction camera is looking
      */
     glm::vec3 GetCameraLookDirection() const {
-        glm::vec3 position = camera_controller_->GetPosition();
-        glm::vec3 target = camera_controller_->GetTarget();
-        return glm::normalize(target - position);
+        const geodesy::EcefPosition position = camera_controller_->GetEcefPosition();
+        const geodesy::EcefPosition target = camera_controller_->GetEcefTarget();
+        return glm::normalize(glm::vec3(target.meters - position.meters));
     }
 
     Configuration config_;
@@ -57,37 +74,34 @@ protected:
 /**
  * @brief Test camera looking at Prime Meridian (0°, 0°)
  *
- * When camera is at (0, 0, 3.0) looking at origin (0, 0, 0),
- * it should be looking at longitude 0°, latitude 0° (Africa/Atlantic)
+ * The default camera sits on the ECEF +X axis (lon=0°, lat=0°) looking at
+ * the ECEF origin -- so it looks toward the antipode, lon=180°.
  */
 TEST_F(TileVisibilityTest, CameraLookingAtPrimeMeridian) {
-    // Default camera position: (0, 0, 3.0) looking at (0, 0, 0)
-    glm::vec3 camera_pos = camera_controller_->GetPosition();
-    glm::vec3 target = camera_controller_->GetTarget();
+    const geodesy::EcefPosition camera_position = camera_controller_->GetEcefPosition();
+    const geodesy::EcefPosition target = camera_controller_->GetEcefTarget();
 
-    // Camera is on +Z axis
-    EXPECT_NEAR(camera_pos.x, 0.0f, 0.01f);
-    EXPECT_NEAR(camera_pos.y, 0.0f, 0.01f);
-    EXPECT_GT(camera_pos.z, 2.0f);  // Around 3.0
+    // Camera is on the +X axis, above the WGS84 surface.
+    EXPECT_NEAR(camera_position.meters.y, 0.0, 1.0);
+    EXPECT_NEAR(camera_position.meters.z, 0.0, 1.0);
+    EXPECT_GT(camera_position.meters.x, geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters);
 
-    // Target is at origin
-    EXPECT_NEAR(target.x, 0.0f, 0.01f);
-    EXPECT_NEAR(target.y, 0.0f, 0.01f);
-    EXPECT_NEAR(target.z, 0.0f, 0.01f);
+    // Target is at the ECEF origin.
+    EXPECT_NEAR(target.meters.x, 0.0, 0.01);
+    EXPECT_NEAR(target.meters.y, 0.0, 0.01);
+    EXPECT_NEAR(target.meters.z, 0.0, 0.01);
 
-    // Camera look direction should be towards -Z (negative of position)
-    glm::vec3 look_dir = GetCameraLookDirection();
-    EXPECT_NEAR(look_dir.x, 0.0f, 0.01f);
+    // Camera look direction should point toward -X (toward Earth's centre).
+    const glm::vec3 look_dir = GetCameraLookDirection();
+    EXPECT_LT(look_dir.x, -0.99f);
     EXPECT_NEAR(look_dir.y, 0.0f, 0.01f);
-    EXPECT_LT(look_dir.z, -0.99f);  // Should be approximately (0, 0, -1)
+    EXPECT_NEAR(look_dir.z, 0.0f, 0.01f);
 
-    // The point on the sphere where camera is looking (opposite of camera position)
-    glm::vec3 look_point = -glm::normalize(camera_pos);
-    glm::vec2 look_geo = PositionToGeographic(look_point);
-
-    // Should be looking at Prime Meridian (lon=0°) and Equator (lat=0°)
-    // atan2(0, -1) = 180° or -180° (both are valid for opposite side)
-    EXPECT_NEAR(std::abs(look_geo.x), 180.0f, 1.0f);  // Opposite side (180° or -180°)
+    // The point on the globe the camera looks at (opposite the camera's own
+    // direction from Earth's centre) is the antipode: lon=180°, lat=0°.
+    const glm::vec3 look_point = -glm::normalize(glm::vec3(camera_position.meters));
+    const glm::vec2 look_geo = PositionToGeographic(look_point);
+    EXPECT_NEAR(std::abs(look_geo.x), 180.0f, 1.0f);
     EXPECT_NEAR(look_geo.y, 0.0f, 1.0f);
 }
 
@@ -98,29 +112,22 @@ TEST_F(TileVisibilityTest, CameraLookingAtPrimeMeridian) {
  * it's looking at the OPPOSITE side.
  */
 TEST_F(TileVisibilityTest, CameraPositionVsLookDirection) {
-    // Camera at +Z looking at origin
-    glm::vec3 camera_pos = camera_controller_->GetPosition();
+    const geodesy::EcefPosition camera_position = camera_controller_->GetEcefPosition();
 
-    // Geographic coords OF camera position (where camera IS)
-    glm::vec2 camera_geo = PositionToGeographic(camera_pos);
+    const glm::vec2 camera_geo = PositionToGeographic(glm::vec3(camera_position.meters));
+    const glm::vec3 look_point = -glm::normalize(glm::vec3(camera_position.meters));
+    const glm::vec2 look_geo = PositionToGeographic(look_point);
 
-    // Geographic coords WHERE camera is LOOKING (opposite direction)
-    glm::vec3 look_point = -glm::normalize(camera_pos);
-    glm::vec2 look_geo = PositionToGeographic(look_point);
-
-    // Camera is at lon=0°, lat=0°, z=+3.0
-    // atan2(0, 3.0) = 0°
+    // Camera is at lon=0°, lat=0° (default: ECEF +X axis).
     EXPECT_NEAR(camera_geo.x, 0.0f, 1.0f);
     EXPECT_NEAR(camera_geo.y, 0.0f, 1.0f);
 
-    // Camera looks at lon=180° (or -180°), lat=0°
-    // atan2(0, -1) = ±180°
+    // Camera looks at lon=180° (or -180°), lat=0°.
     EXPECT_NEAR(std::abs(look_geo.x), 180.0f, 1.0f);
     EXPECT_NEAR(look_geo.y, 0.0f, 1.0f);
 
     // The longitudes should be 180° apart
-    float lon_diff = std::abs(camera_geo.x - look_geo.x);
-    // Account for wraparound: difference could be 180° or close to 360°
+    const float lon_diff = std::abs(camera_geo.x - look_geo.x);
     EXPECT_TRUE(std::abs(lon_diff - 180.0f) < 5.0f || std::abs(lon_diff - 360.0f) < 5.0f);
 }
 
@@ -128,22 +135,21 @@ TEST_F(TileVisibilityTest, CameraPositionVsLookDirection) {
  * @brief Test camera looking at specific geographic location
  */
 TEST_F(TileVisibilityTest, CameraLookingAtSpecificLocation) {
-    // Move camera to look at a specific location
-    // Position camera on +X axis to look at Prime Meridian
-    camera_controller_->SetPosition(glm::vec3(3.0f, 0.0f, 0.0f));
-    camera_controller_->SetTarget(glm::vec3(0.0f, 0.0f, 0.0f));
+    // Position camera on the ECEF +Y axis (lon=90°E, lat=0°).
+    camera_controller_->SetEcefPosition(geodesy::EcefPosition{
+        glm::dvec3(0.0, geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters * 3.0, 0.0)});
+    camera_controller_->SetEcefTarget(geodesy::EcefPosition{glm::dvec3(0.0)});
 
-    glm::vec3 camera_pos = camera_controller_->GetPosition();
+    const geodesy::EcefPosition camera_position = camera_controller_->GetEcefPosition();
 
-    // Camera is at +X (lon=90°, lat=0°)
-    glm::vec2 camera_geo = PositionToGeographic(camera_pos);
-    EXPECT_NEAR(camera_geo.x, 90.0f, 1.0f);  // +X axis = 90° East
+    const glm::vec2 camera_geo = PositionToGeographic(glm::vec3(camera_position.meters));
+    EXPECT_NEAR(camera_geo.x, 90.0f, 1.0f);
     EXPECT_NEAR(camera_geo.y, 0.0f, 1.0f);
 
-    // Camera looks at -X (lon=-90° or 270°, lat=0°)
-    glm::vec3 look_point = -glm::normalize(camera_pos);
-    glm::vec2 look_geo = PositionToGeographic(look_point);
-    EXPECT_NEAR(std::abs(look_geo.x), 90.0f, 1.0f);  // -90° or 270°
+    // Camera looks at lon=-90° (or 270°), lat=0°.
+    const glm::vec3 look_point = -glm::normalize(glm::vec3(camera_position.meters));
+    const glm::vec2 look_geo = PositionToGeographic(look_point);
+    EXPECT_NEAR(std::abs(look_geo.x), 90.0f, 1.0f);
     EXPECT_NEAR(look_geo.y, 0.0f, 1.0f);
 }
 
@@ -151,19 +157,19 @@ TEST_F(TileVisibilityTest, CameraLookingAtSpecificLocation) {
  * @brief Test camera looking at North Pole
  */
 TEST_F(TileVisibilityTest, CameraLookingAtNorthPole) {
-    // Position camera on +Y axis (above North Pole)
-    camera_controller_->SetPosition(glm::vec3(0.0f, 3.0f, 0.0f));
-    camera_controller_->SetTarget(glm::vec3(0.0f, 0.0f, 0.0f));
+    // Position camera on the ECEF +Z axis (above the North Pole).
+    camera_controller_->SetEcefPosition(geodesy::EcefPosition{
+        glm::dvec3(0.0, 0.0, geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters * 3.0)});
+    camera_controller_->SetEcefTarget(geodesy::EcefPosition{glm::dvec3(0.0)});
 
-    glm::vec3 camera_pos = camera_controller_->GetPosition();
+    const geodesy::EcefPosition camera_position = camera_controller_->GetEcefPosition();
 
-    // Camera is above North Pole (lat=90°)
-    glm::vec2 camera_geo = PositionToGeographic(camera_pos);
+    const glm::vec2 camera_geo = PositionToGeographic(glm::vec3(camera_position.meters));
     EXPECT_NEAR(camera_geo.y, 90.0f, 1.0f);
 
-    // Camera looks at South Pole (lat=-90°)
-    glm::vec3 look_point = -glm::normalize(camera_pos);
-    glm::vec2 look_geo = PositionToGeographic(look_point);
+    // Camera looks at South Pole (lat=-90°).
+    const glm::vec3 look_point = -glm::normalize(glm::vec3(camera_position.meters));
+    const glm::vec2 look_geo = PositionToGeographic(look_point);
     EXPECT_NEAR(look_geo.y, -90.0f, 1.0f);
 }
 
@@ -171,19 +177,19 @@ TEST_F(TileVisibilityTest, CameraLookingAtNorthPole) {
  * @brief Test camera looking at South Pole
  */
 TEST_F(TileVisibilityTest, CameraLookingAtSouthPole) {
-    // Position camera on -Y axis (below South Pole)
-    camera_controller_->SetPosition(glm::vec3(0.0f, -3.0f, 0.0f));
-    camera_controller_->SetTarget(glm::vec3(0.0f, 0.0f, 0.0f));
+    // Position camera on the ECEF -Z axis (below the South Pole).
+    camera_controller_->SetEcefPosition(geodesy::EcefPosition{
+        glm::dvec3(0.0, 0.0, -geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters * 3.0)});
+    camera_controller_->SetEcefTarget(geodesy::EcefPosition{glm::dvec3(0.0)});
 
-    glm::vec3 camera_pos = camera_controller_->GetPosition();
+    const geodesy::EcefPosition camera_position = camera_controller_->GetEcefPosition();
 
-    // Camera is below South Pole (lat=-90°)
-    glm::vec2 camera_geo = PositionToGeographic(camera_pos);
+    const glm::vec2 camera_geo = PositionToGeographic(glm::vec3(camera_position.meters));
     EXPECT_NEAR(camera_geo.y, -90.0f, 1.0f);
 
-    // Camera looks at North Pole (lat=90°)
-    glm::vec3 look_point = -glm::normalize(camera_pos);
-    glm::vec2 look_geo = PositionToGeographic(look_point);
+    // Camera looks at North Pole (lat=90°).
+    const glm::vec3 look_point = -glm::normalize(glm::vec3(camera_position.meters));
+    const glm::vec2 look_geo = PositionToGeographic(look_point);
     EXPECT_NEAR(look_geo.y, 90.0f, 1.0f);
 }
 
@@ -191,19 +197,20 @@ TEST_F(TileVisibilityTest, CameraLookingAtSouthPole) {
  * @brief Test longitude wraparound at International Date Line
  */
 TEST_F(TileVisibilityTest, LongitudeWraparound) {
-    // Position camera at -Z (opposite of default)
-    camera_controller_->SetPosition(glm::vec3(0.0f, 0.0f, -3.0f));
-    camera_controller_->SetTarget(glm::vec3(0.0f, 0.0f, 0.0f));
+    // Position camera on the ECEF -X axis (lon=180°, lat=0°).
+    camera_controller_->SetEcefPosition(geodesy::EcefPosition{
+        glm::dvec3(-geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters * 3.0, 0.0, 0.0)});
+    camera_controller_->SetEcefTarget(geodesy::EcefPosition{glm::dvec3(0.0)});
 
-    glm::vec3 camera_pos = camera_controller_->GetPosition();
+    const geodesy::EcefPosition camera_position = camera_controller_->GetEcefPosition();
 
-    // Camera is at lon=180° or -180° (same meridian)
-    glm::vec2 camera_geo = PositionToGeographic(camera_pos);
+    // Camera is at lon=180° or -180° (same meridian).
+    const glm::vec2 camera_geo = PositionToGeographic(glm::vec3(camera_position.meters));
     EXPECT_NEAR(std::abs(camera_geo.x), 180.0f, 1.0f);
 
-    // Camera looks at lon=0° (Prime Meridian)
-    glm::vec3 look_point = -glm::normalize(camera_pos);
-    glm::vec2 look_geo = PositionToGeographic(look_point);
+    // Camera looks at lon=0° (Prime Meridian).
+    const glm::vec3 look_point = -glm::normalize(glm::vec3(camera_position.meters));
+    const glm::vec2 look_geo = PositionToGeographic(look_point);
     EXPECT_NEAR(look_geo.x, 0.0f, 1.0f);
 }
 
@@ -214,32 +221,14 @@ TEST_F(TileVisibilityTest, LongitudeWraparound) {
  * not where camera IS positioned.
  */
 TEST_F(TileVisibilityTest, VisibleTilesMatchLookDirection) {
-    // Default camera: at (0, 0, 3.0) looking at (0, 0, 0)
+    // Default camera: on the ECEF +X axis (lon=0°) looking at the origin,
+    // i.e. looking toward lon=180°, lat=0°.
+    const geodesy::EcefPosition camera_position = camera_controller_->GetEcefPosition();
+    const glm::vec3 look_point = -glm::normalize(glm::vec3(camera_position.meters));
+    const glm::vec2 look_geo = PositionToGeographic(look_point);
 
-    // Camera looks toward -Z direction (180° longitude)
-    glm::vec3 camera_pos = camera_controller_->GetPosition();
-    glm::vec3 look_point = -glm::normalize(camera_pos);
-    glm::vec2 look_geo = PositionToGeographic(look_point);
-
-    // At zoom level 2, we have 4x4 = 16 tiles
-    // Tile 0,0 covers lon[-180,-90], lat[0,85.051]
-    // Tile 1,0 covers lon[-90,0], lat[0,85.051]
-    // Tile 2,0 covers lon[0,90], lat[0,85.051]
-    // Tile 3,0 covers lon[90,180], lat[0,85.051]
-
-    // Camera looking at lon=180° should load tiles near x=0 (wraps around)
-    // or x=3 (western hemisphere, near 180°)
-
-    // The visible geographic bounds should be centered around where camera looks
-    // For camera at +Z looking at origin, look direction is -Z
-    // This corresponds to longitude ±180°, latitude 0°
     EXPECT_NEAR(std::abs(look_geo.x), 180.0f, 1.0f);
     EXPECT_NEAR(look_geo.y, 0.0f, 1.0f);
-
-    // If tiles are loading on OPPOSITE side, they would be:
-    // - Tiles around lon=0° (where camera IS) - WRONG!
-    // Should be:
-    // - Tiles around lon=180° (where camera LOOKS) - CORRECT!
 }
 
 /**
@@ -253,19 +242,22 @@ TEST_F(TileVisibilityTest, GeographicConversionConsistency) {
         std::string description;
     };
 
-    std::vector<TestCase> test_cases = {
-        { glm::vec3(1.0f, 0.0f, 0.0f), 90.0f, 0.0f, "+X axis (90° East)" },
-        { glm::vec3(-1.0f, 0.0f, 0.0f), -90.0f, 0.0f, "-X axis (90° West)" },
-        { glm::vec3(0.0f, 0.0f, 1.0f), 0.0f, 0.0f, "+Z axis (Prime Meridian)" },
-        { glm::vec3(0.0f, 1.0f, 0.0f), 0.0f, 90.0f, "+Y axis (North Pole)" },
-        { glm::vec3(0.0f, -1.0f, 0.0f), 0.0f, -90.0f, "-Y axis (South Pole)" },
+    const std::vector<TestCase> test_cases = {
+        { glm::vec3(1.0f, 0.0f, 0.0f), 0.0f, 0.0f, "+X axis (Prime Meridian)" },
+        { glm::vec3(0.0f, 1.0f, 0.0f), 90.0f, 0.0f, "+Y axis (90° East)" },
+        { glm::vec3(0.0f, -1.0f, 0.0f), -90.0f, 0.0f, "-Y axis (90° West)" },
+        { glm::vec3(0.0f, 0.0f, 1.0f), 0.0f, 90.0f, "+Z axis (North Pole)" },
+        { glm::vec3(0.0f, 0.0f, -1.0f), 0.0f, -90.0f, "-Z axis (South Pole)" },
     };
 
     for (const auto& test : test_cases) {
-        glm::vec2 geo = PositionToGeographic(test.position);
-
-        EXPECT_NEAR(geo.x, test.expected_lon, 1.0f)
-            << "Failed for " << test.description << " (longitude)";
+        const glm::vec2 geo = PositionToGeographic(test.position);
+        // Longitude is undefined exactly at a pole -- only check it away
+        // from the poles.
+        if (std::abs(test.expected_lat) < 89.0f) {
+            EXPECT_NEAR(geo.x, test.expected_lon, 1.0f)
+                << "Failed for " << test.description << " (longitude)";
+        }
         EXPECT_NEAR(geo.y, test.expected_lat, 1.0f)
             << "Failed for " << test.description << " (latitude)";
     }
@@ -275,18 +267,18 @@ TEST_F(TileVisibilityTest, GeographicConversionConsistency) {
  * @brief Test that atan2 gives correct longitude for standard positions
  */
 TEST_F(TileVisibilityTest, Atan2LongitudeCalculation) {
-    // atan2(x, z) for longitude calculation
+    // atan2(y, x) for longitude calculation
 
-    // +Z axis (x=0, z=1): atan2(0, 1) = 0° ✓
+    // +X axis (x=1, y=0): atan2(0, 1) = 0° ✓
     EXPECT_NEAR(glm::degrees(std::atan2(0.0f, 1.0f)), 0.0f, 0.01f);
 
-    // +X axis (x=1, z=0): atan2(1, 0) = 90° ✓
+    // +Y axis (x=0, y=1): atan2(1, 0) = 90° ✓
     EXPECT_NEAR(glm::degrees(std::atan2(1.0f, 0.0f)), 90.0f, 0.01f);
 
-    // -Z axis (x=0, z=-1): atan2(0, -1) = 180° or -180° ✓
-    float lon_minus_z = glm::degrees(std::atan2(0.0f, -1.0f));
-    EXPECT_TRUE(std::abs(lon_minus_z) > 179.0f);
+    // -X axis (x=-1, y=0): atan2(0, -1) = 180° or -180° ✓
+    const float lon_minus_x = glm::degrees(std::atan2(0.0f, -1.0f));
+    EXPECT_TRUE(std::abs(lon_minus_x) > 179.0f);
 
-    // -X axis (x=-1, z=0): atan2(-1, 0) = -90° ✓
+    // -Y axis (x=0, y=-1): atan2(-1, 0) = -90° ✓
     EXPECT_NEAR(glm::degrees(std::atan2(-1.0f, 0.0f)), -90.0f, 0.01f);
 }

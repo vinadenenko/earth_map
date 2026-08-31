@@ -1,7 +1,7 @@
 #include "earth_map/renderer/mini_map_renderer.h"
 #include "earth_map/core/camera_controller.h"
 #include "earth_map/constants.h"
-#include "earth_map/coordinates/coordinate_mapper.h"
+#include "earth_map/geodesy/wgs84_ellipsoid.h"
 #include <algorithm>
 #include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
@@ -292,16 +292,14 @@ void MiniMapRenderer::CreateGeometry() {
 }
 
 void MiniMapRenderer::UpdateCameraPosition(CameraController* camera_controller) {
-    // Get camera position (normalized coordinates, Earth center at origin, radius 1)
-    glm::vec3 pos = camera_controller->GetPosition();
+    const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(camera_controller->GetEcefPosition());
+    if (!geodetic.has_value()) {
+        return;
+    }
 
-    // Use CoordinateMapper for consistent geographic conversion (matches main globe)
-    using namespace coordinates;
-    World camera_world(pos);
-    Geographic camera_geo = CoordinateMapper::WorldToGeographic(camera_world, constants::rendering::NORMALIZED_GLOBE_RADIUS);
-
-    // Convert to pixel coordinates
-    camera_position_pixels_ = LatLonToPixel(camera_geo.latitude, camera_geo.longitude);
+    camera_position_pixels_ = LatLonToPixel(
+        static_cast<float>(constants::conversion::RadiansToDegrees(geodetic->latitude_radians)),
+        static_cast<float>(constants::conversion::RadiansToDegrees(geodetic->longitude_radians)));
 }
 
 

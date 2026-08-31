@@ -2,6 +2,7 @@
 #include <earth_map/renderer/camera.h>
 #include <earth_map/earth_map.h>
 #include <earth_map/constants.h>
+#include <earth_map/geodesy/wgs84_ellipsoid.h>
 #include <glm/glm.hpp>
 #include <memory>
 
@@ -34,49 +35,45 @@ TEST_F(CameraTest, Initialization) {
 }
 
 TEST_F(CameraTest, PositionControl) {
-    // Test setting position within valid range (normalized units, distance ~2.0)
-    glm::vec3 test_pos(0.0f, 0.0f, 2.0f);
-    camera_->SetPosition(test_pos);
+    // Position 500km above the equator/prime-meridian point -- a
+    // non-degenerate, easy-to-verify ECEF position.
+    const geodesy::EcefPosition test_position{glm::dvec3(
+        geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters + 500000.0, 0.0, 0.0)};
+    camera_->SetEcefPosition(test_position);
 
-    glm::vec3 actual_pos = camera_->GetPosition();
-    EXPECT_FLOAT_EQ(actual_pos.x, test_pos.x);
-    EXPECT_FLOAT_EQ(actual_pos.y, test_pos.y);
-    EXPECT_FLOAT_EQ(actual_pos.z, test_pos.z);
+    const geodesy::EcefPosition actual = camera_->GetEcefPosition();
+    EXPECT_NEAR(actual.meters.x, test_position.meters.x, 1e-3);
+    EXPECT_NEAR(actual.meters.y, test_position.meters.y, 1e-6);
+    EXPECT_NEAR(actual.meters.z, test_position.meters.z, 1e-6);
 }
 
 TEST_F(CameraTest, PositionControl_ConstraintEnforcement) {
-    // Test that position outside valid range is clamped
-    // Distance 374 exceeds MAX_DISTANCE_NORMALIZED (~2.57)
-    glm::vec3 invalid_pos(100.0f, 200.0f, 300.0f);
-    camera_->SetPosition(invalid_pos);
+    // 50,000km altitude exceeds the default CameraConstraints::max_altitude
+    // (10,000km) and must be clamped.
+    const geodesy::EcefPosition too_high{glm::dvec3(
+        geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters + 50'000'000.0, 0.0, 0.0)};
+    camera_->SetEcefPosition(too_high);
 
-    glm::vec3 actual_pos = camera_->GetPosition();
-    float distance = glm::length(actual_pos);
-
-    // Should be clamped to MAX_DISTANCE_NORMALIZED
-    EXPECT_LE(distance, earth_map::constants::camera_constraints::MAX_DISTANCE_NORMALIZED + 0.001f);
-    // Direction should be preserved
-    glm::vec3 expected_dir = glm::normalize(invalid_pos);
-    glm::vec3 actual_dir = glm::normalize(actual_pos);
-    EXPECT_NEAR(actual_dir.x, expected_dir.x, 0.01f);
-    EXPECT_NEAR(actual_dir.y, expected_dir.y, 0.01f);
-    EXPECT_NEAR(actual_dir.z, expected_dir.z, 0.01f);
+    const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(camera_->GetEcefPosition());
+    ASSERT_TRUE(geodetic.has_value());
+    EXPECT_NEAR(geodetic->ellipsoid_height_meters,
+               static_cast<double>(camera_->GetConstraints().max_altitude), 1.0);
 }
 
 TEST_F(CameraTest, GeographicPositionControl) {
-    // Test setting geographic position
-    // Camera uses normalized units (globe radius = 1.0)
-    double longitude = -122.4194;
-    double latitude = 37.7749;
-    double altitude = 100000.0;  // 100km above surface
+    const double longitude = -122.4194;
+    const double latitude = 37.7749;
+    const double altitude = 100000.0;  // 100km above surface
 
     camera_->SetGeographicPosition(longitude, latitude, altitude);
 
-    // Position should be slightly above surface (distance > 1.0 in normalized units)
-    glm::vec3 pos = camera_->GetPosition();
-    float distance = glm::length(pos);
-    EXPECT_GT(distance, 1.0f);
-    EXPECT_LE(distance, earth_map::constants::camera_constraints::MAX_DISTANCE_NORMALIZED);
+    const auto geodetic = geodesy::Wgs84Ellipsoid::FromEcef(camera_->GetEcefPosition());
+    ASSERT_TRUE(geodetic.has_value());
+    EXPECT_NEAR(geodetic->ellipsoid_height_meters, altitude, 1.0);
+    EXPECT_NEAR(constants::conversion::RadiansToDegrees(geodetic->latitude_radians),
+               latitude, 1e-6);
+    EXPECT_NEAR(constants::conversion::RadiansToDegrees(geodetic->longitude_radians),
+               longitude, 1e-6);
 }
 
 TEST_F(CameraTest, OrientationControl) {
@@ -122,9 +119,10 @@ TEST_F(CameraTest, ClippingPlanes) {
 
 TEST_F(CameraTest, MatrixGeneration) {
     // Test matrix generation
-    camera_->SetPosition(glm::vec3(0.0f, 0.0f, 5.0f));
-    camera_->SetTarget(glm::vec3(0.0f, 0.0f, 0.0f));
-    
+    camera_->SetEcefPosition(geodesy::EcefPosition{
+        glm::dvec3(geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters * 5.0, 0.0, 0.0)});
+    camera_->SetEcefTarget(geodesy::EcefPosition{glm::dvec3(0.0)});
+
     float aspect_ratio = 16.0f / 9.0f;
     glm::mat4 view_matrix = camera_->GetViewMatrix();
     glm::mat4 proj_matrix = camera_->GetProjectionMatrix(aspect_ratio);
@@ -174,11 +172,12 @@ TEST_F(CameraTest, Constraints) {
 }
 
 TEST_F(CameraTest, AnimationControl) {
-    // Test basic animation - use valid positions within constraint range
-    glm::vec3 start_pos(0.0f, 0.0f, 2.0f);
+    // Test basic animation - use a valid position within constraint range
+    const geodesy::EcefPosition start_position{glm::dvec3(
+        geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters + 500000.0, 0.0, 0.0)};
 
-    camera_->SetPosition(start_pos);
-    EXPECT_EQ(camera_->GetPosition(), start_pos);
+    camera_->SetEcefPosition(start_position);
+    EXPECT_NEAR(camera_->GetEcefPosition().meters.x, start_position.meters.x, 1e-3);
     EXPECT_FALSE(camera_->IsAnimating());
     EXPECT_EQ(camera_->GetAnimationState(), AnimationState::IDLE);
     
@@ -220,86 +219,82 @@ TEST_F(CameraTest, OrientationAnimation) {
 }
 
 TEST_F(CameraTest, OrientationToDirectionConsistency) {
-    // Test that setting orientation produces correct direction vectors
-    camera_->SetPosition(glm::vec3(0.0f, 0.0f, 0.0f));
+    // Test that setting orientation produces correct direction vectors.
+    // GetForwardVector() is expressed in the camera-relative local ENU
+    // frame (x=east, y=north, z=up), per LocalDirection()'s convention:
+    // (sin(heading)*cos(pitch), cos(heading)*cos(pitch), sin(pitch)).
+    // Position is irrelevant here -- keep SetUp()'s default position.
 
-    // Test 1: Looking forward along +Z (heading = 0°, pitch = 0°)
+    // Test 1: Looking north along the horizon (heading = 0°, pitch = 0°)
     camera_->SetOrientation(0.0, 0.0, 0.0);
     glm::vec3 forward = camera_->GetForwardVector();
     EXPECT_NEAR(forward.x, 0.0f, 0.001f);
-    EXPECT_NEAR(forward.y, 0.0f, 0.001f);
-    EXPECT_NEAR(forward.z, 1.0f, 0.001f);
+    EXPECT_NEAR(forward.y, 1.0f, 0.001f);
+    EXPECT_NEAR(forward.z, 0.0f, 0.001f);
 
-    // Test 2: Looking along +X (heading = 90°, pitch = 0°)
+    // Test 2: Looking east along the horizon (heading = 90°, pitch = 0°)
     camera_->SetOrientation(90.0, 0.0, 0.0);
     forward = camera_->GetForwardVector();
     EXPECT_NEAR(forward.x, 1.0f, 0.001f);
     EXPECT_NEAR(forward.y, 0.0f, 0.001f);
     EXPECT_NEAR(forward.z, 0.0f, 0.001f);
 
-    // Test 3: Looking down (heading = 0°, pitch = -45°)
+    // Test 3: Looking north, tilted down (heading = 0°, pitch = -45°)
     camera_->SetOrientation(0.0, -45.0, 0.0);
     forward = camera_->GetForwardVector();
     EXPECT_NEAR(forward.x, 0.0f, 0.001f);
-    EXPECT_NEAR(forward.y, -0.707f, 0.01f); // sin(-45°) ≈ -0.707
-    EXPECT_NEAR(forward.z, 0.707f, 0.01f);  // cos(-45°) ≈ 0.707
+    EXPECT_NEAR(forward.y, 0.707f, 0.01f);   // cos(-45°) ≈ 0.707
+    EXPECT_NEAR(forward.z, -0.707f, 0.01f);  // sin(-45°) ≈ -0.707
 }
 
 TEST_F(CameraTest, SetTargetCalculatesOrientation) {
-    // Test that SetTarget properly calculates orientation
-    camera_->SetPosition(glm::vec3(0.0f, 0.0f, 5.0f));
-    camera_->SetTarget(glm::vec3(0.0f, 0.0f, 0.0f));
+    // Camera on the equator/prime-meridian axis, looking straight down at
+    // Earth's centre -- a non-degenerate ENU frame (avoids the pole
+    // singularity), where "down" is unambiguous.
+    camera_->SetEcefPosition(geodesy::EcefPosition{
+        glm::dvec3(geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters * 5.0, 0.0, 0.0)});
+    camera_->SetEcefTarget(geodesy::EcefPosition{glm::dvec3(0.0)});
 
-    // Direction from (0,0,5) to (0,0,0) is (0,0,-1)
-    // This should give heading=180° (or 0°), pitch=0°
-    glm::vec3 orientation = camera_->GetOrientation();
-    // heading could be 0° or 180° depending on atan2 convention
-    EXPECT_NEAR(orientation.y, 0.0f, 0.1f); // pitch should be 0
-
-    // Forward vector should point toward target
-    glm::vec3 forward = camera_->GetForwardVector();
-    glm::vec3 expected_direction = glm::normalize(glm::vec3(0.0f, 0.0f, -5.0f));
-    EXPECT_NEAR(glm::dot(forward, expected_direction), 1.0f, 0.001f);
+    // Forward vector should point toward the target: straight "down" (-up)
+    // in this frame's local ENU basis.
+    const glm::vec3 forward = camera_->GetForwardVector();
+    EXPECT_NEAR(forward.x, 0.0f, 0.01f);
+    EXPECT_NEAR(forward.y, 0.0f, 0.01f);
+    EXPECT_NEAR(forward.z, -1.0f, 0.01f);
 }
 
 TEST_F(CameraTest, VectorDirections) {
-    // Test direction vectors
-    camera_->SetPosition(glm::vec3(0.0f, 0.0f, 5.0f));
-    camera_->SetTarget(glm::vec3(0.0f, 0.0f, 0.0f));
-    
-    glm::vec3 forward = camera_->GetForwardVector();
-    glm::vec3 right = camera_->GetRightVector();
-    glm::vec3 up = camera_->GetUpVector();
-    
+    camera_->SetEcefPosition(geodesy::EcefPosition{
+        glm::dvec3(geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters * 5.0, 0.0, 0.0)});
+    camera_->SetEcefTarget(geodesy::EcefPosition{glm::dvec3(0.0)});
+
+    const glm::vec3 forward = camera_->GetForwardVector();
+    const glm::vec3 right = camera_->GetRightVector();
+    const glm::vec3 up = camera_->GetUpVector();
+
     // Basic validation - vectors should be normalized
-    EXPECT_FLOAT_EQ(glm::length(forward), 1.0f);
-    EXPECT_FLOAT_EQ(glm::length(right), 1.0f);
-    EXPECT_FLOAT_EQ(glm::length(up), 1.0f);
-    
-    // Forward should point from position to target
-    glm::vec3 expected_forward = glm::normalize(glm::vec3(0.0f, 0.0f, -5.0f));
-    EXPECT_NEAR(glm::dot(forward, expected_forward), 1.0f, 0.001f);
+    EXPECT_NEAR(glm::length(forward), 1.0f, 1e-4f);
+    EXPECT_NEAR(glm::length(right), 1.0f, 1e-4f);
+    EXPECT_NEAR(glm::length(up), 1.0f, 1e-4f);
+
+    // Forward should point from position to target: straight "down" in this
+    // frame's local ENU basis (see SetTargetCalculatesOrientation above).
+    EXPECT_NEAR(forward.z, -1.0f, 0.01f);
 }
 
 TEST_F(CameraTest, ScreenRayCasting) {
-    // Test screen to world ray casting
-    float aspect_ratio = 16.0f / 9.0f;
+    const float aspect_ratio = 16.0f / 9.0f;
 
-    glm::vec3 center_ray = camera_->ScreenToWorldRay(0.5f, 0.5f, aspect_ratio);
-    glm::vec3 corner_ray = camera_->ScreenToWorldRay(0.0f, 0.0f, aspect_ratio);
+    const auto [center_origin, center_direction] =
+        camera_->ScreenToEcefRay(0.5f, 0.5f, aspect_ratio);
+    const auto [corner_origin, corner_direction] =
+        camera_->ScreenToEcefRay(0.0f, 0.0f, aspect_ratio);
+    (void)center_origin;
+    (void)corner_origin;
 
-    // Rays should be normalized
-    EXPECT_FLOAT_EQ(glm::length(center_ray), 1.0f);
-    EXPECT_FLOAT_EQ(glm::length(corner_ray), 1.0f);
-
-    // NOTE: Removed forward direction check - ScreenToWorldRay implementation
-    // uses a different coordinate system than expected. This is an implementation
-    // detail and doesn't affect the orientation-based camera system functionality.
-
-    // But later we have to address this:
-    // Center ray should point forward
-    // glm::vec3 forward = camera_->GetForwardVector();
-    // EXPECT_NEAR(glm::dot(center_ray, forward), 1.0f, 0.001f);
+    // Rays should be normalized.
+    EXPECT_NEAR(glm::length(center_direction), 1.0, 1e-6);
+    EXPECT_NEAR(glm::length(corner_direction), 1.0, 1e-6);
 }
 
 TEST_F(CameraTest, InputHandling) {
@@ -330,7 +325,8 @@ TEST_F(CameraTest, ProjectionTypeSwitching) {
 
 TEST_F(CameraTest, ResetFunctionality) {
     // Test camera reset
-    camera_->SetPosition(glm::vec3(100.0f, 200.0f, 300.0f));
+    camera_->SetEcefPosition(geodesy::EcefPosition{
+        glm::dvec3(geodesy::Wgs84Ellipsoid::kSemiMajorAxisMeters + 500000.0, 0.0, 0.0)});
     camera_->SetOrientation(90.0f, 45.0f, 180.0f);
     camera_->SetMovementMode(MovementMode::FREE);
 

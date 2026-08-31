@@ -87,7 +87,12 @@ public:
         const float screen_x, const float screen_y, const float aspect_ratio) const override {
         return camera_->ScreenToEcefRay(screen_x, screen_y, aspect_ratio);
     }
-    
+
+    std::optional<glm::vec2> EcefToScreen(
+        const geodesy::EcefPosition& position, const float aspect_ratio) const override {
+        return camera_->EcefToScreen(position, aspect_ratio);
+    }
+
     void SetOrientation(double heading, double pitch, double roll) override {
         camera_->SetOrientation(heading, pitch, roll);
     }

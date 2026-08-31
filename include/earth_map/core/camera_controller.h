@@ -15,6 +15,7 @@
 #include <glm/glm.hpp>
 #include <memory>
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 namespace earth_map {
@@ -84,6 +85,15 @@ public:
      */
     [[nodiscard]] virtual std::pair<geodesy::EcefPosition, glm::dvec3> ScreenToEcefRay(
         float screen_x, float screen_y, float aspect_ratio) const = 0;
+
+    /**
+     * Projects a physical WGS84/ECEF position to normalized [0, 1] screen
+     * coordinates using the current view/projection (the inverse of
+     * ScreenToEcefRay for a single point). Returns nullopt if the position
+     * is behind the camera.
+     */
+    [[nodiscard]] virtual std::optional<glm::vec2> EcefToScreen(
+        const geodesy::EcefPosition& position, float aspect_ratio) const = 0;
     
     /**
      * @brief Set camera orientation
