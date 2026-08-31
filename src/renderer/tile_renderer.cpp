@@ -15,6 +15,7 @@
 #include <spdlog/spdlog.h>
 #ifdef __ANDROID__
 #include <GLES3/gl3.h>
+#include <EGL/egl.h>
 #else
 #include <GL/glew.h>
 #endif
@@ -23,6 +24,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
@@ -109,6 +111,56 @@ std::vector<TileCoordinates> BuildAncestorFallbackRequests(
 
     return ancestors;
 }
+
+#ifdef __ANDROID__
+
+using DrawElementsBaseVertexFn = void (*)(GLenum, GLsizei, GLenum, const void*, GLint);
+
+bool ExtensionStringPresent(const char* name) {
+    GLint extension_count = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &extension_count);
+    for (GLint i = 0; i < extension_count; ++i) {
+        const auto* extension =
+            reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)));
+        if (extension && std::strcmp(extension, name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// glDrawElementsBaseVertex is core desktop GL (3.2+) but not core in GLES
+// 3.0 (this project's Android baseline) -- it was only folded into core in
+// GLES 3.2. Before that it shipped as one of two equivalent, widely
+// supported optional extensions; resolve whichever is present once, lazily,
+// via eglGetProcAddress (same approach as GL_EXT_disjoint_timer_query in
+// gpu_elapsed_time_query.cpp). Devices with neither fall back to per-patch
+// vertex attribute rebinding in RenderGeographicPatches.
+DrawElementsBaseVertexFn ResolveDrawElementsBaseVertex() {
+    if (ExtensionStringPresent("GL_EXT_draw_elements_base_vertex")) {
+        if (auto* proc = reinterpret_cast<DrawElementsBaseVertexFn>(
+                eglGetProcAddress("glDrawElementsBaseVertexEXT"))) {
+            return proc;
+        }
+    }
+    if (ExtensionStringPresent("GL_OES_draw_elements_base_vertex")) {
+        if (auto* proc = reinterpret_cast<DrawElementsBaseVertexFn>(
+                eglGetProcAddress("glDrawElementsBaseVertexOES"))) {
+            return proc;
+        }
+    }
+    spdlog::info("glDrawElementsBaseVertex unavailable (neither GL_EXT_ nor "
+                 "GL_OES_draw_elements_base_vertex present) -- geographic "
+                 "patches will fall back to per-patch vertex attribute rebinding");
+    return nullptr;
+}
+
+DrawElementsBaseVertexFn GetDrawElementsBaseVertex() {
+    static const DrawElementsBaseVertexFn proc = ResolveDrawElementsBaseVertex();
+    return proc;
+}
+
+#endif  // __ANDROID__
 
 } // namespace
 
@@ -1000,39 +1052,51 @@ void main() {
         // uniform update is needed here at all -- only the vertex range
         // differs per patch.
 #ifdef __ANDROID__
-        // GLES 3.0 (this project's Android baseline) has no
-        // glDrawElementsBaseVertex, so each patch's differing vertex base
-        // in the shared VBO must still be selected by re-specifying the
-        // vertex attribute pointers before its draw call.
-        glBindBuffer(GL_ARRAY_BUFFER, geographic_patch_vbo_);
-        for (const GeographicPatchDraw& draw : geographic_patch_draws_) {
-            const std::size_t byte_offset =
-                draw.vertex_offset * sizeof(GeographicPatchVertex);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
-                                  sizeof(GeographicPatchVertex),
-                                  reinterpret_cast<const void*>(
-                                      byte_offset + offsetof(GeographicPatchVertex, position)));
-            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
-                                  sizeof(GeographicPatchVertex),
-                                  reinterpret_cast<const void*>(
-                                      byte_offset + offsetof(GeographicPatchVertex, normal)));
-            glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE,
-                                  sizeof(GeographicPatchVertex),
-                                  reinterpret_cast<const void*>(
-                                      byte_offset + offsetof(GeographicPatchVertex, local_uv)));
-            glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE,
-                                  sizeof(GeographicPatchVertex),
-                                  reinterpret_cast<const void*>(
-                                      byte_offset + offsetof(GeographicPatchVertex, atlas_uv)));
-            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE,
-                                  sizeof(GeographicPatchVertex),
-                                  reinterpret_cast<const void*>(
-                                      byte_offset + offsetof(GeographicPatchVertex, texture_layer)));
-            glDrawElements(GL_TRIANGLES,
-                           geographic_patch_grid_->indices.size(),
-                           GL_UNSIGNED_INT,
-                           nullptr);
-            draw_zone.AddDrawCall(geographic_patch_grid_->indices.size() / 3U);
+        // GLES 3.0 core (this project's Android baseline) has no
+        // glDrawElementsBaseVertex -- try the optional extension most real
+        // devices actually advertise first (see ResolveDrawElementsBaseVertex
+        // above), and only fall back to re-specifying the vertex attribute
+        // pointers per patch if truly unavailable.
+        if (const DrawElementsBaseVertexFn draw_base_vertex = GetDrawElementsBaseVertex()) {
+            for (const GeographicPatchDraw& draw : geographic_patch_draws_) {
+                draw_base_vertex(GL_TRIANGLES,
+                                 static_cast<GLsizei>(geographic_patch_grid_->indices.size()),
+                                 GL_UNSIGNED_INT,
+                                 nullptr,
+                                 static_cast<GLint>(draw.vertex_offset));
+                draw_zone.AddDrawCall(geographic_patch_grid_->indices.size() / 3U);
+            }
+        } else {
+            glBindBuffer(GL_ARRAY_BUFFER, geographic_patch_vbo_);
+            for (const GeographicPatchDraw& draw : geographic_patch_draws_) {
+                const std::size_t byte_offset =
+                    draw.vertex_offset * sizeof(GeographicPatchVertex);
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                      sizeof(GeographicPatchVertex),
+                                      reinterpret_cast<const void*>(
+                                          byte_offset + offsetof(GeographicPatchVertex, position)));
+                glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
+                                      sizeof(GeographicPatchVertex),
+                                      reinterpret_cast<const void*>(
+                                          byte_offset + offsetof(GeographicPatchVertex, normal)));
+                glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE,
+                                      sizeof(GeographicPatchVertex),
+                                      reinterpret_cast<const void*>(
+                                          byte_offset + offsetof(GeographicPatchVertex, local_uv)));
+                glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE,
+                                      sizeof(GeographicPatchVertex),
+                                      reinterpret_cast<const void*>(
+                                          byte_offset + offsetof(GeographicPatchVertex, atlas_uv)));
+                glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE,
+                                      sizeof(GeographicPatchVertex),
+                                      reinterpret_cast<const void*>(
+                                          byte_offset + offsetof(GeographicPatchVertex, texture_layer)));
+                glDrawElements(GL_TRIANGLES,
+                               geographic_patch_grid_->indices.size(),
+                               GL_UNSIGNED_INT,
+                               nullptr);
+                draw_zone.AddDrawCall(geographic_patch_grid_->indices.size() / 3U);
+            }
         }
 #else
         // Desktop GL (3.2+, guaranteed by GLEW's core profile here) can
