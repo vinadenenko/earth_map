@@ -126,11 +126,19 @@ struct TileRenderState {
     float load_priority;              ///< Priority for loading (0.0 = highest)
 };
 
-/** Vertex submitted by the CPU-selected geographic patch path. */
+/**
+ * Vertex submitted by the CPU-selected geographic patch path. atlas_uv and
+ * texture_layer are baked in per-vertex (from the patch's resolved imagery)
+ * rather than bound as per-draw uniforms, so every patch's geometry is
+ * self-describing and no per-draw state change is needed to select the
+ * right texture-array layer/UV rect -- see RenderGeographicPatches.
+ */
 struct GeographicPatchVertex {
     glm::vec3 position;
     glm::vec3 normal;
     glm::vec2 local_uv;
+    glm::vec2 atlas_uv;
+    float texture_layer = 0.0f;
 };
 
 /**
@@ -605,13 +613,8 @@ private:
             return;
         }
 
-        struct PendingPatchDraw {
-            renderer::ResolvedImageryPatch imagery;
-        };
-        std::vector<PendingPatchDraw> pending_draws;
-        std::vector<imagery::ImageTileKey> patch_keys;
-        pending_draws.reserve(visible_tile_coords.size());
-        patch_keys.reserve(visible_tile_coords.size());
+        std::vector<renderer::ResolvedImageryPatch> resolved_patches;
+        resolved_patches.reserve(visible_tile_coords.size());
 
         for (const TileCoordinates& tile_coords : visible_tile_coords) {
             const auto imagery_key = texture_coordinator_->ResolveImageryTileKey(tile_coords);
@@ -648,16 +651,18 @@ private:
                 continue;
             }
 
-            patch_keys.push_back(imagery_key.value());
-            pending_draws.push_back({*resolved});
+            resolved_patches.push_back(*resolved);
         }
 
         // The ECEF geometry cache is keyed by patch identity and nothing
         // else prunes it -- drop entries for patches not selected this
         // frame so it can't grow unbounded as the camera moves around.
         {
-            std::unordered_set<imagery::ImageTileKey, imagery::ImageTileKeyHash> needed_keys(
-                patch_keys.begin(), patch_keys.end());
+            std::unordered_set<imagery::ImageTileKey, imagery::ImageTileKeyHash> needed_keys;
+            needed_keys.reserve(resolved_patches.size());
+            for (const renderer::ResolvedImageryPatch& resolved : resolved_patches) {
+                needed_keys.insert(resolved.patch.imagery_key);
+            }
             for (auto it = geographic_patch_geometry_cache_.begin();
                  it != geographic_patch_geometry_cache_.end();) {
                 it = needed_keys.count(it->first) == 0
@@ -672,19 +677,28 @@ private:
         // *current* position, so a buffer built for an earlier frame no
         // longer represents the same points relative to it. This is still
         // cheap -- a subtract-and-cast per vertex, not the ellipsoid math
-        // above, which stays cached.
+        // above, which stays cached. atlas_uv/texture_layer are baked in
+        // here too (from this frame's resolved imagery, which -- unlike the
+        // geometry -- can legitimately change frame to frame as residency
+        // changes), so no per-draw uniform update is needed at render time.
         geographic_patch_vertices_.clear();
         geographic_patch_vertex_offsets_.clear();
         geographic_patch_vertices_.reserve(
-            patch_keys.size() * geographic_patch_grid_->local_coordinates.size());
+            resolved_patches.size() * geographic_patch_grid_->local_coordinates.size());
 
-        for (const imagery::ImageTileKey& key : patch_keys) {
+        for (const renderer::ResolvedImageryPatch& resolved : resolved_patches) {
+            const imagery::ImageTileKey& key = resolved.patch.imagery_key;
             const auto geometry = geographic_patch_geometry_cache_.find(key);
             if (geometry == geographic_patch_geometry_cache_.end()) {
                 continue;
             }
             geographic_patch_vertex_offsets_.emplace(
                 key, geographic_patch_vertices_.size());
+            const glm::vec2 uv_scale(static_cast<float>(resolved.uv_scale.x),
+                                     static_cast<float>(resolved.uv_scale.y));
+            const glm::vec2 uv_offset(static_cast<float>(resolved.uv_offset.x),
+                                      static_cast<float>(resolved.uv_offset.y));
+            const float texture_layer = static_cast<float>(resolved.texture_layer);
             for (const GeographicPatchVertexEcef& ecef_vertex : geometry->second) {
                 // ecef_normal is already unit length (Wgs84Ellipsoid::
                 // SurfaceNormal), and ToLocalDirection is a pure rotation
@@ -695,19 +709,21 @@ private:
                         geodesy::EcefPosition{ecef_vertex.ecef_position})),
                     glm::vec3(render_frame_->ToLocalDirection(ecef_vertex.ecef_normal)),
                     ecef_vertex.local_uv,
+                    uv_offset + ecef_vertex.local_uv * uv_scale,
+                    texture_layer,
                 });
             }
         }
         geographic_patch_vertices_dirty_ = true;
 
-        geographic_patch_draws_.reserve(pending_draws.size());
-        for (PendingPatchDraw& pending : pending_draws) {
+        geographic_patch_draws_.reserve(resolved_patches.size());
+        for (const renderer::ResolvedImageryPatch& resolved : resolved_patches) {
             const auto offset = geographic_patch_vertex_offsets_.find(
-                pending.imagery.patch.imagery_key);
+                resolved.patch.imagery_key);
             if (offset == geographic_patch_vertex_offsets_.end()) {
                 continue;
             }
-            geographic_patch_draws_.push_back({std::move(pending.imagery), offset->second});
+            geographic_patch_draws_.push_back({resolved, offset->second});
         }
     }
 
@@ -738,9 +754,6 @@ private:
         GLint view = -1;
         GLint projection = -1;
         GLint tile_pool = -1;
-        GLint texture_layer = -1;
-        GLint uv_scale = -1;
-        GLint uv_offset = -1;
         GLint light_direction = -1;
         GLint light_color = -1;
     };
@@ -766,6 +779,8 @@ private:
 layout (location = 0) in vec3 aPosition;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aLocalUv;
+layout (location = 3) in vec2 aAtlasUv;
+layout (location = 4) in float aTextureLayer;
 
 uniform mat4 uView;
 uniform mat4 uProjection;
@@ -773,11 +788,15 @@ uniform mat4 uProjection;
 out vec3 WorldPosition;
 out vec3 WorldNormal;
 out vec2 LocalUv;
+out vec2 AtlasUv;
+out float TextureLayer;
 
 void main() {
     WorldPosition = aPosition;
     WorldNormal = aNormal;
     LocalUv = aLocalUv;
+    AtlasUv = aAtlasUv;
+    TextureLayer = aTextureLayer;
     gl_Position = uProjection * uView * vec4(aPosition, 1.0);
 }
 )";
@@ -790,13 +809,12 @@ void main() {
 in vec3 WorldPosition;
 in vec3 WorldNormal;
 in vec2 LocalUv;
+in vec2 AtlasUv;
+in float TextureLayer;
 
 out vec4 FragColor;
 
 uniform sampler2DArray uTilePool;
-uniform float uTextureLayer;
-uniform vec2 uUvScale;
-uniform vec2 uUvOffset;
 uniform vec3 uLightDirection;
 uniform vec3 uLightColor;
 
@@ -810,9 +828,8 @@ void main() {
 #endif
 
     const float kHalfTexel = 0.5 / 256.0;
-    vec2 uv = uUvOffset + LocalUv * uUvScale;
-    uv = clamp(uv, kHalfTexel, 1.0 - kHalfTexel);
-    vec4 texColor = texture(uTilePool, vec3(uv, uTextureLayer));
+    vec2 uv = clamp(AtlasUv, kHalfTexel, 1.0 - kHalfTexel);
+    vec4 texColor = texture(uTilePool, vec3(uv, TextureLayer));
 
  #if EARTH_MAP_TILE_FRAGMENT_PROBE == 3
     FragColor = texColor;
@@ -841,9 +858,6 @@ void main() {
         uniform_locs.view = glGetUniformLocation(program, "uView");
         uniform_locs.projection = glGetUniformLocation(program, "uProjection");
         uniform_locs.tile_pool = glGetUniformLocation(program, "uTilePool");
-        uniform_locs.texture_layer = glGetUniformLocation(program, "uTextureLayer");
-        uniform_locs.uv_scale = glGetUniformLocation(program, "uUvScale");
-        uniform_locs.uv_offset = glGetUniformLocation(program, "uUvOffset");
         uniform_locs.light_direction = glGetUniformLocation(program, "uLightDirection");
         uniform_locs.light_color = glGetUniformLocation(program, "uLightColor");
     }
@@ -919,6 +933,16 @@ void main() {
                               reinterpret_cast<const void*>(offsetof(
                                   GeographicPatchVertex, local_uv)));
         glEnableVertexAttribArray(2);
+        glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE,
+                              sizeof(GeographicPatchVertex),
+                              reinterpret_cast<const void*>(offsetof(
+                                  GeographicPatchVertex, atlas_uv)));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE,
+                              sizeof(GeographicPatchVertex),
+                              reinterpret_cast<const void*>(offsetof(
+                                  GeographicPatchVertex, texture_layer)));
+        glEnableVertexAttribArray(4);
         glBindVertexArray(0);
     }
 
@@ -970,19 +994,18 @@ void main() {
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         }
         glBindVertexArray(geographic_patch_vao_);
-        // Each patch range has a different vertex base in the shared dynamic
-        // VBO, so rebase its attributes before drawing.
+
+        // texture_layer/atlas_uv are baked per-vertex now (see
+        // UpdateGeographicPatchDraws), so unlike before, no per-patch
+        // uniform update is needed here at all -- only the vertex range
+        // differs per patch.
+#ifdef __ANDROID__
+        // GLES 3.0 (this project's Android baseline) has no
+        // glDrawElementsBaseVertex, so each patch's differing vertex base
+        // in the shared VBO must still be selected by re-specifying the
+        // vertex attribute pointers before its draw call.
         glBindBuffer(GL_ARRAY_BUFFER, geographic_patch_vbo_);
         for (const GeographicPatchDraw& draw : geographic_patch_draws_) {
-            glUniform1f(uniform_locs.texture_layer,
-                        static_cast<float>(draw.imagery.texture_layer));
-            glUniform2f(uniform_locs.uv_scale,
-                        static_cast<float>(draw.imagery.uv_scale.x),
-                        static_cast<float>(draw.imagery.uv_scale.y));
-            glUniform2f(uniform_locs.uv_offset,
-                        static_cast<float>(draw.imagery.uv_offset.x),
-                        static_cast<float>(draw.imagery.uv_offset.y));
-
             const std::size_t byte_offset =
                 draw.vertex_offset * sizeof(GeographicPatchVertex);
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
@@ -997,12 +1020,36 @@ void main() {
                                   sizeof(GeographicPatchVertex),
                                   reinterpret_cast<const void*>(
                                       byte_offset + offsetof(GeographicPatchVertex, local_uv)));
+            glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE,
+                                  sizeof(GeographicPatchVertex),
+                                  reinterpret_cast<const void*>(
+                                      byte_offset + offsetof(GeographicPatchVertex, atlas_uv)));
+            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE,
+                                  sizeof(GeographicPatchVertex),
+                                  reinterpret_cast<const void*>(
+                                      byte_offset + offsetof(GeographicPatchVertex, texture_layer)));
             glDrawElements(GL_TRIANGLES,
                            geographic_patch_grid_->indices.size(),
                            GL_UNSIGNED_INT,
                            nullptr);
             draw_zone.AddDrawCall(geographic_patch_grid_->indices.size() / 3U);
         }
+#else
+        // Desktop GL (3.2+, guaranteed by GLEW's core profile here) can
+        // select each patch's vertex base directly via basevertex, with the
+        // attribute pointers bound once at init time (InitializeGeographic-
+        // PatchGeometry) and never touched again -- no per-patch state
+        // change at all beyond the draw call itself.
+        for (const GeographicPatchDraw& draw : geographic_patch_draws_) {
+            glDrawElementsBaseVertex(GL_TRIANGLES,
+                                     geographic_patch_grid_->indices.size(),
+                                     GL_UNSIGNED_INT,
+                                     nullptr,
+                                     static_cast<GLint>(draw.vertex_offset));
+            draw_zone.AddDrawCall(geographic_patch_grid_->indices.size() / 3U);
+        }
+#endif
+
         if (wireframe_enabled_) {
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         }
@@ -1017,9 +1064,8 @@ void main() {
         // but many independent per-patch draws. Depth testing must stay on
         // so overlapping/near-side patches (and anything else sharing this
         // depth buffer, e.g. elevation or placemarks) resolve correctly.
-        // return;
         RenderGeographicPatches(view_matrix, projection_matrix, draw_zone);
-
+        // return;
         stats_.rendered_tiles = geographic_patch_draws_.size();
     }
 
