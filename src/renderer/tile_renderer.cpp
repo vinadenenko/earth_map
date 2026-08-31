@@ -133,6 +133,17 @@ struct GeographicPatchVertex {
     glm::vec2 local_uv;
 };
 
+/**
+ * Frame-independent patch vertex: ellipsoid geometry in double-precision
+ * ECEF, cached once per patch identity. GeographicPatchVertex above is the
+ * cheap per-frame projection of this into the camera-relative float frame.
+ */
+struct GeographicPatchVertexEcef {
+    glm::dvec3 ecef_position;
+    glm::dvec3 ecef_normal;
+    glm::vec2 local_uv;
+};
+
 /** One direct texture-array draw of a selected geographic leaf patch. */
 struct GeographicPatchDraw {
     renderer::ResolvedImageryPatch imagery;
@@ -452,11 +463,9 @@ public:
                 }
             }
 
-            // GPU vertices are camera-relative ENU floats.  A camera-frame
-            // change invalidates every local position; cache only topology
-            // and imagery residency, never an old frame's coordinates.
-            geographic_patch_geometry_cache_.clear();
-            geographic_patch_keys_.clear();
+            // geographic_patch_geometry_cache_ is frame-independent (ECEF)
+            // and persists across frames -- UpdateGeographicPatchDraws
+            // prunes it to whatever's still needed, it is not cleared here.
             UpdateGeographicPatchDraws(visible_tile_coords);
         }
 
@@ -518,7 +527,6 @@ public:
     void ClearCache() override {
         visible_tiles_.clear();
         geographic_patch_draws_.clear();
-        geographic_patch_keys_.clear();
         geographic_patch_vertex_offsets_.clear();
         geographic_patch_vertices_.clear();
         geographic_patch_geometry_cache_.clear();
@@ -548,15 +556,6 @@ public:
     }
 
 private:
-    [[nodiscard]] glm::vec3 CameraRelativeRenderPosition(
-        const geodesy::GeodeticPosition& geodetic) const {
-        if (!render_frame_.has_value()) {
-            return glm::vec3(0.0f);
-        }
-        const geodesy::EcefPosition ecef = geodesy::Wgs84Ellipsoid::ToEcef(geodetic);
-        return glm::vec3(render_frame_->ToLocal(ecef));
-    }
-
     [[nodiscard]] glm::vec3 CameraRelativeRenderDirection(
         const glm::dvec3& ecef_direction) const {
         if (!render_frame_.has_value()) {
@@ -565,7 +564,7 @@ private:
         return glm::normalize(glm::vec3(render_frame_->ToLocalDirection(ecef_direction)));
     }
 
-    const std::vector<GeographicPatchVertex>* GetOrCreateGeographicPatchGeometry(
+    const std::vector<GeographicPatchVertexEcef>* GetOrCreateGeographicPatchGeometry(
         const renderer::GeographicQuadtreePatch& patch) {
         const auto found = geographic_patch_geometry_cache_.find(patch.imagery_key);
         if (found != geographic_patch_geometry_cache_.end()) {
@@ -575,7 +574,11 @@ private:
             return nullptr;
         }
 
-        std::vector<GeographicPatchVertex> vertices;
+        // Ellipsoid geometry depends only on the patch's own geographic
+        // bounds, never on the camera -- cache it in ECEF so it survives
+        // camera movement. The per-frame camera-relative conversion happens
+        // separately, in UpdateGeographicPatchDraws.
+        std::vector<GeographicPatchVertexEcef> vertices;
         vertices.reserve(geographic_patch_grid_->local_coordinates.size());
         for (const glm::vec2& local_uv_float : geographic_patch_grid_->local_coordinates) {
             const glm::dvec2 local_uv(local_uv_float.x, local_uv_float.y);
@@ -584,8 +587,8 @@ private:
                 return nullptr;
             }
             vertices.push_back({
-                CameraRelativeRenderPosition(*geodetic),
-                CameraRelativeRenderDirection(geodesy::Wgs84Ellipsoid::SurfaceNormal(*geodetic)),
+                geodesy::Wgs84Ellipsoid::ToEcef(*geodetic).meters,
+                geodesy::Wgs84Ellipsoid::SurfaceNormal(*geodetic),
                 local_uv_float,
             });
         }
@@ -649,27 +652,53 @@ private:
             pending_draws.push_back({*resolved});
         }
 
-        if (patch_keys != geographic_patch_keys_) {
-            geographic_patch_vertices_.clear();
-            geographic_patch_vertex_offsets_.clear();
-            geographic_patch_vertices_.reserve(
-                patch_keys.size() * geographic_patch_grid_->local_coordinates.size());
-
-            for (const imagery::ImageTileKey& key : patch_keys) {
-                const auto geometry = geographic_patch_geometry_cache_.find(key);
-                if (geometry == geographic_patch_geometry_cache_.end()) {
-                    continue;
-                }
-                geographic_patch_vertex_offsets_.emplace(
-                    key, geographic_patch_vertices_.size());
-                geographic_patch_vertices_.insert(
-                    geographic_patch_vertices_.end(),
-                    geometry->second.begin(), geometry->second.end());
+        // The ECEF geometry cache is keyed by patch identity and nothing
+        // else prunes it -- drop entries for patches not selected this
+        // frame so it can't grow unbounded as the camera moves around.
+        {
+            std::unordered_set<imagery::ImageTileKey, imagery::ImageTileKeyHash> needed_keys(
+                patch_keys.begin(), patch_keys.end());
+            for (auto it = geographic_patch_geometry_cache_.begin();
+                 it != geographic_patch_geometry_cache_.end();) {
+                it = needed_keys.count(it->first) == 0
+                         ? geographic_patch_geometry_cache_.erase(it)
+                         : std::next(it);
             }
-
-            geographic_patch_keys_ = std::move(patch_keys);
-            geographic_patch_vertices_dirty_ = true;
         }
+
+        // Unlike the ECEF cache above, this projection into camera-relative
+        // floats must be rebuilt every frame regardless of whether the
+        // patch set changed: render_frame_'s origin is the camera's
+        // *current* position, so a buffer built for an earlier frame no
+        // longer represents the same points relative to it. This is still
+        // cheap -- a subtract-and-cast per vertex, not the ellipsoid math
+        // above, which stays cached.
+        geographic_patch_vertices_.clear();
+        geographic_patch_vertex_offsets_.clear();
+        geographic_patch_vertices_.reserve(
+            patch_keys.size() * geographic_patch_grid_->local_coordinates.size());
+
+        for (const imagery::ImageTileKey& key : patch_keys) {
+            const auto geometry = geographic_patch_geometry_cache_.find(key);
+            if (geometry == geographic_patch_geometry_cache_.end()) {
+                continue;
+            }
+            geographic_patch_vertex_offsets_.emplace(
+                key, geographic_patch_vertices_.size());
+            for (const GeographicPatchVertexEcef& ecef_vertex : geometry->second) {
+                // ecef_normal is already unit length (Wgs84Ellipsoid::
+                // SurfaceNormal), and ToLocalDirection is a pure rotation
+                // (the ENU basis is orthonormal) -- it preserves length, so
+                // re-normalizing here would just be a wasted sqrt per vertex.
+                geographic_patch_vertices_.push_back({
+                    glm::vec3(render_frame_->ToLocal(
+                        geodesy::EcefPosition{ecef_vertex.ecef_position})),
+                    glm::vec3(render_frame_->ToLocalDirection(ecef_vertex.ecef_normal)),
+                    ecef_vertex.local_uv,
+                });
+            }
+        }
+        geographic_patch_vertices_dirty_ = true;
 
         geographic_patch_draws_.reserve(pending_draws.size());
         for (PendingPatchDraw& pending : pending_draws) {
@@ -691,9 +720,8 @@ private:
     std::vector<TileRenderState> visible_tiles_;
     std::optional<renderer::GeographicPatchGrid> geographic_patch_grid_;
     std::vector<GeographicPatchDraw> geographic_patch_draws_;
-    std::vector<imagery::ImageTileKey> geographic_patch_keys_;
     std::unordered_map<imagery::ImageTileKey,
-                       std::vector<GeographicPatchVertex>,
+                       std::vector<GeographicPatchVertexEcef>,
                        imagery::ImageTileKeyHash> geographic_patch_geometry_cache_;
     std::unordered_map<imagery::ImageTileKey,
                        std::size_t,
@@ -989,6 +1017,7 @@ void main() {
         // but many independent per-patch draws. Depth testing must stay on
         // so overlapping/near-side patches (and anything else sharing this
         // depth buffer, e.g. elevation or placemarks) resolve correctly.
+        // return;
         RenderGeographicPatches(view_matrix, projection_matrix, draw_zone);
 
         stats_.rendered_tiles = geographic_patch_draws_.size();
