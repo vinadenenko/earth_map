@@ -303,9 +303,48 @@ public:
                 return SetMovementKey(event.key, true);
             case InputEvent::Type::KEY_RELEASE:
                 return SetMovementKey(event.key, false);
-            case InputEvent::Type::DOUBLE_CLICK:
-                Zoom(0.5f);
+            case InputEvent::Type::DOUBLE_CLICK: {
+                // Raycast the click point and fly there smoothly, mirroring
+                // main's HandleDoubleClick -- porting it onto ECEF primitives
+                // instead of the old normalized-sphere ray-sphere test.
+                const float aspect_ratio = config_.screen_height > 0
+                    ? static_cast<float>(config_.screen_width) /
+                          static_cast<float>(config_.screen_height)
+                    : 1.0f;
+                const float screen_x = config_.screen_width > 0
+                    ? event.x / static_cast<float>(config_.screen_width)
+                    : 0.5f;
+                const float screen_y = config_.screen_height > 0
+                    ? event.y / static_cast<float>(config_.screen_height)
+                    : 0.5f;
+                const auto [ray_origin, ray_direction] =
+                    ScreenToEcefRay(screen_x, screen_y, aspect_ratio);
+
+                const auto camera_geodetic = geodesy::Wgs84Ellipsoid::FromEcef(position_);
+                const double current_altitude = camera_geodetic.has_value()
+                    ? camera_geodetic->ellipsoid_height_meters
+                    : kDefaultCameraAltitudeMeters;
+                const double target_altitude = std::max(
+                    current_altitude * 0.5, static_cast<double>(constraints_.min_altitude));
+
+                const auto hit = geodesy::Wgs84Ellipsoid::IntersectRay(ray_origin, ray_direction);
+                const auto hit_geodetic = hit.has_value()
+                    ? geodesy::Wgs84Ellipsoid::FromEcef(*hit)
+                    : std::nullopt;
+                if (hit_geodetic.has_value()) {
+                    FlyTo(RadiansToDegrees(hit_geodetic->longitude_radians),
+                          RadiansToDegrees(hit_geodetic->latitude_radians),
+                          target_altitude, 0.8f);
+                } else if (camera_geodetic.has_value()) {
+                    // Ray missed the globe -- zoom toward the current view
+                    // direction instead of doing nothing (same fallback
+                    // main's HandleDoubleClick used).
+                    FlyTo(RadiansToDegrees(camera_geodetic->longitude_radians),
+                          RadiansToDegrees(camera_geodetic->latitude_radians),
+                          target_altitude, 0.5f);
+                }
                 return true;
+            }
         }
         return false;
     }
@@ -610,9 +649,18 @@ private:
         const float duration,
         const bool target_surface) {
         const auto current_camera = geodesy::Wgs84Ellipsoid::FromEcef(position_);
-        const auto current_target = geodesy::Wgs84Ellipsoid::FromEcef(target_);
-        if (!current_camera.has_value() || !current_target.has_value()) {
+        if (!current_camera.has_value()) {
             return;
+        }
+        // target_ has no defined geodetic form when it sits at the exact
+        // ECEF origin -- the default ORBIT-at-centre configuration. Rather
+        // than silently refusing to animate (the same landmine that used to
+        // break WASD), substitute the camera's own current sub-point as the
+        // interpolation's starting target in that case.
+        auto current_target = geodesy::Wgs84Ellipsoid::FromEcef(target_);
+        if (!current_target.has_value()) {
+            current_target = *current_camera;
+            current_target->ellipsoid_height_meters = 0.0;
         }
         animation_.Reset();
         animation_.active = true;
